@@ -799,11 +799,13 @@ EndFunc   ;==>GetDistanceToXY
 Func Agent_GetAgentEffectArrayInfo($a_i_AgentID = -2, $a_s_Info = "")
     Local $l_p_Pointer = World_GetWorldInfo("AgentEffectsArray")
     Local $l_i_Size = World_GetWorldInfo("AgentEffectsArraySize")
+
+    Local $l_i_AgentID = Agent_ConvertID($a_i_AgentID)
     Local $l_p_AgentPtr = 0
 
-    For $i = 0 To $l_i_Size
+    For $i = 0 To $l_i_Size - 1
         Local $l_p_AgentEffects = $l_p_Pointer + ($i * 0x24)
-        If Memory_Read($l_p_AgentEffects, "dword") = Agent_ConvertID($a_i_AgentID) Then
+        If Memory_Read($l_p_AgentEffects, "dword") = $l_i_AgentID Then
             $l_p_AgentPtr = $l_p_AgentEffects
             ExitLoop
         EndIf
@@ -874,18 +876,21 @@ Func Agent_GetAgentEffectInfo($a_i_AgentID = -2, $a_i_SkillID = 0, $a_s_Info = "
     EndSwitch
 EndFunc
 
-Func Agent_GetAgentBuffInfo($a_i_AgentID = -2, $a_i_SkillID = 0, $a_s_Info = "")
+Func Agent_GetAgentBuffInfo($a_i_SkillID = 0, $a_i_TargetID = 0, $a_i_AgentID = -2, $a_s_Info = "")
     Local $l_p_BuffArray = Agent_GetAgentEffectArrayInfo($a_i_AgentID, "BuffArray")
     Local $l_i_BuffCount = Agent_GetAgentEffectArrayInfo($a_i_AgentID, "BuffArraySize")
 
     If $l_p_BuffArray = 0 Or $l_i_BuffCount = 0 Then Return 0
 
+    Local $l_i_TargetID = Agent_ConvertID($a_i_TargetID)
     Local $l_p_BuffPtr = 0
+    
     For $j = 0 To $l_i_BuffCount - 1
         Local $l_p_CurrentPtr = $l_p_BuffArray + ($j * 0x10)
         Local $l_i_CurrentSkillID = Memory_Read($l_p_CurrentPtr, "long")
+        Local $l_i_CurrentTargetID = Memory_Read($l_p_CurrentPtr + 0xC, "dword")
 
-        If $l_i_CurrentSkillID = $a_i_SkillID Then
+        If $l_i_CurrentSkillID = $a_i_SkillID And $l_i_CurrentTargetID = $l_i_TargetID Then
             $l_p_BuffPtr = $l_p_CurrentPtr
             ExitLoop
         EndIf
