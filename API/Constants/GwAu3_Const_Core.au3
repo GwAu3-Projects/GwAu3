@@ -136,6 +136,8 @@ Global $g_f_LastMoveX = 0
 Global $g_f_LastMoveY = 0
 Global $g_f_ClickCoordsX = 0
 Global $g_f_ClickCoordsY = 0
+Global $g_d_RedirectMap = DllStructCreate('ptr;dword;dword;dword;dword;dword;dword') ; Slade
+Global $g_p_RedirectMap = DllStructGetPtr($g_d_RedirectMap) ; Slade
 
 ;Trade
 Global $g_d_TradeInitiate = DllStructCreate('ptr;dword;dword')

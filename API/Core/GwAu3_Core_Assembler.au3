@@ -2470,6 +2470,19 @@ Func Assembler_CreateMapCommands()
 	_('call Move')
 	_('pop eax')
 	_('ljmp CommandReturn')
+
+    _('CommandRedirectMap:') ; Slade
+    _('mov ecx,dword[eax+4]')
+    _('mov edx,dword[eax+8]')
+    _('push dword[eax+18]')
+    _('push dword[eax+14]')
+    _('push dword[eax+10]')
+    _('push dword[eax+C]')
+    _('push edx')
+    _('push ecx')
+    _('call RedirectMap')
+    _('add esp,18')
+    _('ljmp CommandReturn')
 EndFunc
 
 ; Ray cast against the map props: count at slot+4, then rays of 28 bytes from slot+8.

@@ -5,6 +5,41 @@ If @AutoItX64 Then
     Exit
 EndIf
 
+#Region Slade
+
+Func MemoryRead($aAddress, $aType = 'DWORD')
+    Local $lBuffer = DllStructCreate($aType)
+    DllCall($g_h_Kernel32, 'int', 'ReadProcessMemory', 'int', $g_h_GWProcess, 'int', $aAddress, 'PTR', DllStructGetPtr($lBuffer), 'int', DllStructGetSize($lBuffer), 'int', '')
+    Return DllStructGetData($lBuffer, 1)
+EndFunc   ;==>MemoryRead
+
+Func FindPattern(ByRef $aBuffer, $aPattern, $aOffset = 0)
+    Local $lPattern = BinaryToString('0x' & $aPattern)
+    Local $lAddr = StringInStr($aBuffer, $lPattern, 2)
+    If @error Then Exit MsgBox(0, 'Error', 'FindPattern failed: ' & $aPattern)
+    Return $lAddr - 1 + $aOffset
+EndFunc
+
+Func GetModuleInfo(ByRef $aModuleBase, ByRef $aModuleSize)
+    Local $lProcName = _WinAPI_GetProcessName($g_i_GWProcessId)
+    Local $lProcNameLength = StringLen($lProcName)
+
+    Local $lModules = _WinAPI_EnumProcessModules($g_i_GWProcessId)
+    For $i = 1 To $lModules[0][0]
+        Local $lModuleName = StringRight($lModules[$i][1], $lProcNameLength)
+        If StringCompare($lModuleName, $lProcName, $STR_NOCASESENSE) = 0 Then
+            Local $lModuleInfo = _WinAPI_GetModuleInformation($g_h_GWProcess, $lModules[$i][0])
+            $aModuleBase = DllStructGetData($lModuleInfo, 'BaseOfDll')
+            $aModuleSize = DllStructGetData($lModuleInfo, 'SizeOfImage')
+            Return True
+        EndIf
+    Next
+    Exit MsgBox(0, 'Error', 'GetModuleInfo failed')
+    Return False
+EndFunc   ;==>GetModuleInfo
+
+#EndRegion Slade
+
 #Region Initialization
 Func Core_Initialize($a_v_GW, $a_b_ChangeTitle = True)
 	Log_Info("Checking for updates...", "GwAu3", $g_h_EditText)
@@ -116,6 +151,10 @@ Func Core_Initialize($a_v_GW, $a_b_ChangeTitle = True)
     Scanner_AddPattern('MyID', '83EC08568BF13B15', -0x3, 'Ptr')
     ; Map patterns
     Scanner_AddPattern('Move', '558BEC83EC208D45F0', 0x1, 'Func')
+    Local $lModuleBase, $lModuleSize ; Slade
+    GetModuleInfo($lModuleBase, $lModuleSize) ; Slade
+    Local $lBuffer = BinaryToString(MemoryRead($lModuleBase, 'BYTE[' & $lModuleSize & ']')) ; Slade
+    Local $lRedirectMapPattern = FindPattern($lBuffer, "FF76248B4DE88D45EC508D4164508D417450FF761CFF7620FF7608FF7604", -0x94) ; Slade
     Scanner_AddPattern('ClickCoords', '8B451C85C0741CD945F8', 0xD, 'Ptr')
     Scanner_AddPattern('InstanceInfo', '6A2C50E80000000083C408C7', 0xE, 'Ptr')
 ;~ 	Scanner_AddPattern('WorldConst', "P:\Code\Gw\Const\ConstWorld.cpp", "index < arrsize(s_worldData)", 'Ptr', 0x16)
