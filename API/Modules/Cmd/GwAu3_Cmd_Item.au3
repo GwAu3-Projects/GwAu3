@@ -217,9 +217,10 @@ Func Item_IdentifyItem($a_v_Item, $a_s_KitType = "Superior")
     ; Find the optimal identification kit
     Local $l_i_IDKit = 0
     Local $l_i_BestUses = 101
-    Local $l_a_Kits[2][3] ; [ModelID, ItemID, Uses]
+    Local $l_a_Kits[3][3] ; [ModelID, ItemID, Uses]
     $l_a_Kits[0][0] = 0 ; Normal kit (ModelID 2989)
     $l_a_Kits[1][0] = 0 ; Superior kit (ModelID 5899)
+    $l_a_Kits[2][0] = 0 ; Infinite kit (ModelID 38620)
 
     ; Browse bags to find available kits
     For $i = 1 To 4
@@ -244,6 +245,13 @@ Func Item_IdentifyItem($a_v_Item, $a_s_KitType = "Superior")
                         $l_a_Kits[1][1] = Item_GetItemInfoByPtr($l_ptr_Item, 'ItemID')
                         $l_a_Kits[1][2] = $l_i_Uses
                     EndIf
+
+                Case $GC_I_MODELID_INFINITE_IDENTIFICATION_KIT ; Infinite kit
+                    If $l_a_Kits[2][0] = 0 Then
+                        $l_a_Kits[2][0] = $GC_I_MODELID_INFINITE_IDENTIFICATION_KIT
+                        $l_a_Kits[2][1] = Item_GetItemInfoByPtr($l_ptr_Item, 'ItemID')
+                        $l_a_Kits[2][2] = 0
+                    EndIf
             EndSwitch
         Next
     Next
@@ -251,16 +259,20 @@ Func Item_IdentifyItem($a_v_Item, $a_s_KitType = "Superior")
     ; Select kit according to preference
     Switch $a_s_KitType
         Case "Superior"
-            ; Prefer superior kit, otherwise use normal
-            If $l_a_Kits[1][0] <> 0 Then
+            ; Prefer infinite kit, then superior, otherwise normal
+            If $l_a_Kits[2][0] <> 0 Then
+                $l_i_IDKit = $l_a_Kits[2][1]
+            ElseIf $l_a_Kits[1][0] <> 0 Then
                 $l_i_IDKit = $l_a_Kits[1][1]
             ElseIf $l_a_Kits[0][0] <> 0 Then
                 $l_i_IDKit = $l_a_Kits[0][1]
             EndIf
 
         Case "Normal"
-            ; Prefer normal kit, otherwise use superior
-            If $l_a_Kits[0][0] <> 0 Then
+            ; Prefer infinite kit, then normal, otherwise superior
+            If $l_a_Kits[2][0] <> 0 Then
+                $l_i_IDKit = $l_a_Kits[2][1]
+            ElseIf $l_a_Kits[0][0] <> 0 Then
                 $l_i_IDKit = $l_a_Kits[0][1]
             ElseIf $l_a_Kits[1][0] <> 0 Then
                 $l_i_IDKit = $l_a_Kits[1][1]
