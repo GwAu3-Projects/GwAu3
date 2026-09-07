@@ -11,39 +11,30 @@ Func Quest_GetQuestInfo($a_i_QuestID, $a_s_Info = "")
         Local $l_ap_QuestPtr = Memory_ReadPtr($g_p_BasePointer, $l_ai_OffsetQuestLog, "long")
         If $l_ap_QuestPtr[1] = $a_i_QuestID Then $l_p_Ptr = Ptr($l_ap_QuestPtr[0])
     Next
-    If $l_p_Ptr = 0 Then Return 0
+
+    If $l_p_Ptr = 0 Then
+        If $a_s_Info = "HasQuest" Then 
+            Return False
+        Else
+            Return 0
+        EndIf
+    EndIf
 
     Switch $a_s_Info
         Case "HasQuest"
-            Return $l_p_Ptr <> 0
+            Return True
         Case "LogState"
             Return Memory_Read($l_p_Ptr + 0x4, "long")
+        Case "HasInfo"
+            Return BitAND(Memory_Read($l_p_Ptr + 0x4, "long"), 0x1) <> 0
         Case "IsCompleted"
-            Switch Memory_Read($l_p_Ptr + 0x4, "long")
-                Case 2, 3, 19, 32, 33, 34, 35, 79
-                    Return True
-                Case Else
-                    Return False
-            EndSwitch
-        Case "CanReward"
-            Switch Memory_Read($l_p_Ptr + 0x4, "long")
-                Case 32, 33
-                    Return True
-                Case Else
-                    Return False
-            EndSwitch
-        Case "IsIncomplete"
-            If Memory_Read($l_p_Ptr + 0x4, "long") = 1 Then Return True
-            Return False
+            Return BitAND(Memory_Read($l_p_Ptr + 0x4, "long"), 0x2) <> 0
         Case "IsCurrentQuest"
-            If Memory_Read($l_p_Ptr + 0x4, "long") = 0x10 Then Return True
-            Return False
-        Case "IsAreaPrimary"
-            If Memory_Read($l_p_Ptr + 0x4, "long") = 0x40 Then Return True
-            Return False
+            Return BitAND(Memory_Read($l_p_Ptr + 0x4, "long"), 0x10) <> 0
         Case "IsPrimary"
-            If Memory_Read($l_p_Ptr + 0x4, "long") = 0x20 Then Return True
-            Return False
+            Return BitAND(Memory_Read($l_p_Ptr + 0x4, "long"), 0x20) <> 0
+        Case "IsAreaPrimary"
+            Return BitAND(Memory_Read($l_p_Ptr + 0x4, "long"), 0x40) <> 0
 
         Case "Location"
             Local $l_p_LocationPtr = Memory_Read($l_p_Ptr + 0x8, "ptr")
