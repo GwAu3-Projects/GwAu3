@@ -25,7 +25,7 @@ Func Quest_GetQuestInfo($a_i_QuestID, $a_s_Info = "")
             Return True
         Case "LogState"
             Return Memory_Read($l_p_Ptr + 0x4, "long")
-        Case "IsSelected"
+        Case "HasInfo"
             Return BitAND(Memory_Read($l_p_Ptr + 0x4, "long"), 0x1) <> 0
         Case "IsCompleted"
             Return BitAND(Memory_Read($l_p_Ptr + 0x4, "long"), 0x2) <> 0
