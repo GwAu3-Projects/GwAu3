@@ -14,3 +14,8 @@ EndFunc   ;==>QuestReward
 Func Quest_AbandonQuest($a_i_QuestID)
     Return Core_SendPacket(0x8, $GC_I_HEADER_QUEST_ABANDON, $a_i_QuestID)
 EndFunc   ;==>AbandonQuest
+
+;~ Description: Request Description and Objective information.
+Func Quest_RequestInfos($a_i_QuestID)
+    Core_SendPacket(0x8, $GC_I_HEADER_QUEST_REQUEST_INFOS, $a_i_QuestID)
+EndFunc   ;==>Quest_RequestInfos
