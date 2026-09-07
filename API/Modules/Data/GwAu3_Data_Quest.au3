@@ -21,6 +21,8 @@ Func Quest_GetQuestInfo($a_i_QuestID, $a_s_Info = "")
     EndIf
 
     Switch $a_s_Info
+        Case "HasQuest"
+            Return True
         Case "LogState"
             Return Memory_Read($l_p_Ptr + 0x4, "long")
         Case "IsSelected"
