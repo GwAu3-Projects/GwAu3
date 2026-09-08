@@ -1930,6 +1930,11 @@ Func Assembler_CreateData()
 	_('TradeSessResult/4')       ; Return value of the trade session native
 	_('TradeSessReady/4')        ; 0 = pending, 1 = value ready, 2 = skipped, no trade context
 
+	; Target guard diagnosis
+	_('TargetOrderCount/4')      ; Target orders actually dequeued by the game thread
+	_('TargetRejectCount/4')     ; Target orders refused since the ASM was injected
+	_('TargetRejectLast/4')      ; Last refused id, used to classify the real cause
+
 	; EncString decoding buffers
 	_('DecodeReady/4')           ; Flag: 1 when decode is complete
 	_('DecodeInputPtr/256')      ; Input: encoded wchar string (max 128 wchars)
@@ -2425,11 +2430,37 @@ Func Assembler_CreateItemCommands()
 EndFunc
 
 Func Assembler_CreateAgentCommands()
+	; The id is frozen on the AutoIt side and the native runs a frame later. If it no
+	; longer resolves, SelectionUpdate hits a fatal assertion, AvSelect.cpp(780), and
+	; kills the client. Replay ManagerFindAgent's exact contract in the
+	; game thread. Id 0 is NOT a stale id: SelectionUpdate tests manualAgentId before
+	; resolving it, so 0 clears the selection and must reach the native.
 	_('CommandChangeTarget:')
+	_('jmp ChangeTargetStart')
+
+	; Error exit on top, so every guard jump stays backwards and short
+	_('ChangeTargetSkip:')
+	_('inc dword[TargetRejectCount]')
+	_('mov dword[TargetRejectLast],ebx')
+	_('ljmp CommandReturn')
+
+	_('ChangeTargetStart:')
+	_('inc dword[TargetOrderCount]')  ; denominator: 0 rejects on 0 orders proves nothing
+	_('mov ebx,dword[eax+4]')
+	_('test ebx,ebx')
+	_('jz ChangeTargetCall')       ; 0 is a legitimate clear target, the native takes it
+	_('cmp ebx,dword[MaxAgents]')
+	_('jae ChangeTargetSkip')          ; unsigned, like the native's JC
+	_('mov esi,dword[AgentBase]')
+	_('lea esi,dword[esi+ebx*4]')
+	_('mov esi,dword[esi]')
+	_('test esi,esi')
+	_('jz ChangeTargetSkip')
+
+	_('ChangeTargetCall:')
 	_('xor edx,edx')
 	_('push edx')
-	_('mov eax,dword[eax+4]')
-	_('push eax')
+	_('push ebx')
 	_('call ChangeTarget')
 	_('add esp,8')
 	_('ljmp CommandReturn')

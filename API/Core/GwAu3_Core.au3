@@ -518,6 +518,10 @@ Func Core_Initialize($a_v_GW, $a_b_ChangeTitle = True)
 	DllStructSetData($g_d_KickInvitedPlayer, 1, Memory_GetValue('CommandKickInvitedPlayer'))
 	DllStructSetData($g_d_RejectInvitation, 1, Memory_GetValue('CommandRejectInvitation'))
 	DllStructSetData($g_d_AcceptInvitation, 1, Memory_GetValue('CommandAcceptInvitation'))
+	;Target guard diagnosis
+	$g_p_TargetOrderCount = Memory_GetValue('TargetOrderCount')
+	$g_p_TargetRejectCount = Memory_GetValue('TargetRejectCount')
+	$g_p_TargetRejectLast = Memory_GetValue('TargetRejectLast')
 	;Prop ray casting
 	DllStructSetData($g_d_PropRay, 1, Memory_GetValue('CommandPropRay'))
 	$g_p_PropRayResult = Memory_GetValue('PropRayResult')

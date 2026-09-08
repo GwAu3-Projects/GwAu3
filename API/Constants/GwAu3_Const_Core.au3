@@ -219,6 +219,11 @@ Global Const $GC_I_PROPRAY_STATE_PENDING = 0  ; Command not processed yet
 Global Const $GC_I_PROPRAY_STATE_DONE = 1     ; Results available
 Global Const $GC_I_PROPRAY_STATE_SKIPPED = 2  ; No props loaded, native was never called
 Global Const $GC_F_PROPRAY_MIN_RANGE = 0.1    ; Below this the engine rejects the ray itself
+;Target guard diagnosis
+Global $g_p_TargetOrderCount    ; Pointer to the dequeued-order counter in GW memory
+Global $g_p_TargetRejectCount   ; Pointer to the rejected-order counter in GW memory
+Global $g_p_TargetRejectLast    ; Pointer to the last rejected agent id in GW memory
+
 Global $g_p_PropRayResult       ; Pointer to the result block in GW memory
 Global $g_p_PropRayReady        ; Pointer to the completion flag in GW memory
 Global $g_d_PropRay = DllStructCreate('ptr;dword;float[56]')  ; Command struct: ptr + count + rays
