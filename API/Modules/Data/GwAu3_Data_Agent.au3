@@ -936,21 +936,15 @@ EndFunc
 #EndRegion
 
 #Region Related NPC Info
-;~ TIPS: $a_i_ModelFileID = Player number of an npc
-Func Agent_GetNpcInfo($a_i_ModelFileID = 0, $a_s_Info = "")
+;~ TIPS: $a_i_NpcIndex = Player number of an npc
+;~ Description: Reads one field of an NPC table entry, addressed by NPC index.
+Func Agent_GetNpcInfo($a_i_NpcIndex = 0, $a_s_Info = "")
 	Local $l_p_Pointer = World_GetWorldInfo("NpcArray")
 	Local $l_i_Size = World_GetWorldInfo("NpcArraySize")
-	Local $l_p_AgentPtr = 0
+	If $l_p_Pointer = 0 Or $l_i_Size <= 0 Or $a_s_Info = "" Then Return 0
+	If $a_i_NpcIndex <= 0 Or $a_i_NpcIndex >= $l_i_Size Then Return 0
 
-	For $i = 0 To $l_i_Size
-        Local $l_p_AgentEffects = $l_p_Pointer + ($i * 0x30)
-        If Memory_Read($l_p_AgentEffects, "dword") = $a_i_ModelFileID Then
-            $l_p_AgentPtr = $l_p_AgentEffects
-            ExitLoop
-        EndIf
-    Next
-
-	If $l_p_AgentPtr = 0 Then Return 0
+	Local $l_p_AgentPtr = $l_p_Pointer + ($a_i_NpcIndex * 0x30)
 
 	Switch $a_s_Info
 		Case "ModelFileID"
@@ -991,6 +985,13 @@ Func Agent_GetNpcInfo($a_i_ModelFileID = 0, $a_s_Info = "")
         Case Else
             Return 0
     EndSwitch
+EndFunc
+
+;~ Description: Same as Agent_GetNpcInfo, addressed by agent id. Returns 0 for a player,
+;~ which has no NPC entry.
+Func Agent_GetNpcInfoByAgentID($a_i_AgentID = -2, $a_s_Info = "")
+	If Agent_GetAgentInfo($a_i_AgentID, "LoginNumber") <> 0 Then Return 0
+	Return Agent_GetNpcInfo(Agent_GetAgentInfo($a_i_AgentID, "PlayerNumber"), $a_s_Info)
 EndFunc
 
 #EndRegion
