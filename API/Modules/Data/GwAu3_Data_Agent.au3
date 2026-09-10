@@ -45,6 +45,28 @@ Func Agent_GetAgentCopyBase()
     Return $g_p_AgentCopyBase
 EndFunc
 
+;~ Description: Target orders the game thread actually dequeued and ran the guard on.
+Func Agent_GetTargetOrderCount()
+    Return Memory_Read($g_p_TargetOrderCount, 'dword')
+EndFunc
+
+;~ Description: Target orders refused by the guard since the ASM was injected.
+Func Agent_GetTargetRejectCount()
+    Return Memory_Read($g_p_TargetRejectCount, 'dword')
+EndFunc
+
+;~ Description: Last agent id refused by the target guard.
+Func Agent_GetTargetRejectLast()
+    Return Memory_Read($g_p_TargetRejectLast, 'dword')
+EndFunc
+
+;~ Description: Resets the target guard diagnosis counters.
+Func Agent_ResetTargetRejectStats()
+    Memory_Write($g_p_TargetOrderCount, 0, 'dword')
+    Memory_Write($g_p_TargetRejectCount, 0, 'dword')
+    Memory_Write($g_p_TargetRejectLast, 0, 'dword')
+EndFunc
+
 Func Agent_GetLastTarget()
     Return $g_i_LastTargetID
 EndFunc

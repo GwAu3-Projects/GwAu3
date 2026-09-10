@@ -3,7 +3,9 @@
 Func Agent_ChangeTarget($a_i_AgentID)
 	$a_i_AgentID = Agent_ConvertID($a_i_AgentID)
 
-    If $a_i_AgentID <= 0 Then
+    ; 0 is allowed on purpose: it is how the native clears the selection, and it is
+    ; what Agent_ClearTarget sends. Only a negative id is meaningless here.
+    If $a_i_AgentID < 0 Then
         Log_Error("Invalid agent ID: " & $a_i_AgentID, "AgentMod", $g_h_EditText)
         Return False
     EndIf
@@ -36,7 +38,9 @@ Func Agent_TargetNearestEnemy($a_f_MaxDistance = 1300)
     Local $l_i_MyID = Agent_GetMyID()
     Local $l_i_MaxAgents = Agent_GetMaxAgents()
 
-    For $i = 1 To $l_i_MaxAgents
+    ; MaxAgents is exclusive: ManagerFindAgent refuses id >= MaxAgents, so reading
+    ; that slot could hand Agent_ChangeTarget an id the native kills the client on.
+    For $i = 1 To $l_i_MaxAgents - 1
         ; Check if agent exists
         Local $l_p_Pointer = Agent_GetAgentPtr($i)
         If $l_p_Pointer = 0 Then ContinueLoop
@@ -72,7 +76,9 @@ Func Agent_TargetNearestAlly($a_f_MaxDistance = 1300, $a_b_ExcludeSelf = True)
     Local $l_i_MyID = Agent_GetMyID()
     Local $l_i_MaxAgents = Agent_GetMaxAgents()
 
-    For $l_i_Index = 1 To $l_i_MaxAgents
+    ; MaxAgents is exclusive: ManagerFindAgent refuses id >= MaxAgents, so reading
+    ; that slot could hand Agent_ChangeTarget an id the native kills the client on.
+    For $l_i_Index = 1 To $l_i_MaxAgents - 1
         ; Skip self if requested
         If $a_b_ExcludeSelf And $l_i_Index = $l_i_MyID Then ContinueLoop
 
@@ -111,7 +117,9 @@ Func Agent_TargetNearestAnimal($a_f_MaxDistance = 1300, $a_b_ExcludeSelf = True)
     Local $l_i_MyID = Agent_GetMyID()
     Local $l_i_MaxAgents = Agent_GetMaxAgents()
 
-    For $l_i_Index = 1 To $l_i_MaxAgents
+    ; MaxAgents is exclusive: ManagerFindAgent refuses id >= MaxAgents, so reading
+    ; that slot could hand Agent_ChangeTarget an id the native kills the client on.
+    For $l_i_Index = 1 To $l_i_MaxAgents - 1
         ; Skip self if requested
         If $a_b_ExcludeSelf And $l_i_Index = $l_i_MyID Then ContinueLoop
 
