@@ -280,13 +280,14 @@ Func Party_GetPetInfo($a_i_PetNumber = 1, $a_s_Info = "")
             Return Memory_Read($l_p_PetPtr + 0x4, "dword")
         Case "PetNamePtr"
             Return Memory_Read($l_p_PetPtr + 0x8, "ptr")
+        Case "PetNameEnc"
+            Local $l_p_NamePtr = Memory_Read($l_p_PetPtr + 0x8, "ptr")
+            If $l_p_NamePtr <= 0x10000 Then Return ""
+            Return Utils_DecodeEncString($l_p_NamePtr)
         Case "PetName"
             Local $l_p_NamePtr = Memory_Read($l_p_PetPtr + 0x8, "ptr")
-            If $l_p_NamePtr > 0x10000 Then
-                Return Memory_Read($l_p_NamePtr, "wchar[32]")
-            Else
-                Return "Unknown"
-            EndIf
+            If $l_p_NamePtr <= 0x10000 Then Return "Unknown"
+            Return Utils_DecodeEncStringAsync($l_p_NamePtr)
         Case "ModelFileID1"
             Return Memory_Read($l_p_PetPtr + 0xC, "dword")
         Case "ModelFileID2"
