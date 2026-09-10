@@ -993,9 +993,6 @@ Func Agent_GetNpcInfo($a_i_NpcIndex = 0, $a_s_Info = "")
 		Case "IsMinion"
 			Local $flags = Memory_Read($l_p_AgentPtr + 0x10, "dword")
             Return BitAND($flags, 0x100) <> 0
-		Case "IsPet"
-			Local $flags = Memory_Read($l_p_AgentPtr + 0x10, "dword")
-            Return BitAND($flags, 0xD) <> 0
 		Case "Level"
             Return Memory_Read($l_p_AgentPtr + 0x1C, "dword")
 		Case "NameEnc"
