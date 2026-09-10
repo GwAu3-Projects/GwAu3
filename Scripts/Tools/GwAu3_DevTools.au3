@@ -2198,7 +2198,7 @@ Func _GUI_Tab_DataFunctions()
             Log_Message("Scale: " & Agent_GetNpcInfo($modelID, "Scale") & ", Sex: " & Agent_GetNpcInfo($modelID, "Sex"), $c_UTILS_Msg_Type_Info, "DevTools")
             Log_Message("Primary: " & Agent_GetNpcInfo($modelID, "Primary") & ", Level: " & Agent_GetNpcInfo($modelID, "Level"), $c_UTILS_Msg_Type_Info, "DevTools")
             Log_Message("IsHenchman: " & Agent_GetNpcInfo($modelID, "IsHenchman") & ", IsHero: " & Agent_GetNpcInfo($modelID, "IsHero"), $c_UTILS_Msg_Type_Info, "DevTools")
-            Log_Message("IsSpirit: " & Agent_GetNpcInfo($modelID, "IsSpirit") & ", IsMinion: " & Agent_GetNpcInfo($modelID, "IsMinion") & ", IsPet: " & Agent_GetNpcInfo($modelID, "IsPet"), $c_UTILS_Msg_Type_Info, "DevTools")
+            Log_Message("IsSpirit: " & Agent_GetNpcInfo($modelID, "IsSpirit") & ", IsMinion: " & Agent_GetNpcInfo($modelID, "IsMinion") & ", IsPet: " & Party_IsPet($id), $c_UTILS_Msg_Type_Info, "DevTools")
         EndIf
 
         _ImGui_SameLine()

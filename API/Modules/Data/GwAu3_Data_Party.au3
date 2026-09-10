@@ -307,6 +307,32 @@ Func Party_GetPetInfo($a_i_PetNumber = 1, $a_s_Info = "")
             Return 0
     EndSwitch
 EndFunc
+
+;~ Description: Whether an agent is a charmed pet.
+Func Party_IsPet($a_v_AgentID)
+    Return Party_GetPetNumberByAgentID($a_v_AgentID) <> 0
+EndFunc
+
+;~ Description: The 1-based pet number for an agent, or 0 if that agent is not a pet.
+Func Party_GetPetNumberByAgentID($a_v_AgentID)
+    Local $l_i_AgentID = Agent_ConvertID($a_v_AgentID)
+    If $l_i_AgentID = 0 Then Return 0
+
+    Local $l_i_Count = World_GetWorldInfo("PetInfoArraySize")
+    If $l_i_Count <= 0 Then Return 0
+
+    For $i = 1 To $l_i_Count
+        If Party_GetPetInfo($i, "AgentID") = $l_i_AgentID Then Return $i
+    Next
+    Return 0
+EndFunc
+
+;~ Description: The owner of a pet agent, or 0 if that agent is not a pet.
+Func Party_GetPetOwnerByAgentID($a_v_AgentID)
+    Local $l_i_Number = Party_GetPetNumberByAgentID($a_v_AgentID)
+    If $l_i_Number = 0 Then Return 0
+    Return Party_GetPetInfo($l_i_Number, "OwnerAgentID")
+EndFunc
 #EndRegion Pet Related
 
 #Region Controlled Minion Related
