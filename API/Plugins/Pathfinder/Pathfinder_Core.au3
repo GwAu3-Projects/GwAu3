@@ -6,7 +6,7 @@
 
 Global $DLL_PATH = ""
 Global $g_hPathfinderDLL = 0  ; Handle to loaded DLL
-Global $g_bPathfinder_Debug = False  ; Debug logging (can be enabled from Pathfinder_Movements.au3)
+Global $g_bPathfinder_Debug = True  ; Debug logging (can be enabled from Pathfinder_Movements.au3)
 
 ; GitHub repository for maps releases (set this before calling Pathfinder_Initialize)
 Global $g_sPathfinder_MapsRepo = "GwAu3-Projects/GwPathfinder-Maps"
@@ -213,7 +213,7 @@ EndFunc
 ; Find a path with obstacle avoidance (Raw version - returns pointer)
 ; $aObstacles = 2D array [[x, y, radius], [x, y, radius], ...]
 ; $startLayer = layer of the starting point (-1 = auto-detect)
-Func Pathfinder_FindPathRaw($mapID, $startX, $startY, $startLayer, $destX, $destY, $destLayer = -1, $aObstacles = 0, $simplifyRange = 1250, $clearanceWeight = 0.0)
+Func Pathfinder_FindPathRaw($mapID, $instanceType, $startX, $startY, $startLayer, $destX, $destY, $destLayer = -1, $aObstacles = 0, $simplifyRange = 1250, $clearanceWeight = 0.0)
     ; Verify DLL is loaded
     If $g_hPathfinderDLL = 0 Or $g_hPathfinderDLL = -1 Then
         If $g_bPathfinder_Debug Then Out("[Pathfinder DLL] ERROR: DLL not loaded" & @CRLF)
@@ -251,6 +251,7 @@ Func Pathfinder_FindPathRaw($mapID, $startX, $startY, $startLayer, $destX, $dest
     ; Call FindPathWithObstacles
     Local $result = DllCall($g_hPathfinderDLL, "ptr:cdecl", "FindPathWithObstacles", _
         "int", $mapID, _
+        "int", $instanceType, _
         "float", $startX, _
         "float", $startY, _
         "int", $startLayer, _
@@ -272,8 +273,8 @@ EndFunc
 ; Find a path with obstacle avoidance (returns 2D array of coordinates)
 ; $aObstacles = 2D array [[x, y, radius], [x, y, radius], ...]
 ; $startLayer = layer of the starting point (-1 = auto-detect)
-Func Pathfinder_FindPath($mapID, $startX, $startY, $startLayer, $destX, $destY, $destLayer = -1, $aObstacles = 0, $simplifyRange = 1250, $clearanceWeight = 0.0)
-    Local $l_p_Result = Pathfinder_FindPathRaw($mapID, $startX, $startY, $startLayer, $destX, $destY, $destLayer, $aObstacles, $simplifyRange, $clearanceWeight)
+Func Pathfinder_FindPath($mapID, $instanceType, $startX, $startY, $startLayer, $destX, $destY, $destLayer = -1, $aObstacles = 0, $simplifyRange = 1250, $clearanceWeight = 0.0)
+    Local $l_p_Result = Pathfinder_FindPathRaw($mapID, $instanceType, $startX, $startY, $startLayer, $destX, $destY, $destLayer, $aObstacles, $simplifyRange, $clearanceWeight)
 
     If $l_p_Result = 0 Then
         If $g_bPathfinder_Debug Then Out("[Pathfinder DLL] ERROR: DllCall returned null pointer" & @CRLF)
@@ -322,9 +323,9 @@ Func Pathfinder_FindPath($mapID, $startX, $startY, $startLayer, $destX, $destY, 
     Return $a_Path
 EndFunc
 
-Func Pathfinder_IsMapAvailable($mapID)
+Func Pathfinder_IsMapAvailable($mapID, $instanceType = -1)
     If $g_hPathfinderDLL = 0 Or $g_hPathfinderDLL = -1 Then Return False
-    Local $result = DllCall($g_hPathfinderDLL, "int:cdecl", "IsMapAvailable", "int", $mapID)
+    Local $result = DllCall($g_hPathfinderDLL, "int:cdecl", "IsMapAvailable", "int", $mapID, "int", $instanceType)
     If @error Then Return False
     Return $result[0] = 1
 EndFunc
@@ -357,10 +358,10 @@ Func Pathfinder_GetAvailableMaps()
     Return $mapIds
 EndFunc
 
-Func Pathfinder_GetMapStats($mapID)
+Func Pathfinder_GetMapStats($mapID, $instanceType = -1)
     If $g_hPathfinderDLL = 0 Or $g_hPathfinderDLL = -1 Then Return SetError(1, 0, 0)
 
-    Local $result = DllCall($g_hPathfinderDLL, "ptr:cdecl", "GetMapStats", "int", $mapID)
+    Local $result = DllCall($g_hPathfinderDLL, "ptr:cdecl", "GetMapStats", "int", $mapID, "int", $instanceType)
     If @error Or $result[0] = 0 Then
         Return SetError(1, 0, 0)
     EndIf
