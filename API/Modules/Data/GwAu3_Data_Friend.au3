@@ -50,11 +50,11 @@ Func Friend_GetFriendInfo($a_v_FriendIdentifier = "", $a_s_Info = "")
     Else
         ; Find by name
         For $l_i_Idx = 1 To $l_i_TotalFriends
-            Local $l_ai_Offset[3] = [0, 0x4 * $l_i_Idx, 0x2C]
+            Local $l_ai_Offset[3] = [0, 0x4 * $l_i_Idx, 0x40]
             Local $l_av_NameResult = Memory_ReadPtr($g_p_FriendList, $l_ai_Offset, 'WCHAR[20]')
             If $l_av_NameResult[1] = $a_v_FriendIdentifier Then
                 $l_i_FriendNumber = $l_i_Idx
-                $l_p_FriendPtr = $l_av_NameResult[0] - 0x2C
+                $l_p_FriendPtr = $l_av_NameResult[0] - 0x40
                 ExitLoop
             EndIf
         Next
@@ -91,13 +91,13 @@ Func Friend_GetFriendInfo($a_v_FriendIdentifier = "", $a_s_Info = "")
             Return Memory_Read($l_p_FriendPtr + 0x18, 'wchar[20]')
 
         Case "ConnectedName", "CharName", "Playing"
-            Return Memory_Read($l_p_FriendPtr + 0x2C, 'wchar[20]')
+            Return Memory_Read($l_p_FriendPtr + 0x40, 'wchar[20]')
 
         Case "FriendID"
-            Return Memory_Read($l_p_FriendPtr + 0x40, "dword")
+            Return Memory_Read($l_p_FriendPtr + 0x68, "dword")
 
         Case "MapID", "ZoneID"
-            Return Memory_Read($l_p_FriendPtr + 0x44, "dword")
+            Return Memory_Read($l_p_FriendPtr + 0x6C, "dword")
 
         Case "TypeName"
             Local $l_i_Type = Memory_Read($l_p_FriendPtr + 0x0, "dword")
