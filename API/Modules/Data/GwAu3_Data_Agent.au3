@@ -1370,3 +1370,56 @@ Func GetAgentsFromXY($aX, $aY, $aRange = 1320, $aType = 0, $aReturnMode = 0, $aC
 			Return $lClosestDistance
 	EndSwitch
 EndFunc
+
+; Returns the closest coordinates on a circle within a given radius of an agent
+Func Agent_GetClosestXYinRange($aDistance, $aAgent, $sectors = 100)
+	Local $ClosestXY[2]
+	Local $lNearestDistance = 10000
+	If $aAgent = 0 Then Return
+	Local $coords = Agent_GetAllXYinRange($aDistance, $aAgent, $sectors)    ; divides circle into sectors
+
+	For $i = 0 To UBound($coords) - 1    ; Find coords closest to me
+		$Distance = Agent_GetDistanceToXY($coords[$i][0], $coords[$i][1], $aAgent)
+		If $Distance < $lNearestDistance Then
+			$lNearestDistance = $Distance
+			$ClosestXY[0] = $coords[$i][0]    ; select closest X but some degrees off axis
+			$ClosestXY[1] = $coords[$i][1]    ; select closest Y but some degrees off axis
+			;			Out($i & ", " & Floor($Distance) & ", " & Floor($ClosestXY[0]) & ", " & Floor($ClosestXY[1]))
+		EndIf
+	Next
+	Return $ClosestXY
+EndFunc   ;==>GetClosestXYinRangeOfAgent
+
+; Returns the closest coordinates to a wayppoint on a circle within a given radius of an agent
+Func Agent_GetClosestXYtoWaypointInRange($x, $y, $aDistance, $aAgent = -2, $sectors = 100)
+	Local $ClosestXY[2]
+	Local $lNearestDistance = 10000
+	If $aAgent = 0 Then Return
+	Local $coords = Agent_GetAllXYinRange($aDistance, $aAgent, $sectors)    ; divides circle into sectors
+
+	For $i = 0 To UBound($coords) - 1    ; Find coords closest to waypoint
+		$Distance = Agent_GetDistanceToXY($coords[$i][0], $coords[$i][1], $aAgent)
+		If $Distance < $lNearestDistance Then
+			$lNearestDistance = $Distance
+			$ClosestXY[0] = $coords[$i][0]
+			$ClosestXY[1] = $coords[$i][1]
+			;			Out($i & ", " & Floor($Distance) & ", " & Floor($ClosestXY[0]) & ", " & Floor($ClosestXY[1]))
+		EndIf
+	Next
+	Return $ClosestXY
+EndFunc   ;==>GetClosestXYtoWaypointInRangeofAgent
+
+; Returns an array of all coordinates equidistance to an agent assuming a given number of sectors for that circle
+Func Agent_GetAllXYinRange($aDistance, $aAgent, $sectors = 360)
+	Local $coords[2] = [0, 0]
+	If $aAgent = 0 Then Return
+	$ClosestLocation = 10000
+	ReDim $coords[$sectors][2]
+	For $i = 0 To $sectors - 1
+		$radian = 2 * 3.141592653589 * ($i / $sectors)
+		$coords[$i][0] = ($aDistance * Cos($radian)) + Agent_X($aAgent)
+		$coords[$i][1] = ($aDistance * Sin($radian)) + Agent_Y($aAgent)
+		;Out("Closest :  ," & Floor($Coords[$i][0]) & ", " & Floor($Coords[$i][1]))
+	Next
+	Return $coords
+EndFunc   ;==>GetAllXYinRangeOfAgent

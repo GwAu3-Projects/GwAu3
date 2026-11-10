@@ -1,6 +1,6 @@
 #include-once
 
-;~ Description: Internal use for BuyItem()
+;~ Description: Internal use for Merchant_BuyItem()
 Func Merchant_GetMerchantItemsBase()
     Local $l_ai_Offset[4] = [0, 0x18, 0x2C, 0x24]
     Local $l_av_Return = Memory_ReadPtr($g_p_BasePointer, $l_ai_Offset)
@@ -477,3 +477,48 @@ Func Merchant_CollectorExchange($a_i_ItemRecvModelID, $a_i_ExchangeReq, $a_i_Ite
     Core_Enqueue($s_p_CollectorExchangeStructPtr, 12 + 8 * $l_i_ExchangeIdx)
     Return True
 EndFunc
+
+;~ Description: Buys an ID kit.
+Func Merchant_BuyIDKit()
+	Merchant_BuyItem(5, 1, 100)
+EndFunc   ;==>BuyIDKit
+
+;~ Description: Buys a superior ID kit.
+Func Merchant_BuySuperiorIDKit()
+	Merchant_BuyItem(6, 1, 500)
+EndFunc   ;==>BuySuperiorIDKit
+
+;~ Description: Checks remaining uses for both ID and Salvage kits simultaneously, purchasing replacements if either falls below the minimum threshold.
+Func Merchant_RefillKits ($a_i_MinUses = 50, $a_b_CheapSalvage = False)
+	; Count uses for both kit types
+	Local $l_hIDKit = Item_CountRemainingKitUses("ID", False)
+	Local $l_iIDUses = @Extended
+
+	Local $l_hSalvageKit = Item_CountRemainingKitUses("Salvage", $a_b_CheapSalvage)
+	Local $l_iSalvageUses = @Extended
+
+	Local $l_bPurchased = False
+
+	; Check and replenish ID Kit if low or missing
+	If $l_hIDKit = 0 Or $l_iIDUses < $a_i_MinUses Then
+		Out("ID Kit uses low (" & $l_iIDUses & ") or missing. Purchasing Superior ID Kit...")
+		Merchant_BuySuperiorIDKit()
+		$l_bPurchased = True
+	EndIf
+
+	; Check and replenish Salvage Kit if low or missing
+	If $l_hSalvageKit = 0 Or $l_iSalvageUses < $a_i_MinUses Then
+		Out("Salvage Kit uses low (" & $l_iSalvageUses & ") or missing. Purchasing new Salvage Kit...")
+		Merchant_BuyItem(4, 1, 2000) ; Adjust item index/model and cost as configured for your merchant
+		$l_bPurchased = True
+	EndIf
+
+	; Brief pause if any purchases were made to let inventory sync
+	If $l_bPurchased Then
+		Other_PingSleep(500)
+	EndIf
+
+	; Return the updated handles as an array [IDKitPtr, SalvageKitPtr]
+	Local $l_aKits[2] = [Item_CountRemainingKitUses("ID", False), Item_CountRemainingKitUses("Salvage", $a_b_CheapSalvage)]
+	Return $l_aKits
+EndFunc   ;==>Merchant_RefillKits

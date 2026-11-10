@@ -46,4 +46,68 @@ Func Title_GetTitleInfo($a_i_Title = 0, $a_s_Info = "")
 
     Return 0
 EndFunc
+
+
+;~ Description: Universal title progress getter using title name and info parameter.
+Func GetTitleProgress($sTitleName, $sInfo = "CurrentPoints")
+    Local $iTitleIndex = -1
+
+    Switch Lower($sTitleName)
+        Case "Hero"
+            $iTitleIndex = 0
+        Case "Gladiator"
+            $iTitleIndex = 1
+        Case "Codex"
+            $iTitleIndex = 2
+        Case "Kurzick"
+            $iTitleIndex = 3
+        Case "Luxon"
+            $iTitleIndex = 4
+        Case "Drunkard"
+            $iTitleIndex = 5
+        Case "Survivor"
+            $iTitleIndex = 6
+        Case "Maxtitles", "max titles"
+            $iTitleIndex = 7
+        Case "Lucky"
+            $iTitleIndex = 8
+        Case "Unlucky"
+            $iTitleIndex = 9
+        Case "Sunspear"
+            $iTitleIndex = 10
+        Case "Lightbringer"
+            $iTitleIndex = 11
+        Case "Commander"
+            $iTitleIndex = 12
+        Case "Gamer"
+            $iTitleIndex = 13
+        Case "LegendaryGuardian"
+            $iTitleIndex = 14
+        Case "Sweets"
+            $iTitleIndex = 15
+        Case "Asura"
+            $iTitleIndex = 16
+        Case "Deldrimor"
+            $iTitleIndex = 17
+        Case "Vanguard"
+            $iTitleIndex = 18
+        Case "Norn"
+            $iTitleIndex = 19
+        Case "NorthMastery"
+            $iTitleIndex = 20
+        Case "Party"
+            $iTitleIndex = 21
+        Case "Zaishen"
+            $iTitleIndex = 22
+        Case "TreasureHunter"
+            $iTitleIndex = 23
+        Case "Wisdom"
+            $iTitleIndex = 24
+        Case Else
+            Return 0
+    EndSwitch
+
+    Return Title_GetTitleInfo($iTitleIndex, $sInfo)
+EndFunc   ;==>GetTitleProgress
+
 #EndRegion Title Related

@@ -28,6 +28,8 @@ For $i = 1 To $CmdLine[0]
     EndIf
 Next
 
+GUI_Create()
+
 #Region ### START Koda GUI section ### Form=
 $MainGui = GUICreate($BotTitle, 500, 350, -1, -1, -1, BitOR($WS_EX_TOPMOST,$WS_EX_WINDOWEDGE))
 GUISetBkColor(0xEAEAEA, $MainGui)

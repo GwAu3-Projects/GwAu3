@@ -61,17 +61,19 @@ Func Map_TravelGH($a_WaitToLoad = True)
     Local $l_ai_Offset[3] = [0, 0x18, 0x3C]
     Local $l_ap_GH = Memory_ReadPtr($g_p_BasePointer, $l_ai_Offset)
 
+	If Map_GetAreaInfo(Map_GetMapID(), "IsGuildHall") Then Return True
+
 	Map_InitMapIsLoaded()
-    Core_SendPacket(0x18, $GC_I_HEADER_PARTY_ENTER_GUILD_HALL, Memory_Read($l_ap_GH[1] + 0x64), Memory_Read($l_ap_GH[1] + 0x68), Memory_Read($l_ap_GH[1] + 0x6C), Memory_Read($l_ap_GH[1] + 0x70), 1)
-    If $a_WaitToLoad Then Return Map_WaitMapIsLoaded()
-EndFunc   ;==>TravelGH
+	Core_SendPacket(0x18, $GC_I_HEADER_PARTY_ENTER_GUILD_HALL, Memory_Read($l_ap_GH[1] + 0x64), Memory_Read($l_ap_GH[1] + 0x68), Memory_Read($l_ap_GH[1] + 0x6C), Memory_Read($l_ap_GH[1] + 0x70), 1)
+	If $a_WaitToLoad Then Return Map_WaitMapIsLoaded()
+EndFunc   ;==>Map_TravelGH
 
 ;~ Description: Leave your guild hall.
 Func Map_LeaveGH($a_WaitToLoad = True)
 	Map_InitMapIsLoaded()
     Core_SendPacket(0x8, $GC_I_HEADER_PARTY_LEAVE_GUILD_HALL, 1)
     If $a_WaitToLoad Then Return Map_WaitMapIsLoaded()
-EndFunc   ;==>LeaveGH
+EndFunc   ;==>Map_LeaveGH
 
 ;~ Description: Map travel to an outpost.
 Func Map_TravelTo($a_i_MapID, $a_i_Language = Map_GetCharacterInfo("Language"), $a_i_Region = Map_GetCharacterInfo("Region"), $a_i_District = 0, $a_WaitToLoad = True)
@@ -84,7 +86,7 @@ Func Map_TravelTo($a_i_MapID, $a_i_Language = Map_GetCharacterInfo("Language"), 
 	Map_InitMapIsLoaded()
     Map_MoveMap($a_i_MapID, $a_i_Region, $a_i_District, $a_i_Language)
     If $a_WaitToLoad Then Return Map_WaitMapIsLoaded()
-EndFunc   ;==>TravelTo
+EndFunc   ;==>Map_TravelTo
 
 ;~ Description: Travel to a map in a random district
 ;~ Modes: 0 = All, 1 = EU-only, 2 = US-only, 3 = Asia-only
@@ -193,7 +195,7 @@ Func Map_WaitMapIsLoaded_Ping($a_i_Timeout = 30000)
         Sleep(50)
         $l_b_TimedOut = (TimerDiff($l_h_Timeout) >= $a_i_Timeout)
     Until (Memory_Read($g_p_MapIsLoaded) = 1 And Other_GetPing() <> 0) Or $l_b_TimedOut
-    
+
     Map_InitMapIsLoaded()
 
     Return Not $l_b_TimedOut
