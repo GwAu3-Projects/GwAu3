@@ -18,7 +18,7 @@ Func Item_GetInventoryInfo($a_s_Info = "")
     If $l_p_Ptr = 0 Or $a_s_Info = "" Then Return 0
 
     Switch $a_s_Info
-
+        
         Case "BackpackPtr", "Backpack"
             Return Memory_Read($l_p_Ptr + 0x04, "ptr")
         Case "BeltPouchPtr", "BeltPouch"
@@ -64,7 +64,7 @@ Func Item_GetInventoryInfo($a_s_Info = "")
         Case "Storage14Ptr", "Storage14"
             Return Memory_Read($l_p_Ptr + 0x54, "ptr")
         Case "EquippedItemsPtr", "EquippedItems"
-            Return Memory_Read($l_p_Ptr + 0x58, "ptr")
+            Return Memory_Read($l_p_Ptr + 0x58, "ptr")        
 
         Case "BundlePtr" ;<-- Item struct
             Return Memory_Read($l_p_Ptr + 0x5C, "ptr")
@@ -153,7 +153,7 @@ Func Item_GetInventoryInfo($a_s_Info = "")
             Return Memory_Read($l_p_Ptr + 0x90, "long")
         Case "GoldStorage"
             Return Memory_Read($l_p_Ptr + 0x94, "long")
-
+        
     EndSwitch
 
     Return 0
@@ -212,15 +212,6 @@ Func Item_GetBagInfo($a_v_BagNumber, $a_s_Info = "")
     EndSwitch
 
     Return 0
-EndFunc
-
-Func Item_CountEmptySlots($l_i_BagList)
-    Local $iTotalFree = 0
-    For $i = 0 To UBound($l_i_BagList) - 1
-        Local $l_i_Bag = $l_i_BagList[$i]
-        $iTotalFree += Item_GetBagInfo($l_i_Bag, "EmptySlots")
-    Next
-    Return $iTotalFree
 EndFunc
 
 Func Item_GetBagsItembyModelID($a_i_ModelID)
@@ -952,89 +943,5 @@ Func Item_GetHeroEquippedItemPtr($a_i_HeroNumber, $a_i_EquipmentSlot)
 
     Return SetError(4, 0, 0)
 EndFunc   ;==>GetHeroEquippedItemPtr
-
-;~ If $a_b_Cheap is set to True, expensive kits (Superior ID, Expert/Perfect Salvage) are skipped.
-Func Item_CountRemainingKitUses($a_s_KitType, $a_b_Cheap = False)
-	Local $lItemPtr, $lValue, $lModelID, $lBagPtr, $lKitPtr = 0, $lUses = 0
-
-	For $bag = 1 To 4
-		$lBagPtr = Item_GetBagPtr($bag)
-		If $lBagPtr = 0 Then ContinueLoop
-
-		For $slot = 1 To Item_GetBagInfo($bag, "Size")
-			$lItemPtr = Item_GetItemBySlot($bag, $slot)
-			If $lItemPtr = 0 Then ContinueLoop
-
-			$lValue = Item_GetItemInfo($lItemPtr, "Value")
-			$lModelID = Item_GetItemInfo($lItemPtr, "ModelID")
-
-			Switch $a_s_KitType
-				Case "ID"
-					Switch $lModelID
-						Case 2989 ; Identification Kit (Standard)
-							If $lUses < 101 Then
-								$lUses += $lValue / 2
-								$lKitPtr = $lItemPtr
-							EndIf
-						Case 5899 ; Superior Identification Kit (Expensive)
-							If Not $a_b_Cheap Then
-								If $lUses < 101 Then
-									$lUses += $lValue / 2.5
-									$lKitPtr = $lItemPtr
-								EndIf
-							EndIf
-					EndSwitch
-
-				Case "Salvage"
-					Switch $lModelID
-						Case 2991 ; Expert Salvage Kit (Expensive)
-							If Not $a_b_Cheap Then
-								If $lUses < 101 Then
-									$lUses += $lValue / 8
-									$lKitPtr = $lItemPtr
-								EndIf
-							EndIf
-						Case 2992 ; Salvage Kit (Standard)
-							If $lUses < 101 Then
-								$lUses += $lValue / 2
-								$lKitPtr = $lItemPtr
-							EndIf
-						Case 5900 ; Perfect / Charr Salvage Kit (Expensive)
-							If Not $a_b_Cheap Then
-								If $lUses < 101 Then
-									$lUses += $lValue / 10
-									$lKitPtr = $lItemPtr
-								EndIf
-							EndIf
-					EndSwitch
-
-				Case "CheapSalvage"
-					Switch $lModelID
-						Case 2992 ; Standard Salvage Kit
-							If $lUses < 101 Then
-								$lUses += $lValue / 2
-								$lKitPtr = $lItemPtr
-							EndIf
-					EndSwitch
-			EndSwitch
-		Next
-	Next
-
-	Return SetExtended($lUses, $lKitPtr)
-EndFunc   ;==>Item_CountRemainingKitUses
-
-;~ Description: Returns amount of gold in storage.
-Func Item_GetGoldStorage()
-	Local $lOffset[5] = [0, 0x18, 0x40, 0xF8, 0x94]
-	Local $lReturn = Memory_ReadPtr($g_p_BasePointer, $lOffset)
-	Return $lReturn[1]
-EndFunc   ;==>GetGoldStorage
-
-;~ Description: Returns amount of gold being carried.
-Func Item_GetGoldCharacter()
-	Local $lOffset[5] = [0, 0x18, 0x40, 0xF8, 0x90]
-	Local $lReturn = Memory_ReadPtr($g_p_BasePointer, $lOffset)
-	Return $lReturn[1]
-EndFunc   ;==>GetGoldCharacter
 
 #EndRegion Item Context

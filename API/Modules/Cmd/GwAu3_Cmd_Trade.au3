@@ -38,7 +38,7 @@ EndFunc
 ;~ Description: Retrieves the PlayerNumber of the last player that initiated a trade
 Func Trade_GetTradePartner()
     Local $l_i_TradePartner = Memory_Read($g_p_TradePartner)
-    If $l_i_TradePartner <> 0 Then
+    If $l_i_TradePartner <> 0 Then 
         Memory_Write($g_p_TradePartner, 0)
         Return $l_i_TradePartner
     EndIf
@@ -139,6 +139,4 @@ Func Trade_RevokeAccept()
     Local $l_b_Result = Trade_CallSession('TradeSessRevokeConfirm')
     Return SetError(@error, 0, $l_b_Result)
 EndFunc
-
-
 #EndRegion Trade Session Natives
