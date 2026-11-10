@@ -12,7 +12,7 @@ Func Cinematic_WaitCinematic($a_i_Timeout = 15000, $a_i_SkipAttempts = 5, $a_b_C
         While Not Game_GetGameInfo("IsCinematic")
             If TimerDiff($l_h_Timeout) > $a_i_Timeout Then Return SetError(1, 0, False)
             Sleep(50)
-        WEnd
+        WEnd 
 
         Other_PingSleep(1500)
 
@@ -34,21 +34,3 @@ Func Cinematic_WaitCinematic($a_i_Timeout = 15000, $a_i_SkipAttempts = 5, $a_b_C
 
     Return True
 EndFunc
-
-Func Cinematic_DetectSkipCinematics()
-    $lTypeMap = Game_GetGameInfo("IsCinematic")
-    If Not Game_GetGameInfo("IsCinematic") Then Return False
-	Do
-		Sleep(200)
-	Until Game_GetGameInfo("IsCinematic")
-    Out("Cinematic detected, skipping!")
-    Cinematic_SkipCinematic()
-	Out("Skipped cinematic")
-	Return True
-EndFunc   ;==>ConditionalSkipCinematic
-
-;Description: Returns true if theres a cinematic played that can be skipped.
-Func Cinematic_ConditionalSkipCinematic()
-	If Game_GetGameInfo("IsCinematic") Then Sleep(2000)
-	Return Cinematic_SkipCinematic()
-EndFunc   ;==>ConditionalSkipCinematic
