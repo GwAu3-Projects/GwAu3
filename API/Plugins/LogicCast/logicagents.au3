@@ -444,7 +444,7 @@ Func Agent_GetHeroProfession($aHeroNumber, $aSecondary = False)
 EndFunc
 
 Func GetPartyHealth()
-	Local $iSize = GetPartySize()
+	Local $iSize = Party_GetSize()
 	If $iSize = 0 Then Return 0
 	Local $fSum = 0
 	For $i = 0 To $iSize - 1
@@ -467,24 +467,6 @@ Func Agent_GetByPlayerNumber($aPlayerNumber, $aRange = 5000)
 		EndIf
 	Next
 	Return 0
-EndFunc
-
-Func Agent_GetNearestNPCToXY($x = 0, $y = 0, $aPlayerNumber = 0)
-	; Simplified: nearest non-enemy, non-player agent near XY
-	Local $aAgents = Agent_GetAgentArray(0xDB)
-	Local $iBest = 0, $iMin = 999999
-	For $i = 1 To UBound($aAgents) - 1
-		Local $iID = Agent_GetAgentInfo($aAgents[$i], "ID")
-		Local $iAlleg = Agent_GetAgentInfo($iID, "Allegiance")
-		If $iAlleg <> 3 And $iAlleg <> 1 Then
-			Local $iD = Agent_GetDistanceToXY($x, $y, $iID)
-			If $iD < $iMin Then
-				$iMin = $iD
-				$iBest = $iID
-			EndIf
-		EndIf
-	Next
-	Return $iBest
 EndFunc
 
 Func Agent_GetNearestSignpostToXY($x, $y)

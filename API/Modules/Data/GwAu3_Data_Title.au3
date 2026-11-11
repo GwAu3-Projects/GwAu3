@@ -52,7 +52,7 @@ EndFunc
 Func GetTitleProgress($sTitleName, $sInfo = "CurrentPoints")
     Local $iTitleIndex = -1
 
-    Switch Lower($sTitleName)
+    Switch $sTitleName
         Case "Hero"
             $iTitleIndex = 0
         Case "Gladiator"

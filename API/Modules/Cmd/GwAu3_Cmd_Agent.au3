@@ -188,7 +188,7 @@ Func Agent_GoToNPC($npc = Agent_GetNearestNPC(-2), $Interact = True)
 EndFunc   ;==>GoToNPC
 
 ;~ Description: Go to NPC until you are within actionable distance and interact with them
-Func GoToPlayer($Player = GetNearestAgentPtr(-2), $Interact = True)
+Func Agent_GoToPlayer($Player = GetNearestAgentPtr(-2), $Interact = True)
 	Local $lBlocked = 0
 	Local $lMapLoading = Map_GetInstanceInfo("Type"), $lMapLoadingOld
 	Do
@@ -200,15 +200,10 @@ Func GoToPlayer($Player = GetNearestAgentPtr(-2), $Interact = True)
 	If $Interact Then GoPlayer($Player)
 EndFunc   ;==>GoToNPC
 
-
 ; Finds NPC nearest given coords and PlayerID and talks to him/her
-Func Agent_GoToNPCNearXY($x, $y, $aPlayerID = 0, $Interact = True) ; $dialog)
-	If $aPlayerID <> 0 Then
-		$npc = GetAgentPtrByPlayerNumber($aPlayerID)
-	Else
-		$npc = Agent_GetNearestNPCToXY($x, $y)
-	EndIf
-	Agent_GoToNPC($npc, $Interact)
+Func Agent_GoToNPCNearXY($a_f_X, $a_f_Y, $a_i_PlayerNumber = 0, $Interact = True) ; $dialog)
+	$l_p_npc = Agent_GetNearestNPCtoXY($a_f_X, $a_f_Y, $a_i_PlayerNumber = 0)
+	Agent_GoToNPC($l_p_npc, $Interact)
 EndFunc   ;==>GoToNPCNearXY
 
 ;~ Description: Run to a signpost.
@@ -217,15 +212,15 @@ Func Agent_GoSignpost($a_v_Agent)
 EndFunc   ;==>GoSignpost
 
 ; Move to certain distance away from an agent at a given angle
+;~ Description: Moves to a position at a specified distance away from a target agent, logging profession and name directly inline.
 Func Agent_MoveToDistanceAway($aDistance, $aAgent, $aRandom = 10)
 	If $aAgent = 0 Or Agent_GetAgentInfo(-2, "IsDead") Then Return
-	Out("Going to Agent " & Memory_Read($aAgent + 244, 'word'))
+	Out("Going to Agent: " & Agent_GetAgentInfo($aAgent, "Profession") & " " & Agent_GetAgentInfo($aAgent, "Name"))
 	Local $ClosestXY[2]
 	$ClosestXY = Agent_GetClosestXYinRange($aDistance, $aAgent)
 	Out("Move to (" & Floor($ClosestXY[0]) & ", " & Floor($ClosestXY[1]) & ")")
 	Agent_MoveToXY($ClosestXY[0], $ClosestXY[1], $aRandom)
 	Out("New distance to target: " & Floor(Agent_GetDistance($aAgent, -2)))
-
 EndFunc   ;==>Agent_MoveToDistanceAway
 
 ;~ Description: Move to signpost until you are within actionable distance and interect with it.
@@ -253,18 +248,18 @@ Func Agent_MoveToXY($aX, $aY, $aRandom = 50)
 	Local $lDestX = $aX + Random(-$aRandom, $aRandom)
 	Local $lDestY = $aY + Random(-$aRandom, $aRandom)
 
-	Player_Move($lDestX, $lDestY, 0)
+	Map_Move($lDestX, $lDestY, 0)
 	Do
 		If Cinematic_DetectSkipCinematics() Then ExitLoop
 		$lMapLoadingOld = $lMapLoading
 		$lMapLoading = Map_GetInstanceInfo("Type")
 		If $lMapLoading <> $lMapLoadingOld Then ExitLoop
 		Cinematic_ConditionalSkipCinematic()
-		If Player_MoveX(-2) == 0 And Player_MoveY(-2) == 0 Then
+		If Agent_GetAgentInfo(-2, "MoveX") == 0 And Agent_GetAgentInfo(-2, "MoveY") == 0 Then
 			$lBlocked += 1
 			$lDestX = $aX + Random(-$aRandom, $aRandom)
 			$lDestY = $aY + Random(-$aRandom, $aRandom)
-			Player_Move($lDestX, $lDestY, 0)
+			Map_Move($lDestX, $lDestY, 0)
 		EndIf
 		Sleep(100)
 	Until Agent_GetDistanceToXY($lDestX, $lDestY) < 25 Or $lBlocked > 14

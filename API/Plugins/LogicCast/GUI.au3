@@ -299,7 +299,7 @@ EndFunc
 
 #Region Events
 Func GUI_onExit()
-	Local $AgentName = MemoryRead($mCharname, 'wchar[30]')
+	Local $AgentName = Memory_Read($mCharname, 'wchar[30]')
 	WinSetTitle($mGWWindowHandle, '', 'Guild Wars')
 	WinSetState(GetWindowHandle(), "", @SW_SHOW)
 	Exit

@@ -210,7 +210,7 @@ Func SpellActivation($aCasterID, $aTargetID, $aSkillID, $aActivation)
 	$RuptTimer = TimerInit()
 	Local $Blocked = 0
 	Local $lCasterPtr = Agent_GetAgentPtr($aCasterID), $lTargetPtr = Agent_GetAgentPtr($aTargetID), $lSkillPtr = Skill_GetSkillPtr($aSkillID)
-	If Map_GetInstanceInfo("Type") <> $Map_Explorable Or Agent_GetAgentInfo(-2, "Dead") Or Agent_GetAgentInfo(-2, "Knocked") Or Agent_GetAgentInfo(-2, "IsCasting") Then Return
+	If Map_GetInstanceInfo("Type") <> $Map_Explorable Or Agent_GetAgentInfo(-2, "IsDead") Or Agent_GetAgentInfo(-2, "Knocked") Or Agent_GetAgentInfo(-2, "IsCasting") Then Return
 
 ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>		Rupt and Cancel Skill to avoid Rupt		<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 	;~ For cancel casting
@@ -454,7 +454,7 @@ Func AttackActivation($aCasterID, $aTargetID, $aSkillID, $lActivation)
 	$RuptTimer = TimerInit()
 	Local $Blocked = 0
 	Local $lCasterPtr = Agent_GetAgentPtr($aCasterID), $lTargetPtr = Agent_GetAgentPtr($aTargetID), $lSkillPtr = Skill_GetSkillPtr($aSkillID)
-	If Map_GetInstanceInfo("Type") <> $Map_Explorable Or Agent_GetAgentInfo(-2, "Dead") Or Agent_GetAgentInfo(-2, "Knocked") Or Agent_GetAgentInfo(-2, "IsCasting") Then Return
+	If Map_GetInstanceInfo("Type") <> $Map_Explorable Or Agent_GetAgentInfo(-2, "IsDead") Or Agent_GetAgentInfo(-2, "Knocked") Or Agent_GetAgentInfo(-2, "IsCasting") Then Return
 
 ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>		Rupt and Cancel Skill to avoid Rupt		<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 	;~ For cancel casting
@@ -669,7 +669,8 @@ Func Fight($x, $y, $aAggroRange = 1320, $careful = False, $aMaxDistanceToXY = 50
 ; REVIEW: GwAu3 equivalent is UAI_Fight(). Call this one when you want the Logic interrupt path.
 	Out("Fighting enemies")
 	Local $TimerToGetOut = TimerInit()
-	SetEvent("SpellActivation", "AttackActivation", "", "", "", "") ; only active during fight to avoid crashes
+	; SetEvent("SpellActivation", "AttackActivation", "", "", "", "") ; only active during fight to avoid crashes
+
 	Do
 		If CanAttack($aAggroRange) Then
 			CallTarget($BestTargetPtr)
@@ -683,7 +684,7 @@ Func Fight($x, $y, $aAggroRange = 1320, $careful = False, $aMaxDistanceToXY = 50
 		EndIf
 		UseSkills($x, $y, $aAggroRange, $all, $aMaxDistanceToXY, $aAgent)
 	Until Agent_NoEnemiesAround($aAggroRange) Or TimerDiff($TimerToGetOut) > 240000 ;UseSkills($x, $y, $aAggroRange, $all, $aMaxDistanceToXY, $aAgent) = False Or TimerDiff($TimerToGetOut) > 240000
-	SetEvent("", "", "", "", "", "")
+	; SetEvent("", "", "", "", "", "")
 EndFunc   ;==>Fight
 
 ;~ Use this function to cast all of your skills  or skills of a certain type.
@@ -691,13 +692,12 @@ EndFunc   ;==>Fight
 Func UseSkills($x, $y, $aAggroRange = 1320, $skilltype = $all, $aMaxDistanceToXY = 5000, $aAgent = 0)
 ; REVIEW: GwAu3 equivalent is UAI_UseSkills() / UAI_TryUseSkill(). This version walks $SkillBarCache.
 	For $aSkillSlot In $Skillbar
-		If Agent_GetAgentInfo(-2, "Dead") Or Map_GetInstanceInfo("Type") == 2 Then Return False
-		If Memory_Read($BestTargetPtr + 433, "byte") = 3 And Agent_GetAgentInfo($BestTargetPtr, "Dead") Then Return False
+		If Agent_GetAgentInfo(-2, "IsDead") Or Map_GetInstanceInfo("Type") == 2 Then Return False
+		If Agent_GetAgentInfo($BestTargetPtr, "Allegiance") = 3 And Agent_GetAgentInfo($BestTargetPtr, "IsDead") Then Return False
+		UpdateAndDispatchCasts()
 		If Agent_NoEnemiesAround($aAggroRange) Then Return False
 		If $SkillBarCache[$aSkillSlot][$skilltype] = "" Then ContinueLoop
-		If CanUse($aSkillSlot, $aAggroRange) Then
-			Skill_UseSkill($aSkillSlot, $BestTargetPtr)
-		EndIf
+		If CanUse($aSkillSlot, $aAggroRange) Then Skill_UseSkill($aSkillSlot, $BestTargetPtr)
 
 		If $aSkillSlot = 8 Then
 			If $aAgent <> 0 Then
@@ -733,8 +733,8 @@ EndFunc
 
 Func UseUnfightSkills($x, $y, $aAggroRange = 1320, $skilltype = $all, $aMaxDistanceToXY = 5000, $aAgent = 0)
 	For $aSkillSlot In $Skillbar
-		If Agent_GetAgentInfo(-2, "Dead") Or Map_GetInstanceInfo("Type") == 2 Then Return False
-		If Memory_Read($BestTargetPtr + 433, "byte") = 3 And Agent_GetAgentInfo($BestTargetPtr, "Dead") Then Return False
+		If Agent_GetAgentInfo(-2, "IsDead") Or Map_GetInstanceInfo("Type") == 2 Then Return False
+		If Memory_Read($BestTargetPtr + 433, "byte") = 3 And Agent_GetAgentInfo($BestTargetPtr, "IsDead") Then Return False
 		If $SkillBarCache[$aSkillSlot][$skilltype] = "" Then ContinueLoop
 		If CanUse($aSkillSlot, $aAggroRange) Then
 			Skill_UseSkill($aSkillSlot, $BestTargetPtr)
@@ -754,7 +754,7 @@ EndFunc   ;==>UseSkills
 
 Func SkillCancel($aCasterID, $aTargetID, $aSkillID)
 	Local $lCasterPtr = Agent_GetAgentPtr($aCasterID), $lTargetPtr = Agent_GetAgentPtr($aTargetID), $lSkillPtr = Skill_GetSkillPtr($aSkillID)
-	If Map_GetInstanceInfo("Type") <> $Map_Explorable Or Agent_GetAgentInfo(-2, "Dead") Or Agent_GetAgentInfo(-2, "Knocked") Then Return
+	If Map_GetInstanceInfo("Type") <> $Map_Explorable Or Agent_GetAgentInfo(-2, "IsDead") Or Agent_GetAgentInfo(-2, "Knocked") Then Return
 
 	Switch $aSkillID
 		Case 30, 51
@@ -768,7 +768,7 @@ EndFunc
 
 Func SkillComplete($aCasterID, $aTargetID, $aSkillID)
 	Local $lCasterPtr = Agent_GetAgentPtr($aCasterID), $lTargetPtr = Agent_GetAgentPtr($aTargetID), $lSkillPtr = Skill_GetSkillPtr($aSkillID)
-	If Map_GetInstanceInfo("Type") <> $Map_Explorable Or Agent_GetAgentInfo(-2, "Dead") Or Agent_GetAgentInfo(-2, "Knocked") Then Return
+	If Map_GetInstanceInfo("Type") <> $Map_Explorable Or Agent_GetAgentInfo(-2, "IsDead") Or Agent_GetAgentInfo(-2, "Knocked") Then Return
 
 	Switch $aSkillID
 		Case 30, 51
@@ -892,17 +892,13 @@ Func GetProtSlot($aSkillID, $lCasterPtr, $aTargetPtr)
 	Return 0
 EndFunc   ;==>GetRuptSlot
 
-
 Func CanAttack($aRange = 1320)
-	If Map_GetInstanceInfo("Type") == 2 Then Disconnected()
+	If Map_GetInstanceInfo("Type") == 2 Then Connection_CheckAndReconnect()
 	If Map_GetInstanceInfo("Type") == 0 Then Return
 	$BestTargetPtr = 0
-;~ 	$BestTargetPtr = GetPriorityTargetPtr($aRange)
-;~ 	If $BestTargetPtr = 0 Then
+ 	If $BestTargetPtr = 0 Then Global $BestTargetPtr = Agent_GetBestTarget($aRange)
 
-	$BestTargetPtr = Agent_GetBestTargetPtr($aRange)
-;~ 	EndIf
-	; Out(DllStructGetData($besttarget, 'ID') & " - My ID: " & ID(-2))
+	Out(Agent_GetAgentInfo(-2, "ID") & " - My ID: " & ID(-2))
 	If $BestTargetPtr = 0 Or IsWormAgent($BestTargetPtr) Then Return False	; prevents crash from attacking enemies that burry into the ground
 	If CanCast() Then Return True
 	Return False
@@ -924,7 +920,8 @@ Func CanCast($aSkillSlot = 0)
         Local $lSkillID = Memory_Read($lEffectPtr + $j * 0x18, "long")
         Out("  Effect " & $j & ": " & $lSkillID)
     Next
-EndIf
+	EndIf
+
 	UAI_CachePlayerEffectsAndBonds()
 	; In CanCast, after UAI_CachePlayerEffectsAndBonds():
 	Out("Effects count: " & $g_i_PlayerEffectsCount)
@@ -932,11 +929,10 @@ EndIf
 		Out("  Effect " & $i & ": " & $g_amx3_PlayerEffects[0][$i][$GC_UAI_EFFECT_SkillID])
 	Next
 
-
 	Local $Requi
-	If Map_GetInstanceInfo("Type") == 2 Then Disconnected()
+	If Map_GetInstanceInfo("Type") == 2 Then Connection_CheckAndReconnect()
 	If Map_GetInstanceInfo("Type") == 0 Then Return
-	If Agent_GetAgentInfo(-2, "Knocked") Or Agent_GetAgentInfo(-2, "Dead") Or Wipe = 1 Then Return False
+	If Agent_GetAgentInfo(-2, "Knocked") Or Agent_GetAgentInfo(-2, "IsDead") Or Wipe = 1 Then Return False
 
 	If $aSkillSlot <> 0 Then
 		If Not Skill_GetSkillbarInfo($aSkillSlot, "IsRecharged") Then Return False
@@ -1123,7 +1119,7 @@ Func CanUse($aSkillSlot, $aAggroRange = 1320)
 			Case $Healing_Spring
 				If Agent_GetAgentInfo(-2, "HP") > 0.95 Then Return False
 			Case $Mend_Body_and_Soul
-				If Agent_GetAgentInfo($lowestally, "HP") > 0.5 And Not Agent_GetAgentInfo($lowestally, "Dead") Then Return False
+				If Agent_GetAgentInfo($lowestally, "HP") > 0.5 And Not Agent_GetAgentInfo($lowestally, "IsDead") Then Return False
 			Case $Divine_Healing, $Heal_Party, $Heavens_Delight, $Protective_Was_Kaolai, $Protective_Was_Kaolai_PvP, $Heal_Party, $Mystic_Healing, $Mystic_Healing_PvP, $Courageous_Was_Saidra
 				If GetPartyHealth() > 0.90 Or Agent_GetAgentInfo($lowestally, "HP") > 0.75 Then Return False
 			Case Else
@@ -1134,7 +1130,7 @@ Func CanUse($aSkillSlot, $aAggroRange = 1320)
 
 ;~ CONDITION REMOVE SKILLS
 	If $SkillBarCache[$aSkillSlot][$condremove] <> "" Then
-		If RequiresCondition($SkillBarCache[$aSkillSlot][$condremove]) And Not Agent_GetAgentInfo($MostConditionedAllyPtr, "Dead") Then Return False
+		If RequiresCondition($SkillBarCache[$aSkillSlot][$condremove]) And Not Agent_GetAgentInfo($MostConditionedAllyPtr, "IsDead") Then Return False
 		$lowestally = GetLowestAlly()
 		Switch $SkillBarCache[$aSkillSlot][$heal]
 			Case $Martyr, $Pure_Was_Li_Ming
@@ -1142,7 +1138,7 @@ Func CanUse($aSkillSlot, $aAggroRange = 1320)
 			Case $Extinguish, $Breath_of_the_Great_Dwarf
 				If GetNumberOfBurningAllies() = 0 Then Return False
 			Case $Resilient_Was_Xiko
-				If Not Agent_GetAgentInfo($MostConditionedAllyPtr, "Dead") Then Return False
+				If Not Agent_GetAgentInfo($MostConditionedAllyPtr, "IsDead") Then Return False
 		EndSwitch
 	EndIf
 
@@ -1150,7 +1146,7 @@ Func CanUse($aSkillSlot, $aAggroRange = 1320)
 	If $SkillBarCache[$aSkillSlot][$hexremove] <> "" Then
 		$MostHexedAllyPtr = MostHexedAlly()
 
-		If RequiresHex($SkillBarCache[$aSkillSlot][$hexremove]) And Not Agent_GetAgentInfo($BestTargetPtr, "Dead") Then Return False
+		If RequiresHex($SkillBarCache[$aSkillSlot][$hexremove]) And Not Agent_GetAgentInfo($BestTargetPtr, "IsDead") Then Return False
 
 		Switch $SkillBarCache[$aSkillSlot][$hexremove]
 			Case $Divert_Hexes, $Cure_Hex                                                         ;Heal and remove hex (me and ally)
@@ -1166,7 +1162,7 @@ Func CanUse($aSkillSlot, $aAggroRange = 1320)
 			Case $Pious_Restoration                                                             ;Remove Hex if I have Dervish enchantment (me only)
 				If Not Agent_GetAgentInfo(-2, "Enchanted") Then Return False ;Maybe use IsDervishEnchantment ?
 			Case $Purge_Signet                                                                     ;Removes all hex and all condition. (me and ally)
-				If Not Agent_GetAgentInfo($MostHexedAllyPtr, "Dead") Then Return False 					;Can remove if only want Remove Hex
+				If Not Agent_GetAgentInfo($MostHexedAllyPtr, "IsDead") Then Return False 					;Can remove if only want Remove Hex
 			Case $Signet_of_Removal ;															Removes one hex and one condition. If target is enchanted. (me and ally)
 				If Not Agent_GetAgentInfo($MostHexedAllyPtr, "Enchanted") Then Return False
 			Case Else ;$Reverse_Hex, $Remove_Hex, $Expel_Hexes, $Inspired_Hex, $Revealed_Hex, $Spotless_Mind, $Convert_Hexes, $Deny_Hexes, _ ; remove hex (me and ally)
@@ -1185,7 +1181,7 @@ Func CanUse($aSkillSlot, $aAggroRange = 1320)
 				If GetLowestAlly() > 0.90 Then Return False ;GetPartyHealth() > 0.9
 			Case $Heroic_Refrain, $Mending_Refrain, $Bladeturn_Refrain, $Burning_Refrain
 				If Agent_GetAgentInfo(-2, "CurrentEnergy") < 20 And Not Skill_HasEffect($Blood_is_Power) And Agent_GetAgentInfo(Agent_GetHero($BiP[0], "HP")) > 0.4 Then Skill_UseHero($BiP[0], $BiP[1], -2)
-				If Agent_GetAgentInfo(-2, "Dead") Then Return False
+				If Agent_GetAgentInfo(-2, "IsDead") Then Return False
 			Case $Go_for_the_Eyes, $Go_for_the_Eyes_PvP, $Burning_Refrain
 				Return True
 			Case Else
@@ -1259,7 +1255,7 @@ Func CanUse($aSkillSlot, $aAggroRange = 1320)
             Case $Ineptitude, $Wandering_Eye, $Clumsiness, $Signet_of_Clumsiness, $Signet_of_Clumsiness_PvP
 				If Agent_GetAgentInfo($BestTargetPtr, "Knocked") Then Return False
 			Case $Accumulated_Pain
-				If Not Agent_GetAgentInfo($BestTargetPtr, "Dead") Then Return False
+				If Not Agent_GetAgentInfo($BestTargetPtr, "IsDead") Then Return False
 			Case $Vow_of_Piety
 				If Skill_HasEffect($Vow_of_Piety) Then Return False
 			Case $Glyph_Of_Sacrifice
@@ -1275,18 +1271,18 @@ EndFunc   ;==>CanUse
 
 ;~ Description: Finds the best target for a skillslot based on target requirements and the type of skill, and returns 0 if no good skill ca be used
 Func GetBestTargetBySkillSlot($aSkillSlot, $aAggroRange = 1320)
-	If Map_GetInstanceInfo("Type") == 2 Then Disconnected()
+	If Map_GetInstanceInfo("Type") == 2 Then Connection_CheckAndReconnect()
 	If Map_GetInstanceInfo("Type") == 0 Then Return
 	$MyPtr = Agent_GetAgentPtr(-2)
 	Switch $SkillBarCache[$aSkillSlot][$hexes]
 		Case $Panic, $Panic_PvP, $Wastrels_Worry, $Wastrels_Demise, $Wastrels_Demise_PvP, $Overload, $Mistrust, $Mistrust_PvP ; targeted spells will already fail if no valid target, but non targeted won't
-			$BestTargetPtr = Agent_GetBestTargetPtr($aAggroRange)
+			$BestTargetPtr = Agent_GetBestTarget($aAggroRange)
 			Return $BestTargetPtr
 		EndSwitch
 
 	Switch $SkillBarCache[$aSkillSlot][$all]
 		Case $Meteor_Shower, $Meteor
-			$BestTargetPtr = Agent_GetBestTargetPtr($aAggroRange)
+			$BestTargetPtr = Agent_GetBestTarget($aAggroRange)
 			Return $BestTargetPtr
 	EndSwitch
 
@@ -1339,7 +1335,7 @@ Func GetBestTargetBySkillSlot($aSkillSlot, $aAggroRange = 1320)
 		Case 5	; enemy,
 			If $SkillBarCache[$aSkillSlot][$hexes] <> "" Then
 				$BestTargetPtr = GetNoHexEnemy($aAggroRange) = 0
-				If $BestTargetPtr = 0 Then $BestTargetPtr = Agent_GetBestTargetPtr($aAggroRange)
+				If $BestTargetPtr = 0 Then $BestTargetPtr = Agent_GetBestTarget($aAggroRange)
 			ElseIf $SkillBarCache[$aSkillSlot][$enchantremove] <> "" Then
 				$BestTargetPtr = GetBalledEnchantedEnemy($aAggroRange)
 			ElseIf $SkillBarCache[$aSkillSlot][$attackskill] <> "" Then
@@ -1349,10 +1345,10 @@ Func GetBestTargetBySkillSlot($aSkillSlot, $aAggroRange = 1320)
 			Else
 				Switch $SkillBarCache[$aSkillSlot][$all]
 					Case $Unnatural_Signet
-						$BestTargetPtr = Agent_GetBestTargetPtr(1320, False, True)
-						If $BestTargetPtr = 0 then $BestTargetPtr = Agent_GetBestTargetPtr($aAggroRange)
+						$BestTargetPtr = Agent_GetBestTarget(1320, False, True)
+						If $BestTargetPtr = 0 then $BestTargetPtr = Agent_GetBestTarget($aAggroRange)
 					Case Else
-						$BestTargetPtr = Agent_GetBestTargetPtr($aAggroRange)
+						$BestTargetPtr = Agent_GetBestTarget($aAggroRange)
 					EndSwitch
 			EndIf
 		Case 6	; dead ally
@@ -1368,7 +1364,7 @@ Func GetBestTargetBySkillSlot($aSkillSlot, $aAggroRange = 1320)
 EndFunc   ;==>GetBestTargetBySkillSlot
 
 Func Survive($aAggroRange = 1500)
-	If Agent_GetAgentInfo(-2, "Dead", "Dead") Then Return
+	If Agent_GetAgentInfo(-2, "IsDead") Then Return
 	If CanUse($SkillbarSlot[$I_Am_Unstoppable], $aAggroRange) Then Skill_UseSkill($SkillbarSlot[$I_Am_Unstoppable])
 	If CanUse($SkillbarSlot[$Glyph_of_Swiftness], $aAggroRange) Then Skill_UseSkill($SkillbarSlot[$Glyph_of_Swiftness])
 	If CanUse($SkillbarSlot[$Shadow_Form], $aAggroRange) Then Skill_UseSkill($SkillbarSlot[$Shadow_Form])
@@ -1378,7 +1374,7 @@ Func Survive($aAggroRange = 1500)
 ;~ 	If CanUse($SkillbarSlot[$Spirit_Bond]) Then Skill_UseSkill($SkillbarSlot[$Spirit_Bond])
 
 	For $aSkillSlot In $Skillbar
-		If Agent_GetAgentInfo(-2, "Dead", "Dead") Then ExitLoop
+		If Agent_GetAgentInfo(-2, "IsDead") Then ExitLoop
 		If Agent_GetAgentInfo(-2, "HP") < 0.9 And TimerDiff($MysticTimer) > 500 And UBound($HeroHeals) <> 0 Then
 			Skill_UseHero($HeroHeals[$HealCount][1], $HeroHeals[$HealCount][2], 0)
 			$MysticTimer = TimerInit()
@@ -1514,7 +1510,7 @@ Func GetAvailableRezz()        ; returns the number of available rezz skills exc
 	Local $aHeroRezzSkills = 0
 	For $aHeroNumber = 0 To GetPartySize() - 1
 		$aHeroPtr = Agent_GetHero($aHeroNumber)
-		If Agent_GetAgentInfo($aHeroPtr, "Dead") Or Agent_GetDistance($aHeroPtr) > 5000 Then ContinueLoop
+		If Agent_GetAgentInfo($aHeroPtr, "IsDead") Or Agent_GetDistance($aHeroPtr) > 5000 Then ContinueLoop
 		;Out($aHeroNumber & " - Hero ID" & ID($aHeroPtr) & " , dead = " & Agent_GetAgentInfo($aHeroPtr))
 		For $aSkillSlot = 1 To 8
 			$aSkill = GetSkillbarInfo($i, "SkillID")($aSkillSlot, $aHeroNumber)
@@ -3453,7 +3449,7 @@ Func PrecastBonds($aTargetAlly = 0)
 EndFunc   ;==>PrecastBonds
 
 Func UseHeroHeals()
-	If Agent_GetAgentInfo(-2, "Dead", "Dead") Then Return
+	If Agent_GetAgentInfo(-2, "IsDead") Then Return
 	For $i = UBound($HeroHeals) - 1 To 0 Step -1
 		Switch $HeroHeals[$i][0]
 			Out($HeroHeals[$i][0])
@@ -3471,7 +3467,7 @@ Func UseHeroHeals()
 EndFunc   ;==>UseHeroHeals
 
 Func UseHeroHexRemoval()
-	If Agent_GetAgentInfo(-2, "Dead", "Dead") Then Return
+	If Agent_GetAgentInfo(-2, "IsDead") Then Return
 	For $i = UBound($HeroHexRemoval) - 1 To 0 Step -1
 		Switch $HeroHexRemoval[$i][0]
 			Out($HeroHexRemoval[$i][0])
@@ -3495,7 +3491,7 @@ Func UseHeroHexRemoval()
 EndFunc
 
 Func UseHeroConditionRemoval()
-	If Agent_GetAgentInfo(-2, "Dead", "Dead") Then Return
+	If Agent_GetAgentInfo(-2, "IsDead") Then Return
 	For $i = UBound($HeroConditionRemoval) - 1 To 0 Step -1
 		Switch $HeroConditionRemoval[$i][0]
 			Out($HeroConditionRemoval[$i][0])
@@ -3504,14 +3500,14 @@ Func UseHeroConditionRemoval()
 EndFunc
 
 Func MysticHealing()
-	If Agent_GetAgentInfo(-2, "Dead", "Dead") Then Return
+	If Agent_GetAgentInfo(-2, "IsDead") Then Return
 	If UBound($MysticHealingArray) - 1 = 0 And $MysticHealingArray[0][1] = "" Then
 		Return
 	ElseIf UBound($MysticHealingArray) - 1 = 0 And $MysticHealingArray[0][1] <> "" And Agent_GetAgentInfo(-2, "HP") < 0.9 Then
 		Skill_UseHero($MysticHealingArray[0][1], $MysticHealingArray[0][2], 0)
 	Else
 		If Agent_GetAgentInfo(-2, "HP") < 0.9 And $MysticSwitch = 1 And TimerDiff($MysticTimerTwo) > 2000 Then
-			If Agent_GetAgentInfo(-2, "Dead", "Dead") Then Return
+			If Agent_GetAgentInfo(-2, "IsDead") Then Return
 			If TimerDiff($MysticTimerOne) > 5500 Then
 				For $i = 0 To UBound($MysticHealingGroupOne) - 1
 					Skill_UseHero($MysticHealingGroupOne[$i][1], $MysticHealingGroupOne[$i][2], 0)
@@ -3522,7 +3518,7 @@ Func MysticHealing()
 			$MysticSwitch = 2
 
 		ElseIf Agent_GetAgentInfo(-2, "HP") < 0.9 And $MysticSwitch = 2 And TimerDiff($MysticTimerOne) > 2000 Then
-			If Agent_GetAgentInfo(-2, "Dead", "Dead") Then Return
+			If Agent_GetAgentInfo(-2, "IsDead") Then Return
 			If TimerDiff($MysticTimerTwo) > 5500 Then
 				For $i = 0 To UBound($MysticHealingGroupTwo) - 1
 					Skill_UseHero($MysticHealingGroupTwo[$i][1], $MysticHealingGroupTwo[$i][2], 0)
