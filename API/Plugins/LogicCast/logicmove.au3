@@ -2336,15 +2336,23 @@ Func UseRedRock()
 EndFunc   ;==>UseRedRock
 
 Func Wipe()
-	If Not Agent_GetAgentInfo(-2, "IsDead") Then Return False
-	Local $DeadPartyMembers = 0
-	Local $aParty = GetParty()
-	For $i = 1 To $aParty[0]
-		If Agent_GetAgentInfo($aParty[$i], "IsDead") Then $DeadPartyMembers += 1
-	Next
+	Return Party_GetPartyContextInfo("IsDefeated")
+
+	; If Not Agent_GetAgentInfo(-2, "IsDead") Then Return False
+
+	; Local $l_i_PartySize = Party_GetPartyContextInfo("TotalPartySize")
+	; If $l_i_PartySize <= 0 Then Return False
+
+	; Local $l_i_DeadPartyMembers = 0
+	; For $i = 1 To $l_i_PartySize
+	; 	Local $l_i_AgentID = Party_GetMemberAgentID($i)
+	; 	If $l_i_AgentID = 0 Then ContinueLoop
+	; 	If Agent_GetAgentInfo($l_i_AgentID, "IsDead") Then $l_i_DeadPartyMembers += 1
+	; Next
+
 	; True wipe: no rezz left, almost everyone dead, or average living HP collapsed
-	If GetAvailableRezz() = 0 Or $DeadPartyMembers >= $aParty[0] - 1 Or Party_GetPartyHealth() < 0.15 Then Return True
-	Return False
+	; If GetAvailableRezz() = 0 Or $l_i_DeadPartyMembers >= $l_i_PartySize - 1 Or Party_GetPartyHealth() < 0.15 Then Return True
+	; Return False
 EndFunc   ;==>Wipe
 
 
