@@ -1,5 +1,20 @@
 #Region Cast Functions
 Global Enum $all = 0, $ptr, $energyreq, $adrereq, $type, $activation, $aftercast, $target, $hexes, $pressure, $bind, $speedBoost, $survive, $attackskill, $heal, $prot, $bond, $condremove, $hexremove, $enchantremove, $rupt, $hardrupt, $precast, $echochantshout, $junundu, $rezz
+; $ESW_MODE: 0 unknown, 1 ally/heal/self (Shame), 2 foe-targeted (Guilt/Mistrust)
+; Staged counters (filled on Note / refreshed on Poll):
+;   RUPT_SLOT + RUPT_TARGET (target 0 = would not land yet)
+;   STRIP_SLOT + STRIP_TARGET + STRIP_READY (enchantremove / hexremove when a target exists)
+;   FOLLOW_SLOT + FOLLOW_TARGET (Shame / Guilt follow-up)
+Global Enum $ESW_AGENT, $ESW_SKILL, $ESW_START, $ESW_ACTIVATION, $ESW_TYPE, $ESW_CASTING, $ESW_LANDED, $ESW_JITTER, $ESW_MODE, _
+		$ESW_RUPT_SLOT, $ESW_RUPT_TARGET, _
+		$ESW_STRIP_SLOT, $ESW_STRIP_TARGET, $ESW_STRIP_READY, $ESW_STRIP_KIND, _
+		$ESW_FOLLOW_SLOT, $ESW_FOLLOW_TARGET, $ESW_COLS
+Global Const $ESW_MODE_NONE = 0
+Global Const $ESW_MODE_ALLY = 1
+Global Const $ESW_MODE_FOE = 2
+Global Const $ESW_STRIP_NONE = 0
+Global Const $ESW_STRIP_ENCHANT = 1
+Global Const $ESW_STRIP_HEX = 2
 Global $SkillBarCache[9][26]
 Global $Skillbar[8] = [1, 2, 3, 4, 5, 6, 7, 8]
 Global $RuptSlots[9]
@@ -10,11 +25,10 @@ Global $SkillbarSlot[3500]	; used to store the skillslot of skill ID's present i
 Global $aSkillRange
 Global $Summon_Spirits
 Global $PressureSpiritSkills = 0
-Global $MySkillID = 0
-Global $MyTargetID = 0
-Global $MyActivation = 0
-Global $MyAftercast = 0
-Global $AftercastTimer = 501
+; Our cast clock: slot + start time. Durations from $SkillBarCache (FC on activation only).
+Global $MySkillSlot = 0			; bar slot of the skill we last started (0 = none)
+Global $MyTargetID = 0			; target at cast start (cancel / context)
+Global $AftercastTimer = 501	; TimerInit() when that cast started
 Global $MysticHealingArray[1][3]
 Global $HeroHeals[0][3]
 Global $HeroHexRemoval[0][3]
@@ -28,8 +42,39 @@ Global $MysticSwitch = 1
 Global $HealCount = 0
 Global $RuptEventSystem = 0
 Global $ProtEventSystem = 0
-Global $aLastCast[0][4]   		;for UpdateAndDispatchCasts() [AgentID, SkillID, Timestamp, TargetID]
-Global $iLastCastCount = 0 		; UpdateAndDispatchCasts()
+Global $aLastCast[0][4]   		; for CounterEnemyCasts() [AgentID, SkillID, Timestamp, TargetID]
+Global $iLastCastCount = 0
+Global $BestTarget = 0		; set by CanAttack / GetBestTargetBySkillSlot; used by Fight / UseSkills
+Global $aCalledTarget = 0		; last party-called target ID (Logic Attack: call once per target)
+
+; Casts at or below this fire as soon as our interrupt can still land (no "wait for tail").
+; 1000ms covers typical 1s spells that were being missed by the old 250ms zero-wait + tail gate.
+Global Const $ESW_ZERO_WAIT_ACT = 1000
+; Only casts longer than ZERO_WAIT delay until our hit falls in the last TAIL ms.
+Global Const $ESW_RUPT_TAIL_MS = 250
+; Small fixed slack only — old Random(0,150) jitter collapsed the 1s fire window.
+Global Const $ESW_POLL_SLACK_MS = 25
+; 0 = every Listen/Poll call scans (250ms casts die if we throttle).
+Global Const $ESW_POLL_INTERVAL = 0
+Global Const $ESW_STRIP_WINDOW_MS = 4000
+Global Const $ESW_ARROW_SPEED = 0.85
+Global Const $ESW_SPEAR_SPEED = 1.05
+Global Const $ESW_MAX_ROWS = 16
+
+; AttributeFlag bits. GwAu3 names allegiance and agent type, but not these
+; three. They are the same masks Agent_GetAgentInfo uses for IsEnchanted,
+; IsDegenHexed and IsHexed. 0x0010 is dead, which mode 4 already special-cases.
+Global Const $ESW_EFFECT_ENCHANTED = 0x0080
+Global Const $ESW_EFFECT_DEGEN_HEXED = 0x0400
+Global Const $ESW_EFFECT_HEXED = 0x0800
+
+Global $EnemySkillWatch[1][$ESW_COLS]	; stores ennemy skills being cast with their caster ID
+$EnemySkillWatch[0][$ESW_AGENT] = 0
+Global $ESW_LastPoll = 0
+; After a successful rupt, next free Listen prefers enchant/hex strip then releases the While
+; so the bar can cast follow-ups (Shame / Guilt / etc.).
+Global $ESW_PreferStripAfterRupt = False
+
 
 Func CacheSkillBar()
 
@@ -55,17 +100,10 @@ Func CacheSkillBar()
 		$SkillBarCache[$i][$type]      = Skill_GetSkillInfo($SkillBarCache[$i][$all], "SkillType")
 		$SkillBarCache[$i][$target]    = Skill_GetSkillInfo($SkillBarCache[$i][$all], "Target")
 
-		;Activation time reduced for fast casting
-		Switch $SkillBarCache[$i][$type]
-			Case $Signet
-				$SkillBarCache[$i][$activation] =  Memory_Read($SkillBarCache[$i][$ptr] + 60, 'float') * 1000 * (1 - 0.03 * GetAttributeByID($Fast_Casting, True))
-			Case $Spell, $Hex
-				$SkillBarCache[$i][$activation] =  Memory_Read($SkillBarCache[$i][$ptr] + 60, 'float') * 1000 * (1 - 0.955^GetAttributeByID($Fast_Casting, True))
-			Case Else
-				$SkillBarCache[$i][$activation] = Memory_Read($SkillBarCache[$i][$ptr] + 60, 'float') * 1000
-		EndSwitch
-
-		$SkillBarCache[$i][$aftercast] = Memory_Read($SkillBarCache[$i][$ptr] + 64, "float") * 750 	; Aftercast
+		; BASE activation/aftercast (ms). FC applied live in GetSkillActivationMs; aftercast is never FC-reduced (wiki).
+		$SkillBarCache[$i][$activation] = Skill_GetSkillInfo($SkillBarCache[$i][$ptr], "Activation") * 1000
+		$SkillBarCache[$i][$aftercast] = Skill_GetSkillInfo($SkillBarCache[$i][$ptr], "Aftercast") * 750
+		If $SkillBarCache[$i][$type] = $Attack Then $SkillBarCache[$i][$activation] *= 0.5
 
 
 		; recoding of target = 1 into the appropriate target categories
@@ -76,7 +114,8 @@ Func CacheSkillBar()
 				Case $Gust, $Double_Dragon, $Stone_Sheath
 					$SkillBarCache[$i][$target] = 3 ;ally
 				Case $Heart_of_Shadow, $Vipers_Defense, $Ride_the_Lightning, $Mirror_of_Ice, $Charm_Animal, $Wandering_Eye, $Clumsiness, $Ineptitude, $Signet_of_Clumsiness, _
-					$Signet_of_Clumsiness_PvP, $Empathy, $Insidious_Parasite, $Accumulated_Pain, $Arcane_Conundrum, $Panic, $Panic_PvP, $Overload, $Mistrust, $Mistrust_PvP
+					$Signet_of_Clumsiness_PvP, $Empathy, $Insidious_Parasite, $Accumulated_Pain, $Arcane_Conundrum, $Panic, $Panic_PvP, $Overload, $Mistrust, $Mistrust_PvP, _
+					$Shame, $Mark_of_Subversion, $Guilt, $Diversion, $Backfire, $Visions_of_Regret, $Visions_of_Regret_PvP
 					$SkillBarCache[$i][$target] = 5 ; Enemy
 				Case $Gaze_of_Fury, $Rupture_Soul, $Spirit_to_Flesh, $Spirit_Walk, $Draw_Spirit, $Swap, $Signet_of_Binding, $Putrid_Flesh, $Feast_for_the_Dead
 					$SkillBarCache[$i][$target] = 14 ; minion
@@ -142,153 +181,1282 @@ Func CacheSkillBar()
 	Return True
 EndFunc   ;==>CacheSkillBar
 
-; Creates a dynamic log of agents and skills they use from which to trigger rupts or other skills
-Func UpdateAndDispatchCasts()
-    Local $aAgents = Agent_GetAgentArray()
 
-    For $i = 1 To UBound($aAgents) - 1
-        Local $iPtr = $aAgents[$i]
-        If Not IsPtr($iPtr) Then ContinueLoop
+; Enemy skill watch. No cast event: allegiance 3 + cast pose + Skill.
+; The skill target is not stored.
+;
+; UseSkills($all) polls EnemySkillWatch then runs $rupt → $enchantremove →
+; $hexremove → Else. CanUse($slot, $range, $column) picks targets per column.
+;
+; 250ms casts fire as soon as the rupt can land. Longer casts wait so the
+; hit falls in the last 250ms.
+; Fighting mechanics (old Logic shape). Interrupts polled via CounterEnemyCasts in UseSkills.
+; $aMaxDistanceToXY: default 5000 = no leash; tighter values checked inside UseSkills.
+; Do not pass True/False where a distance is expected â€” $careful is boolean, $aMaxDistanceToXY is units.
 
-        Local $iID = Agent_GetAgentInfo($iPtr, "ID")
-        If $iID = 0 Then ContinueLoop
-        If Agent_GetAgentInfo($iID, "Allegiance") <> 3 Then ContinueLoop
-        If Agent_GetDistance($iID) > 1500 Then ContinueLoop
-
-        Local $bCasting = Agent_GetAgentInfo($iID, "IsCasting")
-        Local $iSkill   = Agent_GetAgentInfo($iID, "Skill")
-
-        If Not $bCasting Or $iSkill = 0 Then ContinueLoop
-
-        ; Skip if we already processed this exact cast recently (< 3 s)
-        Local $bAlreadySeen = False
-        For $j = 0 To $iLastCastCount - 1
-            If $aLastCast[$j][0] = $iID And $aLastCast[$j][1] = $iSkill Then
-                If TimerDiff($aLastCast[$j][2]) < 3000 Then
-                    $bAlreadySeen = True
-                    ExitLoop
-                EndIf
-            EndIf
-        Next
-        If $bAlreadySeen Then ContinueLoop
-
-        ; Keep at most the last 100 casts
-        If $iLastCastCount >= 100 Then
-            For $k = 0 To 98
-                For $m = 0 To 3
-                    $aLastCast[$k][$m] = $aLastCast[$k + 1][$m]
-                Next
-            Next
-            $iLastCastCount = 99
-        EndIf
-
-        ReDim $aLastCast[$iLastCastCount + 1][4]
-        $aLastCast[$iLastCastCount][0] = $iID
-        $aLastCast[$iLastCastCount][1] = $iSkill
-        $aLastCast[$iLastCastCount][2] = TimerInit()
-        $aLastCast[$iLastCastCount][3] = Agent_GetAgentInfo($iID, "Target")
-        $iLastCastCount += 1
-
-
-		Local $iType = Skill_GetSkillInfo($iSkill, "SkillType")
-		If $iType = $Attack Then
-			AttackActivation($iID, Agent_GetAgentInfo($iID, "Target"), $iSkill, Skill_GetSkillInfo($iSkill, "Activation"))
-		Else
-			SpellActivation($iID, Agent_GetAgentInfo($iID, "Target"), $iSkill, Skill_GetSkillInfo($iSkill, "Activation"))
-			; RuptEX($iID, Agent_GetAgentInfo($iID, "Target"), $iSkill, Skill_GetSkillInfo($iSkill, "Activation"))
-		EndIf
-    Next
-
-    ; Debug: dump the cast log after each pass
-    ; Out("--- Cast log (" & $iLastCastCount & ") ---")
-    ; For $j = 0 To $iLastCastCount - 1
-    ;     Out("  [" & $j & "] ID:" & $aLastCast[$j][0] & " Skill:" & $aLastCast[$j][1] & "Target:" & $aLastCast[$j][3] & " Age:" & Round(TimerDiff($aLastCast[$j][2])) & "ms")
-    ; Next
-EndFunc
-
-Func SpellActivation($aCasterID, $aTargetID, $aSkillID, $aActivation)
-	$RuptTimer = TimerInit()
-	Local $Blocked = 0
-	Local $lCasterPtr = Agent_GetAgentPtr($aCasterID), $lTargetPtr = Agent_GetAgentPtr($aTargetID), $lSkillPtr = Skill_GetSkillPtr($aSkillID)
-	If Map_GetInstanceInfo("Type") <> $Map_Explorable Or Agent_GetAgentInfo(-2, "IsDead") Or Agent_GetAgentInfo(-2, "Knocked") Or Agent_GetAgentInfo(-2, "IsCasting") Then Return
-
-;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>		Rupt and Cancel Skill to avoid Rupt		<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-	;~ For cancel casting
-	If $aCasterID == Agent_GetMyID() Then
-		;Out("I am casting " & $aSkill_Name[$aSkillID])
-		$MyActivation = Memory_Read($lSkillPtr + 60, 'float') * 1000	; storing my activation time into a global variable for the next skill parsing
-		$MyAftercast = Memory_Read($lSkillPtr + 64, 'float') * 750
-		$MySkillID = $aSkillID
-		$MyTargetID = $aTargetID
-		$AftercastTimer = TimerInit()
-		;Return ;<<< Are you sure about it ?
-	EndIf
-
-	;~ Cancel casting to avoid rupt
-	If IsHardRuptSkill($aSkillID) And $aTargetID = Agent_GetMyID() Then
-		Out($aCasterID & " is interrupting my " & $aSkill_Name[$MySkillID])
-		If TimerDiff($AftercastTimer) > $MyActivation * 1000 Then Return
-		If $MyActivation > 250 Then CancelAction()
-		$AftercastTimer = TimerInit()
+Func Fight($x = Agent_X(-2), $y = Agent_Y(-2), $aAggroRange = 1320, $careful = False, $aMaxDistanceToXY = 5000, $aAgent = 0)
+; REVIEW: GwAu3 equivalent is UAI_Fight(). Call this one when you want the Logic interrupt path.
+	If Agent_NoEnemiesAround($aAggroRange) Then
+		Agent_CancelAction()
 		Return
 	EndIf
-
-	;~ 	Rupt Skills
-	Out($RuptSlots[0] & "interrupts on our bar")
-	If $RuptSlots[0] > 0 Then
-		If TimerDiff($AftercastTimer) < $MyActivation Then Return
-
-		If Agent_GetAgentInfo($aCasterID, "Allegiance") <> 3 Or Agent_GetDistance($aCasterID) > 1200 Then Return
-		Out("Testing Rupt Splot for skillID " & $aSkillID & ", CasterID " & $aCasterID & ", TargetID " & $aTargetID)
-
-		$lRuptSlot = GetRuptSlot($aSkillID, $aCasterID)
-		Out("Ruptslot: " & $lRuptSlot)
-		If $lRuptSlot > 0 Then
-			Skill_TryUseSkill($lRuptSlot, $aCasterID)
-			If Agent_GetAgentInfo($lCasterPtr, "IsCasting") = 0 Then Out("Interrupted " & $aSkill_Name[$aSkillID] & "!!!")
-			Out("Rupt(): " & TimerDiff($RuptTimer))
-			Return
+	Out("Fighting enemies")
+	Local $TimerToGetOut = TimerInit()
+	Local $lPass = 0
+	; SetEvent("SpellActivation", "AttackActivation", "", "", "", "") ; only active during fight to avoid crashes
+	Do
+		$lPass += 1
+		If Agent_NoEnemiesAround($aAggroRange) Then
+			Agent_CancelAction()
+			$BestTarget = 0
+			ExitLoop
 		EndIf
+
+		; Interrupt FIRST — Attack/Precast used to run before any poll and ate 250ms–1s casts.
+		While ListenToSkillsAndCounter($aAggroRange)
+			Sleep(1)
+		WEnd
+
+		Local $lEnemyCount = Agent_GetNumberOfEnemies($aAggroRange)
+		Out("FIGHT pass=" & $lPass & " enemiesInRange=" & $lEnemyCount & " aggro=" & $aAggroRange & " BestTargetPtr=" & $BestTarget)
+		Local $lCan = CanAttack($aAggroRange)
+		Out("FIGHT CanAttack=" & $lCan & " BestTargetPtr=" & $BestTarget & " ConvertID=" & Agent_ConvertID($BestTarget))
+		If $lCan Then
+			Out("FIGHT Attack → " & Agent_ConvertID($BestTarget))
+			; Select nearest once when target changes (not party CallTarget spam).
+			If $aCalledTarget <> Agent_ConvertID($BestTarget) Then
+				Agent_ChangeTarget($BestTarget)
+				$aCalledTarget = Agent_ConvertID($BestTarget)
+			EndIf
+			Agent_Attack($BestTarget, False)
+		Else
+			; Stop leftover attack-move so we do not walk toward the next pack out of range.
+			Out("FIGHT skip Attack (CanAttack False) — CancelAction")
+			Agent_CancelAction()
+			$BestTarget = 0
+			$aCalledTarget = 0
+		EndIf
+		; Precast 2nd arg is precastspirits (bool), not careful / not a distance.
+		Precast($aAggroRange, True)
+		If $careful And $BestTarget <> 0 Then
+			CancelAll()
+			Move(Agent_X($BestTarget), Agent_Y($BestTarget))
+			RndSleep(300)
+		EndIf
+		; Bar skills + another Listen drain (pool may have grown during Precast).
+		ListenToSkillsAndCounter($aAggroRange)
+		UseSkills($x, $y, $aAggroRange, $all, $aMaxDistanceToXY, $aAgent)
+		Out("FIGHT after UseSkills NoEnemies=" & Agent_NoEnemiesAround($aAggroRange) & " elapsed=" & Floor(TimerDiff($TimerToGetOut)) & "ms")
+	Until Agent_NoEnemiesAround($aAggroRange) Or TimerDiff($TimerToGetOut) > 240000
+	Agent_CancelAction()
+	$BestTarget = 0
+	$aCalledTarget = 0
+	; SetEvent("", "", "", "", "", "")
+EndFunc   ;==>Fight
+
+;~ Drain EnemySkillWatch counters (rupt caster / strip / hex-remove) before each bar slot.
+;~ $skilltype filters the non-counter bar pass ($all skips columns owned by Listen).
+; $aMaxDistanceToXY = 5000 (default) disables the leash; any other value is checked once after a full bar pass.
+Func UseSkills($x, $y, $aAggroRange = 1320, $skilltype = $all, $aMaxDistanceToXY = 5000, $aAgent = 0)
+	If Map_GetInstanceInfo("Type") = $GC_I_MAP_TYPE_EXPLORABLE Then EnemySkillWatch_Poll($aAggroRange + 200)
+	If Agent_GetAgentInfo(-2, "IsDead") Or Map_GetInstanceInfo("Type") == 2 Then Return False
+	If $BestTarget <> 0 And Agent_GetAgentInfo($BestTarget, "Allegiance") = 3 And Agent_GetAgentInfo($BestTarget, "IsDead") Then $BestTarget = 0
+	If Agent_NoEnemiesAround($aAggroRange) Then Return False
+
+	For $aSkillSlot In $Skillbar
+		If Agent_GetAgentInfo(-2, "IsDead") Or Map_GetInstanceInfo("Type") == 2 Then Return False
+		If Agent_NoEnemiesAround($aAggroRange) Then Return False
+
+		; Keep countering until the pool has nothing left we can (or should wait to) counter.
+		; Short sleep while waiting on a staged rupt land window — 40ms was fine; do not add extra delay.
+		ListenToSkillsAndCounter($aAggroRange)
+		If Agent_GetAgentInfo(-2, "IsDead") Then Return False
+		If $BestTarget <> 0 And Agent_GetAgentInfo($BestTarget, "Allegiance") = 3 And Agent_GetAgentInfo($BestTarget, "IsDead") Then $BestTarget = 0
+
+		; Bar progress: Listen already owns $rupt / $enchantremove / $hexremove when $skilltype = $all.
+		If $SkillBarCache[$aSkillSlot][$rupt] <> "" Then ContinueLoop
+		If $SkillBarCache[$aSkillSlot][$enchantremove] <> "" Then ContinueLoop
+		If $SkillBarCache[$aSkillSlot][$hexremove] <> "" Then ContinueLoop
+
+		If CanUse($aSkillSlot, $aAggroRange, $skilltype) Then Skill_TryUseSkill($aSkillSlot, $BestTarget, False, 0)
+		ListenToSkillsAndCounter($aAggroRange)
+	Next
+
+	If $aAgent <> 0 Then
+		If Agent_GetDistance($aAgent) > $aMaxDistanceToXY Then Return False
+	ElseIf $aMaxDistanceToXY <> 5000 Then
+		If Agent_GetDistanceToXY($x, $y) > $aMaxDistanceToXY Then Return False
+	EndIf
+	Return True
+EndFunc   ;==>UseSkills
+
+; One counter attempt from EnemySkillWatch.
+; True  = fired a counter, or a critical opportunity is still pending (keep polling).
+; False = nothing left to counter right now — UseSkills may advance the bar (Shame etc.).
+; @Extended = skillslot used when a counter was fired (else 0).
+;
+; Order: landable rupt first; after a rupt, next free pass prefers enchant/hex strip then
+; releases the While once so non-counter bar skills can fire between interrupts.
+; Poll pool, then CanUse($slot, $column) → TryUseSkill. Targeting for Shame/Diversion/BF/Guilt
+; lives in CanUse / GetBestTargetBySkillSlot (IsAnnoyingSkill logic) — do not bypass it.
+Func ListenToSkillsAndCounter($aAggroRange = 1320)
+	SetExtended(0)
+	If Map_GetInstanceInfo("Type") <> $GC_I_MAP_TYPE_EXPLORABLE Then Return False
+	If Agent_GetAgentInfo(-2, "IsDead") Or Agent_GetAgentInfo(-2, "IsKnocked") Then Return False
+
+	EnemySkillWatch_Poll($aAggroRange + 200)
+	ESW_RefreshRuptLandTargets($aAggroRange)
+
+	If OurActivationBusyMs() > 0 Then
+		If ESW_AnyStagedRuptLandable() Then Return True
+		If $ESW_PreferStripAfterRupt And ESW_AnyStagedStripReady() Then Return True
+		Return False
+	EndIf
+
+	Local $iSlot
+
+	; After a rupt: strip / hexremove / annoying hexes via CanUse (same as bar).
+	If $ESW_PreferStripAfterRupt Then
+		$iSlot = Listen_TryCanUseColumn($aAggroRange, $enchantremove)
+		If $iSlot > 0 Then
+			$ESW_PreferStripAfterRupt = False
+			SetExtended($iSlot)
+			Return True
+		EndIf
+		$iSlot = Listen_TryCanUseColumn($aAggroRange, $hexremove)
+		If $iSlot > 0 Then
+			$ESW_PreferStripAfterRupt = False
+			SetExtended($iSlot)
+			Return True
+		EndIf
+		$iSlot = Listen_TryCanUseColumn($aAggroRange, $hexes)
+		$ESW_PreferStripAfterRupt = False
+		If $iSlot > 0 Then
+			SetExtended($iSlot)
+			Return True
+		EndIf
+		Return False
+	EndIf
+
+	$iSlot = Listen_TryCanUseColumn($aAggroRange, $rupt)
+	If $iSlot > 0 Then
+		$ESW_PreferStripAfterRupt = True
+		If $BestTarget <> 0 Then
+			ESW_MarkCasterHandled(Agent_ConvertID($BestTarget))
+			If $SkillBarCache[$iSlot][$all] = $GC_I_SKILL_ID_POWER_LEECH Then
+				Local $iEther = $SkillbarSlot[$GC_I_SKILL_ID_ETHER_PHANTOM]
+				If $iEther > 0 And Skill_GetSkillbarInfo($iEther, "IsRecharged") Then
+					Sleep(50)
+					Skill_UseSkill($iEther, $BestTarget)
+				EndIf
+			EndIf
+		EndIf
+		SetExtended($iSlot)
+		Return True
+	EndIf
+
+	$iSlot = Listen_TryCanUseColumn($aAggroRange, $enchantremove)
+	If $iSlot > 0 Then
+		SetExtended($iSlot)
+		Return True
+	EndIf
+	$iSlot = Listen_TryCanUseColumn($aAggroRange, $hexremove)
+	If $iSlot > 0 Then
+		SetExtended($iSlot)
+		Return True
+	EndIf
+	$iSlot = Listen_TryCanUseColumn($aAggroRange, $hexes)
+	If $iSlot > 0 Then
+		SetExtended($iSlot)
+		Return True
+	EndIf
+
+	If ESW_AnyStagedRuptWaiting() Then Return True
+	Return False
+EndFunc   ;==>ListenToSkillsAndCounter
+
+; Walk SkillBarCache for $aColumn; If CanUse Then TryUseSkill (BestTarget set by CanUse).
+Func Listen_TryCanUseColumn($aAggroRange, $aColumn)
+	Local $aSlot
+	For $aSlot In $Skillbar
+		If $SkillBarCache[$aSlot][$aColumn] = "" Or $SkillBarCache[$aSlot][$aColumn] = 0 Then ContinueLoop
+		If Not CanUse($aSlot, $aAggroRange, $aColumn) Then ContinueLoop
+		If Not Skill_TryUseSkill($aSlot, $BestTarget, False, 0) Then ContinueLoop
+		Out("Listen CanUse col " & $aColumn & " slot " & $aSlot & " → " & $BestTarget)
+		Return $aSlot
+	Next
+	Return 0
+EndFunc   ;==>Listen_TryCanUseColumn
+
+Func ESW_AnyStagedRuptLandable()
+	Local $r
+	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
+		If Number($EnemySkillWatch[$r][$ESW_RUPT_SLOT]) > 0 And Number($EnemySkillWatch[$r][$ESW_RUPT_TARGET]) <> 0 Then Return True
+	Next
+	Return False
+EndFunc
+
+Func ESW_AnyStagedRuptWaiting()
+	Local $r
+	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
+		If Not $EnemySkillWatch[$r][$ESW_CASTING] Then ContinueLoop
+		If Number($EnemySkillWatch[$r][$ESW_RUPT_SLOT]) > 0 And Number($EnemySkillWatch[$r][$ESW_RUPT_TARGET]) = 0 Then Return True
+	Next
+	Return False
+EndFunc
+
+Func ESW_AnyStagedStripReady()
+	Local $r
+	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
+		If $EnemySkillWatch[$r][$ESW_STRIP_READY] And Number($EnemySkillWatch[$r][$ESW_STRIP_SLOT]) > 0 And Number($EnemySkillWatch[$r][$ESW_STRIP_TARGET]) <> 0 Then Return True
+	Next
+	Return False
+EndFunc
+
+Func ESW_AnyStagedFollow()
+	Local $r
+	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
+		If Number($EnemySkillWatch[$r][$ESW_FOLLOW_SLOT]) > 0 And Number($EnemySkillWatch[$r][$ESW_FOLLOW_TARGET]) <> 0 Then Return True
+	Next
+	Return False
+EndFunc
+
+; Walk every SkillBarCache slot marked $enchantremove (Shatter Enchantment, etc.).
+; Target = enchanted foe (pool-fresh enchant preferred, else any enchanted in range).
+; Returns skillslot used, or 0.
+Func Listen_TryEnchantRemove($aAggroRange = 1320)
+	Local $iTarget = ESW_BestEnchantStripTarget($aAggroRange)
+	If $iTarget = 0 Then Return 0
+
+	Local $aSlot
+	For $aSlot In $Skillbar
+		If $SkillBarCache[$aSlot][$enchantremove] = "" Or $SkillBarCache[$aSlot][$enchantremove] = 0 Then ContinueLoop
+		If Not CanCastFollowUp($aSlot) Then ContinueLoop
+		$BestTarget = $iTarget
+		If Not Skill_TryUseSkill($aSlot, $BestTarget, False, 0, True) Then ContinueLoop
+		Out("Listen enchantremove slot " & $aSlot & " (" & $SkillBarCache[$aSlot][$enchantremove] & ") → " & $BestTarget)
+		Return $aSlot
+	Next
+	Return 0
+EndFunc   ;==>Listen_TryEnchantRemove
+
+; Walk every SkillBarCache slot marked $hexremove.
+Func Listen_TryHexRemove($aAggroRange = 1320)
+	Local $iTarget = ESW_BestHexRemoveTarget($aAggroRange)
+	If $iTarget = 0 Then
+		; Standing hexes: still strip even without a fresh pool hex row.
+		$iTarget = Agent_GetMostHexedAlly($aAggroRange)
+	EndIf
+	If $iTarget = 0 Then Return 0
+
+	Local $aSlot
+	For $aSlot In $Skillbar
+		If $SkillBarCache[$aSlot][$hexremove] = "" Or $SkillBarCache[$aSlot][$hexremove] = 0 Then ContinueLoop
+		If Not CanCastFollowUp($aSlot) Then ContinueLoop
+		$BestTarget = $iTarget
+		If Not Skill_TryUseSkill($aSlot, $BestTarget, False, 0, True) Then ContinueLoop
+		Out("Listen hexremove slot " & $aSlot & " (" & $SkillBarCache[$aSlot][$hexremove] & ") → " & $BestTarget)
+		Return $aSlot
+	Next
+	Return 0
+EndFunc   ;==>Listen_TryHexRemove
+
+; Pool saw a heal → Shame/Mark that caster; foe-mode cast → Guilt/Mistrust.
+; No rupt land-timing. Aftercast / lingering IsCasting do not block (CanCastFollowUp).
+; Returns skillslot used, or 0.
+Func Listen_TryShameGuiltFollowUp($aAggroRange = 1320)
+	Local $aSlot, $iCaster
+
+	$iCaster = ESW_BestHealCaster($aAggroRange)
+	If $iCaster <> 0 Then
+		For $aSlot In $Skillbar
+			Switch $SkillBarCache[$aSlot][$all]
+				Case $Shame, $Mark_of_Subversion
+				Case Else
+					ContinueLoop
+			EndSwitch
+			If Agent_GetAgentInfo($iCaster, "IsHexed") Then ExitLoop
+			If Not CanCastFollowUp($aSlot) Then ContinueLoop
+			$BestTarget = $iCaster
+			If Not Skill_TryUseSkill($aSlot, $BestTarget, False, 0, True) Then ContinueLoop
+			Out("Listen Shame/Mark on heal caster slot " & $aSlot & " → " & $BestTarget)
+			Return $aSlot
+		Next
+	EndIf
+
+	$iCaster = ESW_BestGuiltTarget($aAggroRange)
+	If $iCaster <> 0 Then
+		For $aSlot In $Skillbar
+			Switch $SkillBarCache[$aSlot][$all]
+				Case $Guilt, $Mistrust, $Mistrust_PvP
+				Case Else
+					ContinueLoop
+			EndSwitch
+			If Agent_GetAgentInfo($iCaster, "IsHexed") Then ExitLoop
+			If Not CanCastFollowUp($aSlot) Then ContinueLoop
+			$BestTarget = $iCaster
+			If Not Skill_TryUseSkill($aSlot, $BestTarget, False, 0, True) Then ContinueLoop
+			Out("Listen Guilt/Mistrust on foe-cast slot " & $aSlot & " → " & $BestTarget)
+			Return $aSlot
+		Next
+	EndIf
+	Return 0
+EndFunc   ;==>Listen_TryShameGuiltFollowUp
+
+; Like CanCast, but aftercast / lingering IsCasting do not block — only activation busy + resources.
+Func CanCastFollowUp($aSkillSlot = 0)
+	If Map_GetInstanceInfo("Type") == 0 Then Return False
+	If Agent_GetAgentInfo(-2, "IsKnocked") Or Agent_GetAgentInfo(-2, "IsDead") Or Wipe() Then Return False
+	If OurActivationBusyMs() > 0 Then Return False
+
+	If $aSkillSlot <> 0 Then
+		If Not Skill_GetSkillbarInfo($aSkillSlot, "IsRecharged") Then Return False
+		Local $lEnergyReq = $SkillBarCache[$aSkillSlot][$energyreq]
+		If Skill_HasEffect($Quickening_Zephyr) Then $lEnergyReq = $lEnergyReq * 1.3
+		If Agent_GetAgentInfo(-2, "CurrentEnergy") < $lEnergyReq Then Return False
+		If $SkillBarCache[$aSkillSlot][$adrereq] <> 0 And Skill_GetSkillbarInfo($aSkillSlot, "Adrenaline") < $SkillBarCache[$aSkillSlot][$adrereq] Then Return False
+	EndIf
+	Return True
+EndFunc   ;==>CanCastFollowUp
+
+; Caster in the pool who cast / is casting a heal (Shame follow-up target).
+Func ESW_BestHealCaster($aAggroRange = 1320)
+	Local $iBest = 0, $iBestScore = -1
+	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
+		If Not IsHealSkill($EnemySkillWatch[$r][$ESW_SKILL]) Then ContinueLoop
+		Local $bFresh = $EnemySkillWatch[$r][$ESW_CASTING]
+		If Not $bFresh And $EnemySkillWatch[$r][$ESW_LANDED] <> 0 Then
+			$bFresh = TimerDiff($EnemySkillWatch[$r][$ESW_LANDED]) <= 3000
+		EndIf
+		If Not $bFresh And $EnemySkillWatch[$r][$ESW_START] <> 0 Then
+			$bFresh = TimerDiff($EnemySkillWatch[$r][$ESW_START]) <= 3000
+		EndIf
+		If Not $bFresh Then ContinueLoop
+
+		Local $iCaster = $EnemySkillWatch[$r][$ESW_AGENT]
+		If $iCaster = 0 Or Agent_GetAgentInfo($iCaster, "IsDead") Then ContinueLoop
+		If Agent_GetAgentInfo($iCaster, "IsHexed") Then ContinueLoop
+		If Agent_GetDistance($iCaster) > $aAggroRange Then ContinueLoop
+
+		Local $iScore = 100
+		If $EnemySkillWatch[$r][$ESW_CASTING] Then $iScore += 50
+		If Agent_IsSupportCasterProfession($iCaster) Then $iScore += 40
+		If $iScore > $iBestScore Then
+			$iBestScore = $iScore
+			$iBest = $iCaster
+		EndIf
+	Next
+	Return $iBest
+EndFunc   ;==>ESW_BestHealCaster
+
+Func ESW_HasReadyShameSkill()
+	Local $s
+	For $s = 1 To 8
+		Switch $SkillBarCache[$s][$all]
+			Case $Shame, $Mark_of_Subversion
+				If Skill_GetSkillbarInfo($s, "IsRecharged") Then Return True
+		EndSwitch
+	Next
+	Return False
+EndFunc   ;==>ESW_HasReadyShameSkill
+
+Func ESW_HasReadyGuiltSkill()
+	Local $s
+	For $s = 1 To 8
+		Switch $SkillBarCache[$s][$all]
+			Case $Guilt, $Mistrust, $Mistrust_PvP
+				If Skill_GetSkillbarInfo($s, "IsRecharged") Then Return True
+		EndSwitch
+	Next
+	Return False
+EndFunc   ;==>ESW_HasReadyGuiltSkill
+
+; True if any rupt slot has a landable caster in the pool (ignores our busy/IsCasting).
+Func ESW_RuptLandableNow($aAggroRange = 1320)
+	Local $aSlot
+	For $aSlot In $Skillbar
+		If $SkillBarCache[$aSlot][$rupt] = "" Then ContinueLoop
+		If ESW_BestRuptTargetForSlot($aSlot, $aAggroRange) <> 0 Then Return True
+	Next
+	Return False
+EndFunc   ;==>ESW_RuptLandableNow
+
+Func ESW_HasReadyRuptSkill()
+	Local $s
+	For $s = 1 To 8
+		If $SkillBarCache[$s][$rupt] = "" Then ContinueLoop
+		If Skill_GetSkillbarInfo($s, "IsRecharged") Then Return True
+	Next
+	Return False
+EndFunc   ;==>ESW_HasReadyRuptSkill
+
+Func ESW_HasReadyStripSkill()
+	Local $s
+	For $s = 1 To 8
+		If $SkillBarCache[$s][$enchantremove] = "" And $SkillBarCache[$s][$hexremove] = "" Then ContinueLoop
+		If Skill_GetSkillbarInfo($s, "IsRecharged") Then Return True
+	Next
+	Return False
+EndFunc   ;==>ESW_HasReadyStripSkill
+
+Func ESW_HasRuptableCast($aAggroRange = 1320)
+	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
+		If Not $EnemySkillWatch[$r][$ESW_CASTING] Then ContinueLoop
+		If $EnemySkillWatch[$r][$ESW_ACTIVATION] <= 0 Then ContinueLoop
+		Local $iCaster = $EnemySkillWatch[$r][$ESW_AGENT]
+		If Agent_GetDistance($iCaster) <= $aAggroRange And ESW_IsCastPose($iCaster) Then Return True
+	Next
+	Return False
+EndFunc   ;==>ESW_HasRuptableCast
+
+; Fresh enchant/hex in the pool strip window (for post-rupt prefer / busy hold).
+Func ESW_HasStripOpportunity($aAggroRange = 1320)
+	Local $bEnchantBar = False, $bHexBar = False
+	Local $s
+	For $s = 1 To 8
+		If $SkillBarCache[$s][$enchantremove] <> "" Then $bEnchantBar = True
+		If $SkillBarCache[$s][$hexremove] <> "" Then $bHexBar = True
+	Next
+	If Not $bEnchantBar And Not $bHexBar Then Return False
+
+	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
+		Local $bFresh = $EnemySkillWatch[$r][$ESW_CASTING]
+		If Not $bFresh And $EnemySkillWatch[$r][$ESW_LANDED] <> 0 Then
+			$bFresh = TimerDiff($EnemySkillWatch[$r][$ESW_LANDED]) <= $ESW_STRIP_WINDOW_MS
+		EndIf
+		If Not $bFresh Then ContinueLoop
+		If $bEnchantBar And $EnemySkillWatch[$r][$ESW_TYPE] = $GC_I_SKILL_TYPE_ENCHANTMENT Then Return True
+		If $bHexBar And $EnemySkillWatch[$r][$ESW_TYPE] = $GC_I_SKILL_TYPE_HEX Then Return True
+	Next
+	Return False
+EndFunc   ;==>ESW_HasStripOpportunity
+
+; Any rupt / enchantremove / hexremove slot currently recharged.
+Func ESW_HasReadyCounterSkill()
+	Local $s
+	For $s = 1 To 8
+		If $SkillBarCache[$s][$all] = 0 Then ContinueLoop
+		If $SkillBarCache[$s][$rupt] = "" And $SkillBarCache[$s][$enchantremove] = "" And $SkillBarCache[$s][$hexremove] = "" Then ContinueLoop
+		If Skill_GetSkillbarInfo($s, "IsRecharged") Then Return True
+	Next
+	Return False
+EndFunc   ;==>ESW_HasReadyCounterSkill
+
+; Pool has a ruptable cast in range, or a fresh enchant/hex strip window matching a bar column.
+Func ESW_HasCounterOpportunity($aAggroRange = 1320)
+	Local $bRuptBar = ($RuptSlots[0] > 0)
+	Local $bEnchantBar = False, $bHexBar = False
+	Local $s
+	For $s = 1 To 8
+		If $SkillBarCache[$s][$enchantremove] <> "" Then $bEnchantBar = True
+		If $SkillBarCache[$s][$hexremove] <> "" Then $bHexBar = True
+	Next
+
+	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
+		If $bRuptBar And $EnemySkillWatch[$r][$ESW_CASTING] Then
+			Local $iAct = $EnemySkillWatch[$r][$ESW_ACTIVATION]
+			If $iAct > 0 Then
+				Local $iCaster = $EnemySkillWatch[$r][$ESW_AGENT]
+				If Agent_GetDistance($iCaster) <= $aAggroRange And ESW_IsCastPose($iCaster) Then Return True
+			EndIf
+		EndIf
+
+		Local $bFresh = $EnemySkillWatch[$r][$ESW_CASTING]
+		If Not $bFresh And $EnemySkillWatch[$r][$ESW_LANDED] <> 0 Then
+			$bFresh = TimerDiff($EnemySkillWatch[$r][$ESW_LANDED]) <= $ESW_STRIP_WINDOW_MS
+		EndIf
+		If Not $bFresh Then ContinueLoop
+		If $bEnchantBar And $EnemySkillWatch[$r][$ESW_TYPE] = $GC_I_SKILL_TYPE_ENCHANTMENT Then Return True
+		If $bHexBar And $EnemySkillWatch[$r][$ESW_TYPE] = $GC_I_SKILL_TYPE_HEX Then Return True
+	Next
+	Return False
+EndFunc   ;==>ESW_HasCounterOpportunity
+
+; $aTimeout <= 0 returns after send (Fight/rupt polls via EnemySkillWatch in UseSkills).
+; $aFollowUp True = Shame/Guilt path: aftercast / lingering IsCasting do not block (CanCastFollowUp).
+Func Skill_TryUseSkill($aSkillSlot, $aTarget = -2, $aCallTarget = False, $aTimeout = 10000, $aFollowUp = False)
+	If $aSkillSlot < 1 Or $aSkillSlot > 8 Then Return False
+	Local $lDeadlock = TimerInit()
+	Local $ExitTimer = 0
+	Local $lAgentID = Agent_ConvertID($aTarget)
+	If $lAgentID = 0 Or Agent_GetAgentInfo(-2, "IsDead") Then Return False
+	If $aFollowUp Then
+		If Not CanCastFollowUp($aSkillSlot) Then Return False
+	Else
+		If Not CanCast($aSkillSlot) Then Return False
+	EndIf
+	If $lAgentID <> Agent_GetMyID() Then Agent_ChangeTarget($lAgentID)
+	If Not Skill_UseSkill($aSkillSlot, $lAgentID, $aCallTarget) Then Return False
+	$MySkillSlot = $aSkillSlot
+	$MyTargetID = $lAgentID
+	$AftercastTimer = TimerInit()
+	If $aTimeout <= 0 Then Return True
+	Do
+		If Agent_GetDistance($lAgentID) < 1320 And $ExitTimer = 0 Then $ExitTimer = TimerInit()
+		If Agent_GetAgentInfo($lAgentID, "IsDead") Then ExitLoop
+		Sleep(50)
+	Until (Not $aFollowUp And Not CanCast($aSkillSlot)) Or ($aFollowUp And Not CanCastFollowUp($aSkillSlot)) _
+		Or TimerDiff($lDeadlock) > $aTimeout _
+		Or (Agent_GetAgentInfo(-2, "IsCasting") = 0 And $ExitTimer <> 0 And TimerDiff($ExitTimer) > 1000) _
+		Or Agent_GetAgentInfo(-2, "IsDead")
+	If Not $aFollowUp Then Sleep($SkillBarCache[$aSkillSlot][$aftercast])
+	Return True
+EndFunc
+
+Func EnemySkillWatch_Reset()
+	ReDim $EnemySkillWatch[1][$ESW_COLS]
+	$EnemySkillWatch[0][$ESW_AGENT] = 0
+	$ESW_LastPoll = 0
+EndFunc
+
+Func EnemySkillWatch_Note($aCasterID, $aSkillID)
+	$aCasterID = Number($aCasterID)
+	$aSkillID = Number($aSkillID)
+	If $aCasterID <= 0 Or $aSkillID <= 0 Then Return
+	If Agent_GetAgentInfo($aCasterID, "Allegiance") <> 3 Then Return
+
+	Local $iRow = 0
+	For $i = 1 To $EnemySkillWatch[0][$ESW_AGENT]
+		If $EnemySkillWatch[$i][$ESW_AGENT] = $aCasterID Then
+			$iRow = $i
+			ExitLoop
+		EndIf
+	Next
+	If $iRow > 0 And $EnemySkillWatch[$iRow][$ESW_SKILL] = $aSkillID And $EnemySkillWatch[$iRow][$ESW_CASTING] Then Return
+	; Just interrupted / marked landed — do not re-arm the same skill from lingering cast pose.
+	If $iRow > 0 And $EnemySkillWatch[$iRow][$ESW_SKILL] = $aSkillID And Not $EnemySkillWatch[$iRow][$ESW_CASTING] Then
+		If $EnemySkillWatch[$iRow][$ESW_LANDED] <> 0 And TimerDiff($EnemySkillWatch[$iRow][$ESW_LANDED]) < 750 Then Return
+	EndIf
+
+	If $iRow = 0 Then
+		Local $n = $EnemySkillWatch[0][$ESW_AGENT] + 1
+		If $n > $ESW_MAX_ROWS Then
+			ESW_RemoveRow(1)
+			$n = $EnemySkillWatch[0][$ESW_AGENT] + 1
+		EndIf
+		ReDim $EnemySkillWatch[$n + 1][$ESW_COLS]
+		$EnemySkillWatch[0][$ESW_AGENT] = $n
+		$iRow = $n
+	EndIf
+
+	$EnemySkillWatch[$iRow][$ESW_AGENT] = $aCasterID
+	$EnemySkillWatch[$iRow][$ESW_SKILL] = $aSkillID
+	$EnemySkillWatch[$iRow][$ESW_START] = TimerInit()
+	$EnemySkillWatch[$iRow][$ESW_ACTIVATION] = Number(Skill_GetSkillInfo($aSkillID, "Activation")) * 1000
+	$EnemySkillWatch[$iRow][$ESW_TYPE] = Number(Skill_GetSkillInfo($aSkillID, "SkillType"))
+	$EnemySkillWatch[$iRow][$ESW_JITTER] = 0 ; was Random(0,150) — ate the 1s rupt window via pad
+	$EnemySkillWatch[$iRow][$ESW_MODE] = ESW_CastModeFromSkill($aSkillID)
+	If $EnemySkillWatch[$iRow][$ESW_ACTIVATION] <= 0 Then
+		$EnemySkillWatch[$iRow][$ESW_CASTING] = 0
+		$EnemySkillWatch[$iRow][$ESW_LANDED] = TimerInit()
+	Else
+		$EnemySkillWatch[$iRow][$ESW_CASTING] = 1
+		$EnemySkillWatch[$iRow][$ESW_LANDED] = 0
+	EndIf
+	; Stage counters as soon as the skill is logged (order = arrival order).
+	ESW_StageRow($iRow, 1320)
+EndFunc
+
+; Clear staged counter fields for one pool row.
+Func ESW_ClearRowStaging($iRow)
+	If $iRow < 1 Or $iRow > $EnemySkillWatch[0][$ESW_AGENT] Then Return
+	$EnemySkillWatch[$iRow][$ESW_RUPT_SLOT] = 0
+	$EnemySkillWatch[$iRow][$ESW_RUPT_TARGET] = 0
+	$EnemySkillWatch[$iRow][$ESW_STRIP_SLOT] = 0
+	$EnemySkillWatch[$iRow][$ESW_STRIP_TARGET] = 0
+	$EnemySkillWatch[$iRow][$ESW_STRIP_READY] = 0
+	$EnemySkillWatch[$iRow][$ESW_STRIP_KIND] = $ESW_STRIP_NONE
+	$EnemySkillWatch[$iRow][$ESW_FOLLOW_SLOT] = 0
+	$EnemySkillWatch[$iRow][$ESW_FOLLOW_TARGET] = 0
+EndFunc   ;==>ESW_ClearRowStaging
+
+; Recompute landability / strip targets for every live row (call after Poll).
+Func ESW_RefreshAllStaging($aAggroRange = 1320)
+	Local $r
+	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
+		ESW_StageRow($r, $aAggroRange)
+	Next
+EndFunc   ;==>ESW_RefreshAllStaging
+
+; First recharged SkillBarCache slot with a non-empty column ($enchantremove / $hexremove / …).
+Func ESW_FirstCacheSlot($aColumn)
+	Local $s
+	For $s = 1 To 8
+		If $SkillBarCache[$s][$aColumn] = "" Or $SkillBarCache[$s][$aColumn] = 0 Then ContinueLoop
+		If Skill_GetSkillbarInfo($s, "IsRecharged") Then Return $s
+	Next
+	Return 0
+EndFunc   ;==>ESW_FirstCacheSlot
+
+Func ESW_FirstShameSlot()
+	Local $s
+	For $s = 1 To 8
+		Switch $SkillBarCache[$s][$all]
+			Case $Shame, $Mark_of_Subversion
+				If Skill_GetSkillbarInfo($s, "IsRecharged") Then Return $s
+		EndSwitch
+	Next
+	Return 0
+EndFunc
+
+Func ESW_FirstGuiltSlot()
+	Local $s
+	For $s = 1 To 8
+		Switch $SkillBarCache[$s][$all]
+			Case $Guilt, $Mistrust, $Mistrust_PvP
+				If Skill_GetSkillbarInfo($s, "IsRecharged") Then Return $s
+		EndSwitch
+	Next
+	Return 0
+EndFunc
+
+; True if this rupt slot should fire on the row's caster right now.
+; 250ms (and any cast shorter than our land time): fire on sight — remain>land is impossible.
+Func ESW_RuptWouldLandOnRow($aSkillSlot, $iRow)
+	If $aSkillSlot < 1 Or $iRow < 1 Then Return False
+	If Not $EnemySkillWatch[$iRow][$ESW_CASTING] Then Return False
+	Local $iAct = $EnemySkillWatch[$iRow][$ESW_ACTIVATION]
+	If $iAct <= 0 Then Return False
+	Local $iCaster = $EnemySkillWatch[$iRow][$ESW_AGENT]
+	If $iCaster = 0 Or Not ESW_IsCastPose($iCaster) Then Return False
+
+	Local $iElapsed = TimerDiff($EnemySkillWatch[$iRow][$ESW_START])
+	If $iElapsed >= $iAct Then Return False
+
+	Local $iLand = GetAdjustedActivation($aSkillSlot, $iCaster)
+	; Enemy cast shorter/equal to our land time (typical 1/4s spells): interrupt immediately.
+	If $iAct <= 500 Or $iAct <= $iLand + $ESW_POLL_SLACK_MS Then Return True
+
+	Local $iRemain = $iAct - $iElapsed - $ESW_POLL_SLACK_MS
+	If $iRemain <= $iLand Then Return False
+
+	; Long casts only: delay until our hit falls in the last TAIL ms.
+	If $iAct > $ESW_ZERO_WAIT_ACT Then
+		If $iElapsed + $iLand < $iAct - $ESW_RUPT_TAIL_MS Then Return False
+	EndIf
+	Return True
+EndFunc   ;==>ESW_RuptWouldLandOnRow
+
+; Cheap per-tick update: only RUPT_TARGET landability (no strip array scans).
+Func ESW_RefreshRuptLandTargets($aAggroRange = 1320)
+	Local $r, $iSlot, $iCaster
+	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
+		$iSlot = Number($EnemySkillWatch[$r][$ESW_RUPT_SLOT])
+		If $iSlot < 1 Then ContinueLoop
+		$iCaster = Number($EnemySkillWatch[$r][$ESW_AGENT])
+		If $iCaster = 0 Or Agent_GetDistance($iCaster) > $aAggroRange Then
+			$EnemySkillWatch[$r][$ESW_RUPT_TARGET] = 0
+			ContinueLoop
+		EndIf
+		If ESW_RuptWouldLandOnRow($iSlot, $r) Then
+			$EnemySkillWatch[$r][$ESW_RUPT_TARGET] = $iCaster
+		Else
+			$EnemySkillWatch[$r][$ESW_RUPT_TARGET] = 0
+		EndIf
+	Next
+EndFunc   ;==>ESW_RefreshRuptLandTargets
+
+; Populate staged counter columns for one logged skill (arrival-time policy).
+Func ESW_StageRow($iRow, $aAggroRange = 1320)
+	If $iRow < 1 Or $iRow > $EnemySkillWatch[0][$ESW_AGENT] Then Return
+	ESW_ClearRowStaging($iRow)
+
+	Local $iCaster = Number($EnemySkillWatch[$iRow][$ESW_AGENT])
+	Local $iSkill = Number($EnemySkillWatch[$iRow][$ESW_SKILL])
+	Local $iType = Number($EnemySkillWatch[$iRow][$ESW_TYPE])
+	Local $iMode = Number($EnemySkillWatch[$iRow][$ESW_MODE])
+	If $iCaster = 0 Or $iSkill = 0 Then Return
+	If Agent_GetDistance($iCaster) > $aAggroRange Then Return
+
+	; --- Rupt: best slot from cache; target 0 until land window ---
+	If $EnemySkillWatch[$iRow][$ESW_CASTING] And $EnemySkillWatch[$iRow][$ESW_ACTIVATION] > 0 Then
+		Local $iRuptSlot = GetBestRupt($iSkill, $iCaster, $aAggroRange)
+		If $iRuptSlot > 0 Then
+			$EnemySkillWatch[$iRow][$ESW_RUPT_SLOT] = $iRuptSlot
+			If ESW_RuptWouldLandOnRow($iRuptSlot, $iRow) Then
+				$EnemySkillWatch[$iRow][$ESW_RUPT_TARGET] = $iCaster
+			Else
+				$EnemySkillWatch[$iRow][$ESW_RUPT_TARGET] = 0
+			EndIf
+		EndIf
+	EndIf
+
+	; --- Enchant remove: flag when a target exists ---
+	If $iType = $GC_I_SKILL_TYPE_ENCHANTMENT Or IsEnchantmentSkill($iSkill) Then
+		Local $iEnchSlot = ESW_FirstCacheSlot($enchantremove)
+		If $iEnchSlot > 0 Then
+			Local $iEnchTarget = $iCaster
+			If Not Agent_GetAgentInfo($iCaster, "IsEnchanted") Then
+				$iEnchTarget = ESW_BestEnchantStripTarget($aAggroRange)
+			EndIf
+			If $iEnchTarget = 0 Then $iEnchTarget = Agent_GetBalledEnchantedEnemy($aAggroRange)
+			If $iEnchTarget <> 0 Then
+				$EnemySkillWatch[$iRow][$ESW_STRIP_SLOT] = $iEnchSlot
+				$EnemySkillWatch[$iRow][$ESW_STRIP_TARGET] = $iEnchTarget
+				$EnemySkillWatch[$iRow][$ESW_STRIP_READY] = 1
+				$EnemySkillWatch[$iRow][$ESW_STRIP_KIND] = $ESW_STRIP_ENCHANT
+			EndIf
+		EndIf
+	EndIf
+
+	; --- Hex remove: flag when a target exists ---
+	If $iType = $GC_I_SKILL_TYPE_HEX Or IsHexSpell($iSkill) Then
+		Local $iHexSlot = ESW_FirstCacheSlot($hexremove)
+		If $iHexSlot > 0 Then
+			Local $iHexTarget = ESW_BestHexRemoveTarget($aAggroRange)
+			If $iHexTarget = 0 Then $iHexTarget = Agent_GetMostHexedAlly($aAggroRange)
+			If $iHexTarget <> 0 Then
+				; Prefer hex strip over enchant if both somehow set — hex skill row owns hex strip.
+				$EnemySkillWatch[$iRow][$ESW_STRIP_SLOT] = $iHexSlot
+				$EnemySkillWatch[$iRow][$ESW_STRIP_TARGET] = $iHexTarget
+				$EnemySkillWatch[$iRow][$ESW_STRIP_READY] = 1
+				$EnemySkillWatch[$iRow][$ESW_STRIP_KIND] = $ESW_STRIP_HEX
+			EndIf
+		EndIf
+	EndIf
+
+	; --- Follow-up hexes: heal → Shame/Mark; foe-mode → Guilt/Mistrust (no land timing) ---
+	If IsHealSkill($iSkill) Or $iMode = $ESW_MODE_ALLY Then
+		If IsHealSkill($iSkill) Then
+			Local $iShame = ESW_FirstShameSlot()
+			If $iShame > 0 And Not Agent_GetAgentInfo($iCaster, "IsHexed") Then
+				$EnemySkillWatch[$iRow][$ESW_FOLLOW_SLOT] = $iShame
+				$EnemySkillWatch[$iRow][$ESW_FOLLOW_TARGET] = $iCaster
+			EndIf
+		EndIf
+	EndIf
+	If $iMode = $ESW_MODE_FOE Then
+		Local $iGuilt = ESW_FirstGuiltSlot()
+		If $iGuilt > 0 And Not Agent_GetAgentInfo($iCaster, "IsHexed") Then
+			; Foe-mode wins follow slot if heal didn't claim it (heal is ally-mode).
+			If Number($EnemySkillWatch[$iRow][$ESW_FOLLOW_SLOT]) = 0 Then
+				$EnemySkillWatch[$iRow][$ESW_FOLLOW_SLOT] = $iGuilt
+				$EnemySkillWatch[$iRow][$ESW_FOLLOW_TARGET] = $iCaster
+			EndIf
+		EndIf
+	EndIf
+
+	; Opportunistic strip: any logged skill can stage Shatter / hex-remove if a target exists.
+	If Not $EnemySkillWatch[$iRow][$ESW_STRIP_READY] Then
+		Local $iOppEnch = ESW_FirstCacheSlot($enchantremove)
+		If $iOppEnch > 0 Then
+			Local $iOppTarget = ESW_BestEnchantStripTarget($aAggroRange)
+			If $iOppTarget <> 0 Then
+				$EnemySkillWatch[$iRow][$ESW_STRIP_SLOT] = $iOppEnch
+				$EnemySkillWatch[$iRow][$ESW_STRIP_TARGET] = $iOppTarget
+				$EnemySkillWatch[$iRow][$ESW_STRIP_READY] = 1
+				$EnemySkillWatch[$iRow][$ESW_STRIP_KIND] = $ESW_STRIP_ENCHANT
+			EndIf
+		EndIf
+	EndIf
+	If Not $EnemySkillWatch[$iRow][$ESW_STRIP_READY] Then
+		Local $iOppHex = ESW_FirstCacheSlot($hexremove)
+		If $iOppHex > 0 Then
+			Local $iOppHexT = ESW_BestHexRemoveTarget($aAggroRange)
+			If $iOppHexT = 0 Then $iOppHexT = Agent_GetMostHexedAlly($aAggroRange)
+			If $iOppHexT <> 0 Then
+				$EnemySkillWatch[$iRow][$ESW_STRIP_SLOT] = $iOppHex
+				$EnemySkillWatch[$iRow][$ESW_STRIP_TARGET] = $iOppHexT
+				$EnemySkillWatch[$iRow][$ESW_STRIP_READY] = 1
+				$EnemySkillWatch[$iRow][$ESW_STRIP_KIND] = $ESW_STRIP_HEX
+			EndIf
+		EndIf
+	EndIf
+EndFunc   ;==>ESW_StageRow
+
+; Classify enemy skill for Shame (ally/heal) vs Guilt/Mistrust (foe-targeted).
+Func ESW_CastModeFromSkill($aSkillID)
+	$aSkillID = Number($aSkillID)
+	If $aSkillID <= 0 Then Return $ESW_MODE_NONE
+	; Heals are the clearest Shame / Mark of Subversion signal.
+	If IsHealSkill($aSkillID) Then Return $ESW_MODE_ALLY
+	If SkillTargetsSelfOrAlly($aSkillID) Then Return $ESW_MODE_ALLY
+	Local $iTarget = Number(Skill_GetSkillInfo($aSkillID, "Target"))
+	Switch $iTarget
+		Case $GC_I_SKILL_TARGET_ALLY, $GC_I_SKILL_TARGET_OTHER_ALLY, $GC_I_SKILL_TARGET_SELF, $GC_I_SKILL_TARGET_DEAD_ALLY
+			Return $ESW_MODE_ALLY
+		Case $GC_I_SKILL_TARGET_ENEMY
+			Return $ESW_MODE_FOE
+	EndSwitch
+	; Enchantments / party heals often use ambiguous Target=1; treat enchant as ally-side.
+	Local $iType = Number(Skill_GetSkillInfo($aSkillID, "SkillType"))
+	If $iType = $GC_I_SKILL_TYPE_ENCHANTMENT Or $iType = $GC_I_SKILL_TYPE_HEX Then
+		; Enemy hexes are foe-mode; ally/self hexes rare on foes casting.
+		If $iTarget = $GC_I_SKILL_TARGET_ENEMY Then Return $ESW_MODE_FOE
+		If SkillTargetsSelfOrAlly($aSkillID) Then Return $ESW_MODE_ALLY
+	EndIf
+	Return $ESW_MODE_NONE
+EndFunc   ;==>ESW_CastModeFromSkill
+
+; $aMode = "ally" (Shame / Mark of Subversion) or "foe" (Guilt / Mistrust).
+; True if this agent recently cast (or is casting) a matching-mode skill in EnemySkillWatch.
+Func EnemyHasRecentCastMode($aAgent, $aMode = "ally", $aWindowMs = 3000)
+	Local $iAgent = Number(Agent_ConvertID($aAgent))
+	If $iAgent = 0 Then $iAgent = Number($aAgent)
+	If $iAgent = 0 Then Return False
+
+	Local $iWant = $ESW_MODE_NONE
+	Switch StringLower($aMode)
+		Case "ally", "heal", "self"
+			$iWant = $ESW_MODE_ALLY
+		Case "foe", "enemy"
+			$iWant = $ESW_MODE_FOE
+		Case Else
+			Return False
+	EndSwitch
+
+	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
+		If Number($EnemySkillWatch[$r][$ESW_AGENT]) <> $iAgent Then ContinueLoop
+		If Number($EnemySkillWatch[$r][$ESW_MODE]) <> $iWant Then ContinueLoop
+		If $EnemySkillWatch[$r][$ESW_CASTING] Then Return True
+		If $EnemySkillWatch[$r][$ESW_LANDED] <> 0 And TimerDiff($EnemySkillWatch[$r][$ESW_LANDED]) <= $aWindowMs Then Return True
+		If $EnemySkillWatch[$r][$ESW_START] <> 0 And TimerDiff($EnemySkillWatch[$r][$ESW_START]) <= $aWindowMs Then Return True
+	Next
+	Return False
+EndFunc   ;==>EnemyHasRecentCastMode
+
+; Best Shame / Mark of Subversion target from the pool: heal casters first, then ally-mode support.
+Func ESW_BestShameTarget($aAggroRange = 1320)
+	Local $iBest = 0, $iBestScore = -1
+	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
+		If Number($EnemySkillWatch[$r][$ESW_MODE]) <> $ESW_MODE_ALLY Then ContinueLoop
+		Local $bFresh = $EnemySkillWatch[$r][$ESW_CASTING]
+		If Not $bFresh And $EnemySkillWatch[$r][$ESW_LANDED] <> 0 Then
+			$bFresh = TimerDiff($EnemySkillWatch[$r][$ESW_LANDED]) <= 3000
+		EndIf
+		If Not $bFresh And $EnemySkillWatch[$r][$ESW_START] <> 0 Then
+			$bFresh = TimerDiff($EnemySkillWatch[$r][$ESW_START]) <= 3000
+		EndIf
+		If Not $bFresh Then ContinueLoop
+
+		Local $iCaster = $EnemySkillWatch[$r][$ESW_AGENT]
+		If $iCaster = 0 Or Agent_GetAgentInfo($iCaster, "IsDead") Then ContinueLoop
+		If Agent_GetAgentInfo($iCaster, "IsHexed") Then ContinueLoop
+		If Agent_GetDistance($iCaster) > $aAggroRange Then ContinueLoop
+
+		Local $iScore = 10
+		If IsHealSkill($EnemySkillWatch[$r][$ESW_SKILL]) Then $iScore += 200
+		If Agent_IsSupportCasterProfession($iCaster) Then $iScore += 100
+		If $EnemySkillWatch[$r][$ESW_CASTING] Then $iScore += 50
+		$iScore += Agent_GetNumberOfEnemiesNearAgent(300, $iCaster)
+		If $iScore > $iBestScore Then
+			$iBestScore = $iScore
+			$iBest = $iCaster
+		EndIf
+	Next
+	Return $iBest
+EndFunc   ;==>ESW_BestShameTarget
+
+; Best Guilt / Mistrust target: foe-mode casts (spell aimed at enemies / us).
+Func ESW_BestGuiltTarget($aAggroRange = 1320)
+	Local $iBest = 0, $iBestScore = -1
+	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
+		If Number($EnemySkillWatch[$r][$ESW_MODE]) <> $ESW_MODE_FOE Then ContinueLoop
+		Local $bFresh = $EnemySkillWatch[$r][$ESW_CASTING]
+		If Not $bFresh And $EnemySkillWatch[$r][$ESW_LANDED] <> 0 Then
+			$bFresh = TimerDiff($EnemySkillWatch[$r][$ESW_LANDED]) <= 3000
+		EndIf
+		If Not $bFresh And $EnemySkillWatch[$r][$ESW_START] <> 0 Then
+			$bFresh = TimerDiff($EnemySkillWatch[$r][$ESW_START]) <= 3000
+		EndIf
+		If Not $bFresh Then ContinueLoop
+
+		Local $iCaster = $EnemySkillWatch[$r][$ESW_AGENT]
+		If $iCaster = 0 Or Agent_GetAgentInfo($iCaster, "IsDead") Then ContinueLoop
+		If Agent_GetAgentInfo($iCaster, "IsHexed") Then ContinueLoop
+		If Agent_GetDistance($iCaster) > $aAggroRange Then ContinueLoop
+
+		Local $iScore = 10
+		If $EnemySkillWatch[$r][$ESW_CASTING] Then $iScore += 50
+		If Agent_IsSupportCasterProfession($iCaster) Then $iScore += 10
+		$iScore += Agent_GetNumberOfEnemiesNearAgent(300, $iCaster)
+		If $iScore > $iBestScore Then
+			$iBestScore = $iScore
+			$iBest = $iCaster
+		EndIf
+	Next
+	Return $iBest
+EndFunc   ;==>ESW_BestGuiltTarget
+
+Func EnemySkillWatch_Poll($aRange = 1320)
+	If $ESW_POLL_INTERVAL > 0 And $ESW_LastPoll <> 0 And TimerDiff($ESW_LastPoll) < $ESW_POLL_INTERVAL Then Return
+	$ESW_LastPoll = TimerInit()
+
+	Local $sSeen = ","
+	; Nearby living enemies only — full MaxAgents scans were too slow to catch 250ms casts.
+	Local $aPtr = Agent_GetFilteredAgentArray(4, $GC_I_AGENT_TYPE_LIVING, $GC_I_ALLEGIANCE_ENEMY, $aRange, Agent_GetAgentPtr(-2), 0)
+	Local $n, $iAgent, $iSkill
+	For $n = 1 To $aPtr[0]
+		$iAgent = Number(Agent_GetAgentInfo($aPtr[$n], "ID"))
+		If $iAgent = 0 Then ContinueLoop
+		If Not ESW_IsCastPose($iAgent) Then ContinueLoop
+		$iSkill = Number(Agent_GetAgentInfo($iAgent, "Skill"))
+		If $iSkill = 0 Then ContinueLoop
+		$sSeen &= $iAgent & ","
+		EnemySkillWatch_Note($iAgent, $iSkill)
+	Next
+
+	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
+		If Not $EnemySkillWatch[$r][$ESW_CASTING] Then ContinueLoop
+		If StringInStr($sSeen, "," & $EnemySkillWatch[$r][$ESW_AGENT] & ",") Then ContinueLoop
+		If TimerDiff($EnemySkillWatch[$r][$ESW_START]) < $ESW_POLL_SLACK_MS Then ContinueLoop
+		$EnemySkillWatch[$r][$ESW_CASTING] = 0
+		$EnemySkillWatch[$r][$ESW_LANDED] = TimerInit()
+	Next
+
+	ESW_Prune()
+EndFunc
+
+; Compat: pool is owned by UseSkills. Kept so old call sites do not hard-fail.
+Func ESW_React($aAggroRange)
+	EnemySkillWatch_Poll($aAggroRange + 200)
+	Return False
+EndFunc
+
+; Mark a pool caster as handled after a successful rupt.
+Func ESW_MarkCasterHandled($aCasterID)
+	$aCasterID = Number($aCasterID)
+	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
+		If $EnemySkillWatch[$r][$ESW_AGENT] <> $aCasterID Then ContinueLoop
+		$EnemySkillWatch[$r][$ESW_CASTING] = 0
+		$EnemySkillWatch[$r][$ESW_LANDED] = TimerInit()
+		$EnemySkillWatch[$r][$ESW_RUPT_SLOT] = 0
+		$EnemySkillWatch[$r][$ESW_RUPT_TARGET] = 0
+		Return
+	Next
+EndFunc
+
+; Best landable caster for this rupt slot from EnemySkillWatch (0 = none).
+Func ESW_BestRuptTargetForSlot($aSkillSlot, $aAggroRange = 1320)
+	If $aSkillSlot < 1 Or $aSkillSlot > 8 Then Return 0
+	If $SkillBarCache[$aSkillSlot][$rupt] = "" Then Return 0
+	If Not Skill_GetSkillbarInfo($aSkillSlot, "IsRecharged") Then Return 0
+
+	Local $iBestCaster = 0, $iBestRemain = 0, $fBestDist = 0
+	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
+		If Not $EnemySkillWatch[$r][$ESW_CASTING] Then ContinueLoop
+		Local $iAct = $EnemySkillWatch[$r][$ESW_ACTIVATION]
+		If $iAct <= 0 Then ContinueLoop
+		Local $iCaster = $EnemySkillWatch[$r][$ESW_AGENT]
+		Local $fDist = Agent_GetDistance($iCaster)
+		If $fDist > $aAggroRange Or $fDist = 0 Then ContinueLoop
+		If Not ESW_IsCastPose($iCaster) Then ContinueLoop
+		If RequiresHardRupt($EnemySkillWatch[$r][$ESW_SKILL]) And $SkillBarCache[$aSkillSlot][$hardrupt] = "" Then ContinueLoop
+		; Prefer energy-gain rupts when low on energy: skip non-gain slots if a gain rupt is ready.
+		If Agent_GetAgentInfo(-2, "CurrentEnergy") < 20 And Not IsEnergyGainRuptSkill($SkillBarCache[$aSkillSlot][$all]) Then
+			Local $bGainReady = False
+			For $g = 1 To $RuptSlots[0]
+				Local $gSlot = $RuptSlots[$g]
+				If $gSlot = $aSkillSlot Then ContinueLoop
+				If Not IsEnergyGainRuptSkill($SkillBarCache[$gSlot][$all]) Then ContinueLoop
+				If Skill_GetSkillbarInfo($gSlot, "IsRecharged") Then
+					$bGainReady = True
+					ExitLoop
+				EndIf
+			Next
+			If $bGainReady Then ContinueLoop
+		EndIf
+
+		Local $iElapsed = TimerDiff($EnemySkillWatch[$r][$ESW_START])
+		If $iElapsed >= $iAct Then ContinueLoop
+		Local $iLand = GetAdjustedActivation($aSkillSlot, $iCaster)
+		Local $bOk = False
+		If $iAct <= 500 Or $iAct <= $iLand + $ESW_POLL_SLACK_MS Then
+			$bOk = True
+		Else
+			Local $iRemain = $iAct - $iElapsed - $ESW_POLL_SLACK_MS
+			If $iRemain > $iLand Then
+				If $iAct <= $ESW_ZERO_WAIT_ACT Then
+					$bOk = True
+				ElseIf $iElapsed + $iLand >= $iAct - $ESW_RUPT_TAIL_MS Then
+					$bOk = True
+				EndIf
+			EndIf
+		EndIf
+		If Not $bOk Then ContinueLoop
+		Local $iRemain = $iAct - $iElapsed
+
+		Local $bBetter = ($iBestCaster = 0)
+		If Not $bBetter Then
+			If Abs($iRemain - $iBestRemain) <= 40 Then
+				$bBetter = $fDist < $fBestDist
+			Else
+				$bBetter = $iRemain < $iBestRemain
+			EndIf
+		EndIf
+		If $bBetter Then
+			$iBestCaster = $iCaster
+			$iBestRemain = $iRemain
+			$fBestDist = $fDist
+		EndIf
+	Next
+	Return $iBestCaster
+EndFunc   ;==>ESW_BestRuptTargetForSlot
+
+; Best enchanted foe for Shatter Enchantment etc.
+; Prefers a foe who just cast/landed an enchantment in the pool; otherwise any enchanted foe in range.
+Func ESW_BestEnchantStripTarget($aAggroRange = 1320)
+	Local $aPtr = Agent_GetFilteredAgentArray(4, $GC_I_AGENT_TYPE_LIVING, $GC_I_ALLEGIANCE_ENEMY, $aAggroRange, Agent_GetAgentPtr(-2), $ESW_EFFECT_ENCHANTED)
+	If $aPtr[0] < 1 Then
+		; Fallback helper used elsewhere in LogicCast.
+		Return Agent_GetBalledEnchantedEnemy($aAggroRange)
+	EndIf
+
+	Local $iTarget = 0, $fBest = 1e12
+	For $n = 1 To $aPtr[0]
+		Local $iAgent = Number(Agent_GetAgentInfo($aPtr[$n], "ID"))
+		If $iAgent = 0 Then ContinueLoop
+		Local $fDist = Agent_GetDistance($iAgent)
+		Local $fAge = -1
+		For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
+			If $EnemySkillWatch[$r][$ESW_AGENT] <> $iAgent Then ContinueLoop
+			If $EnemySkillWatch[$r][$ESW_TYPE] <> $GC_I_SKILL_TYPE_ENCHANTMENT Then ContinueLoop
+			Local $bRow = $EnemySkillWatch[$r][$ESW_CASTING]
+			If Not $bRow And $EnemySkillWatch[$r][$ESW_LANDED] <> 0 Then
+				$bRow = TimerDiff($EnemySkillWatch[$r][$ESW_LANDED]) <= $ESW_STRIP_WINDOW_MS
+			EndIf
+			If Not $bRow Then ContinueLoop
+			If $EnemySkillWatch[$r][$ESW_CASTING] Then
+				$fAge = TimerDiff($EnemySkillWatch[$r][$ESW_START])
+			Else
+				$fAge = TimerDiff($EnemySkillWatch[$r][$ESW_LANDED])
+			EndIf
+			ExitLoop
+		Next
+		; Tier 0 = pool-fresh enchant caster; tier 1 = standing enchant only.
+		Local $fTier = 1
+		If $fAge >= 0 Then $fTier = 0
+		If $fAge < 0 Then $fAge = 0
+		Local $fScore = $fTier * 100000 + $fAge + $fDist * 0.05
+		If Agent_GetAgentInfo($iAgent, "Knocked") Then $fScore += 400
+		If $fScore < $fBest Then
+			$fBest = $fScore
+			$iTarget = $iAgent
+		EndIf
+	Next
+	If $iTarget = 0 Then $iTarget = Agent_GetBalledEnchantedEnemy($aAggroRange)
+	Return $iTarget
+EndFunc   ;==>ESW_BestEnchantStripTarget
+
+; Best hexed ally (incl. self) for hex removal — degen first, then lowest HP.
+Func ESW_BestHexRemoveTarget($aAggroRange = 1320)
+	Local $bFresh = False
+	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
+		Local $bRow = $EnemySkillWatch[$r][$ESW_CASTING]
+		If Not $bRow And $EnemySkillWatch[$r][$ESW_LANDED] <> 0 Then
+			$bRow = TimerDiff($EnemySkillWatch[$r][$ESW_LANDED]) <= $ESW_STRIP_WINDOW_MS
+		EndIf
+		If Not $bRow Then ContinueLoop
+		If $EnemySkillWatch[$r][$ESW_TYPE] = $GC_I_SKILL_TYPE_HEX Then
+			$bFresh = True
+			ExitLoop
+		EndIf
+	Next
+	If Not $bFresh Then Return 0
+
+	Local $iMy = Number(Agent_GetAgentInfo(-2, "ID"))
+	Local $aPtr = Agent_GetFilteredAgentArray(4, $GC_I_AGENT_TYPE_LIVING, $GC_I_ALLEGIANCE_ALLY, $aAggroRange, Agent_GetAgentPtr(-2), BitOR($ESW_EFFECT_HEXED, $ESW_EFFECT_DEGEN_HEXED))
+	Local $aId[1], $nId = 0
+	ReDim $aId[$aPtr[0] + 2]
+	For $n = 1 To $aPtr[0]
+		$nId += 1
+		$aId[$nId] = Number(Agent_GetAgentInfo($aPtr[$n], "ID"))
+	Next
+	Local $bHaveSelf = False
+	For $n = 1 To $nId
+		If $aId[$n] = $iMy Then $bHaveSelf = True
+	Next
+	If Not $bHaveSelf And (Agent_GetAgentInfo(-2, "IsHexed") Or Agent_GetAgentInfo(-2, "IsDegenHexed")) Then
+		$nId += 1
+		$aId[$nId] = $iMy
+	EndIf
+
+	Local $iTarget = 0, $fBest = 1e12
+	For $n = 1 To $nId
+		Local $iAgent = $aId[$n]
+		If $iAgent = 0 Then ContinueLoop
+		Local $bDegen = Agent_GetAgentInfo($iAgent, "IsDegenHexed")
+		Local $fDist = Agent_GetDistance($iAgent)
+		Local $fScore = Number(Agent_GetAgentInfo($iAgent, "HP")) * 10000 + $fDist * 0.05
+		If Not $bDegen Then $fScore += 100000
+		If $fScore < $fBest Then
+			$fBest = $fScore
+			$iTarget = $iAgent
+		EndIf
+	Next
+	Return $iTarget
+EndFunc   ;==>ESW_BestHexRemoveTarget
+
+; Milliseconds until this slot lands on $aTarget. Thin wrapper → Skill_GetMyActivationTime.
+Func GetAdjustedActivation($aSkillSlot, $aTarget = 0)
+	If $aSkillSlot < 1 Or $aSkillSlot > 8 Then Return 0
+	Local $iSkill = $SkillBarCache[$aSkillSlot][$all]
+	If $iSkill = 0 Then Return 0
+	Return Skill_GetMyActivationTime($iSkill, $aTarget)
+EndFunc
+
+; "IsCasting" stays true after the skill word sticks. The pose does not.
+Func ESW_IsCastPose($aAgent)
+	Local $iState = Number(Agent_GetAgentInfo($aAgent, "ModelState"))
+	Return $iState = 0x41 Or $iState = 0x245
+EndFunc
+
+; Lightweight CanUse for ESW_React when the interrupt/strip target is already known.
+Func ESW_CanUse($aSkillSlot, $aAggroRange = 1200, $aKnownTarget = 0)
+	If $aSkillSlot < 1 Or $aSkillSlot > 8 Then Return False
+	If $SkillBarCache[$aSkillSlot][$all] = 0 Then Return False
+	If Not Skill_GetSkillbarInfo($aSkillSlot, "IsRecharged") Then Return False
+
+	If Number($aKnownTarget) = 0 Then
+		If $SkillBarCache[$aSkillSlot][$rupt] Then
+			$BestTarget = 0
+			Return False
+		EndIf
+		$BestTarget = GetBestTargetBySkillSlot($aSkillSlot, $aAggroRange)
+	Else
+		$BestTarget = Number($aKnownTarget)
+	EndIf
+
+	If $BestTarget = 0 Then Return False
+	If Agent_GetDistance($BestTarget) > $aAggroRange Then Return False
+	Return CanCast($aSkillSlot)
+EndFunc   ;==>ESW_CanUse
+
+; ESW / Logic name aliases
+Func GetRuptSlot($aSkillID, $aCasterID, $aAggroRange = 1320)
+	Return GetBestRupt($aSkillID, $aCasterID, $aAggroRange)
+EndFunc   ;==>GetRuptSlot
+
+Func TryUseSkill($aSkillSlot, $aTarget = -2, $aCallTarget = False, $aTimeout = 0)
+	Return Skill_TryUseSkill($aSkillSlot, $aTarget, $aCallTarget, $aTimeout)
+EndFunc   ;==>TryUseSkill
+
+; Prefer GetBestTargetBySkillSlot; pool targets use ESW_Best* helpers from CanUse($rupt/…).
+Func GetBestTarget($aSkillSlot, $aAggroRange = 1320, $aSkillType = $all)
+	Switch $aSkillType
+		Case $rupt
+			Return ESW_BestRuptTargetForSlot($aSkillSlot, $aAggroRange)
+		Case $enchantremove
+			Return ESW_BestEnchantStripTarget($aAggroRange)
+		Case $hexremove
+			Return ESW_BestHexRemoveTarget($aAggroRange)
+		Case Else
+			Return GetBestTargetBySkillSlot($aSkillSlot, $aAggroRange)
+	EndSwitch
+EndFunc   ;==>GetBestTarget
+
+Func ESW_RemoveRow($iRow)
+	Local $n = $EnemySkillWatch[0][$ESW_AGENT]
+	If $iRow < 1 Or $iRow > $n Then Return
+	For $k = $iRow To $n - 1
+		For $c = 0 To $ESW_COLS - 1
+			$EnemySkillWatch[$k][$c] = $EnemySkillWatch[$k + 1][$c]
+		Next
+	Next
+	$EnemySkillWatch[0][$ESW_AGENT] = $n - 1
+	If $n > 1 Then ReDim $EnemySkillWatch[$n][$ESW_COLS]
+EndFunc
+
+Func ESW_Prune()
+	Local $r = 1
+	While $r <= $EnemySkillWatch[0][$ESW_AGENT]
+		Local $bDrop = False
+		If $EnemySkillWatch[$r][$ESW_CASTING] Then
+			If TimerDiff($EnemySkillWatch[$r][$ESW_START]) > $EnemySkillWatch[$r][$ESW_ACTIVATION] + 400 Then $bDrop = True
+		Else
+			Local $iKeep = 200
+			Switch $EnemySkillWatch[$r][$ESW_TYPE]
+				Case $GC_I_SKILL_TYPE_ENCHANTMENT, $GC_I_SKILL_TYPE_HEX
+					$iKeep = $ESW_STRIP_WINDOW_MS
+			EndSwitch
+			If $EnemySkillWatch[$r][$ESW_LANDED] = 0 Or TimerDiff($EnemySkillWatch[$r][$ESW_LANDED]) > $iKeep Then $bDrop = True
+		EndIf
+		If $bDrop Then
+			ESW_RemoveRow($r)
+		Else
+			$r += 1
+		EndIf
+	WEnd
+EndFunc
+
+
+
+; Return: 0 = ignore/handled (safe to log), 1 = rupt used, 2 = deferred (do not log yet)
+; $aCastStart = TimerInit() from when we first saw this cast (for remaining-time math).
+Func DispatchEnemySpellCast($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart = 0, $aAggroRange = 1320)
+	$RuptTimer = TimerInit()
+	If $aCastStart = 0 Then $aCastStart = $RuptTimer
+	If Map_GetInstanceInfo("Type") <> $Map_Explorable Or Agent_GetAgentInfo(-2, "IsDead") Or Agent_GetAgentInfo(-2, "IsKnocked") Then Return 0
+
+	; Cancel our cast if a hard rupt is coming at us and we still have time.
+	If IsHardRuptSkill($aSkillID) And $aTargetID = Agent_GetMyID() Then
+		Out($aCasterID & " is interrupting my " & Skill_NameFromID(OurSkillID()))
+		Local $lTimeToRupt = TimeToRupt($aSkillID, $aCasterID, $aTargetID)
+		If $lTimeToRupt > TimerDiff($AftercastTimer) Then Return 0
+		If OurSkillActivationMs() > 250 Then CancelAction()
+		$AftercastTimer = TimerInit()
+		Return 0
+	EndIf
+
+	Local $lRupt = TryDispatchRupt($aCasterID, $aTargetID, $aSkillID, $aCastStart, $aAggroRange)
+	; 1 = fired, 2 = defer â€” only those stop further reactions. 0/-1 fall through.
+	If $lRupt = 1 Or $lRupt = 2 Then Return $lRupt
+
+	; Activation busy only (same as CanCast) so aftercast does not block strip/hex react.
+	If OurActivationBusyMs() > 0 Or Agent_GetAgentInfo(-2, "IsCasting") Then Return 0
+
+	;~ 	Enchant removal â€” only when we see an enchantment being cast
+	If IsEnchantmentSkill($aSkillID) Or Skill_GetSkillInfo($aSkillID, "SkillType") = $Enchantment Then
+		For $i = 1 To 8
+			If $SkillBarCache[$i][$enchantremove] = "" Then ContinueLoop
+			If Not Skill_GetSkillbarInfo($i, "IsRecharged") Then ContinueLoop
+			If $SkillBarCache[$i][$energyreq] > Agent_GetAgentInfo(-2, "CurrentEnergy") Then ContinueLoop
+
+			Local $lStripTarget = 0
+			; Self/ally enchants â†’ strip the caster; else caster if already enchanted, else balled.
+			If SkillTargetsSelfOrAlly($aSkillID) Then
+				$lStripTarget = $aCasterID
+			ElseIf Agent_GetAgentInfo($aCasterID, "Enchanted") Then
+				$lStripTarget = $aCasterID
+			Else
+				$lStripTarget = Agent_GetBalledEnchantedEnemy($aAggroRange)
+			EndIf
+			If $lStripTarget = 0 Or Agent_GetDistance($lStripTarget) > $aAggroRange Then ContinueLoop
+
+			Out("REACT strip " & Skill_NameFromID($SkillBarCache[$i][$all]) & " on enchant " & Skill_NameFromID($aSkillID) & " â†’ " & Agent_ConvertID($lStripTarget))
+			If Skill_TryUseSkill($i, $lStripTarget, False, 0) Then Return 1
+		Next
+	EndIf
+
+	;~ 	Hex removal â€” only when we see a hex being cast
+	If IsHexSpell($aSkillID) Then
+		For $i = 1 To 8
+			If $SkillBarCache[$i][$hexremove] = "" Then ContinueLoop
+			If Not Skill_GetSkillbarInfo($i, "IsRecharged") Then ContinueLoop
+			If $SkillBarCache[$i][$energyreq] > Agent_GetAgentInfo(-2, "CurrentEnergy") Then ContinueLoop
+
+			Local $lHexTarget = 0
+			; Prefer cast target if it is an ally; else most-hexed ally in range.
+			If $aTargetID <> 0 And Agent_GetAgentInfo($aTargetID, "Allegiance") = 1 And Not Agent_GetAgentInfo($aTargetID, "IsDead") Then
+				$lHexTarget = $aTargetID
+			Else
+				$lHexTarget = Agent_GetMostHexedAlly($aAggroRange)
+			EndIf
+			If $lHexTarget = 0 Then ContinueLoop
+
+			Out("REACT hexremove " & Skill_NameFromID($SkillBarCache[$i][$all]) & " on hex " & Skill_NameFromID($aSkillID) & " â†’ " & Agent_ConvertID($lHexTarget))
+			If Skill_TryUseSkill($i, $lHexTarget, False, 0) Then Return 1
+		Next
 	EndIf
 
 	;~ 	Prot skills
 	If $ProtSlots[0] > 0 Then
-		If Agent_GetAgentInfo($aCasterID, "Allegiance") <> 3 Or Agent_GetDistance($aTargetID) > 1250 Then Return
-		$ProtSlots  = GetProtSlot($aSkillID, $aCasterID, $aTargetID)
-		If $ProtSlots > 0 Then
-			Skill_TryUseSkill($ProtSlots, $aTargetID)
-			Return
+		If Agent_GetAgentInfo($aCasterID, "Allegiance") <> 3 Or Agent_GetDistance($aTargetID) > 1250 Then Return 0
+		Local $lProtSlot = GetProtSlot($aSkillID, $aCasterID, $aTargetID)
+		If $lProtSlot > 0 Then
+			If Skill_TryUseSkill($lProtSlot, $aTargetID, False, 0) Then Return 1
 		EndIf
 	EndIf
-
-	;~ 	Enchant removal (on enemies) - pending targetID reads (broken), we don't remove the enchantment on the target of the spell, instead we
-	For $i = 1 To 8
-		If $SkillBarCache[$i][$enchantremove] <> "" Then
-			If Not Skill_GetSkillbarInfo($i, "IsRecharged") Then ContinueLoop
-			If $SkillBarCache[$i][$energyreq] > Agent_GetAgentInfo(-2, "CurrentEnergy") Then ContinueLoop
-			Local $iTarget = GetBalledEnchantedEnemy(1320)
-			Out("Enchanted ennemy ID: " & GetBalledEnchantedEnemy(1320))
-			If $iTarget <> 0 Then
-				Out("C")
-				Skill_TryUseSkill($i, $iTarget)
-				Return
-			EndIf
-		EndIf
-	Next
-
-	;~ 	Hex removal (on allies)
-	For $i = 1 To 8
-		If $SkillBarCache[$i][$hexremove] <> "" Then
-			If Not Skill_GetSkillbarInfo($i, "IsRecharged") Then ContinueLoop
-			If $SkillBarCache[$i][$energyreq] > Agent_GetAgentInfo(-2, "CurrentEnergy") Then ContinueLoop
-			Out("Most hexed Ally ID: " & MostHexedAlly())
-			Local $iTarget = MostHexedAlly()
-			If $iTarget <> 0 Then
-				Skill_TryUseSkill($i, $iTarget)
-				Return
-			EndIf
-		EndIf
-	Next
 
 ;~ ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>		Move to Avoid AoE	<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 	;~ 	Area Range
@@ -352,18 +1520,18 @@ Func SpellActivation($aCasterID, $aTargetID, $aSkillID, $aActivation)
 ;~ ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>		Cancel, switch defensive set, stop moving		<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 	;~ 	Cancel casting to avoid damage
 	If IsAnnoyingSkill($aSkillID) = 1 And $aTargetID = Agent_GetMyID() Or IsAnnoyingSkill($aSkillID) = 2 And $aTargetID = Agent_GetMyID() Then ;Maybe separate 1 and 2
-		Out($aCasterID & " Hurt me " & $aSkill_Name[$MySkillID])
-		If TimerDiff($AftercastTimer) > $MyActivation * 1000 Then Return
-		If $MyActivation > 250 Then DoubleCancel()
+		Out($aCasterID & " Hurt me " & Skill_NameFromID(OurSkillID()))
+		If TimerDiff($AftercastTimer) > OurSkillActivationMs() Then Return
+		If OurSkillActivationMs() > 250 Then DoubleCancel()
 		$AftercastTimer = TimerInit()
 		Return
 	EndIf
 
 	;~ 	Cancel Skill to avoid Melee rupt
 	If IsAnnoyingSkill($aSkillID) = 9 And $aTargetID = Agent_GetMyID() Then
-		Out($aCasterID & " Hurt me " & $aSkill_Name[$MySkillID])
-		If TimerDiff($AftercastTimer) > $MyActivation * 1000 Then Return
-		If $MyActivation > 250 Then DoubleCancel()
+		Out($aCasterID & " Hurt me " & Skill_NameFromID(OurSkillID()))
+		If TimerDiff($AftercastTimer) > OurSkillActivationMs() Then Return
+		If OurSkillActivationMs() > 250 Then DoubleCancel()
 		$AftercastTimer = TimerInit()
 		Return
 	EndIf
@@ -375,8 +1543,10 @@ Func SpellActivation($aCasterID, $aTargetID, $aSkillID, $aActivation)
 				Out("Use Block Skill to avoid Melee and Daze")
 			Else
 				Out("Can't use block, cancel action")
-				If TimerDiff($AftercastTimer) > $MyActivation * 1000 Then Return
-				If $MyActivation > 250 Then DoubleCancel()
+				If TimerDiff($AftercastTimer) <= OurSkillActivationMs() Then
+					If OurSkillActivationMs() > 250 Then DoubleCancel()
+					$AftercastTimer = TimerInit()
+				EndIf
 			EndIf
 		EndIf
 		Return
@@ -384,7 +1554,7 @@ Func SpellActivation($aCasterID, $aTargetID, $aSkillID, $aActivation)
 
 	;~ Cancel Attack to avoid damage
 	If IsAnnoyingSkill($aSkillID) = 3 And $aTargetID = Agent_GetMyID() Then
-		Out($aCasterID & " counter attack me " & $aSkill_Name[$MySkillID])
+		Out($aCasterID & " counter attack me " & Skill_NameFromID(OurSkillID()))
 		If Agent_GetAgentInfo(-2, "Attacking") Then DoubleCancel()
 		Out("Stop Attacking to avoid Damage")
 		Return
@@ -392,7 +1562,7 @@ Func SpellActivation($aCasterID, $aTargetID, $aSkillID, $aActivation)
 
 	;~ 	Cancel Moving cause melee try to KD me
 	If IsAnnoyingSkill($aSkillID) = 4 And $aTargetID = Agent_GetMyID() Then
-		Out($aCasterID & " KD me " & $aSkill_Name[$MySkillID])
+		Out($aCasterID & " KD me " & Skill_NameFromID(OurSkillID()))
 		If Agent_GetAgentInfo(-2, "Moving") Then DoubleCancel()
 		Out("Stop Moving to avoid KD")
 		Return
@@ -448,74 +1618,50 @@ Func SpellActivation($aCasterID, $aTargetID, $aSkillID, $aActivation)
 		Return
 	EndIf
 
-EndFunc   ;==>Rupt
+EndFunc   ;==>DispatchEnemySpellCast
 
-Func AttackActivation($aCasterID, $aTargetID, $aSkillID, $lActivation)
+Func DispatchEnemyAttackSkill($aCasterID, $aTargetID, $aSkillID, $lActivation, $aCastStart = 0, $aAggroRange = 1320)
 	$RuptTimer = TimerInit()
-	Local $Blocked = 0
-	Local $lCasterPtr = Agent_GetAgentPtr($aCasterID), $lTargetPtr = Agent_GetAgentPtr($aTargetID), $lSkillPtr = Skill_GetSkillPtr($aSkillID)
-	If Map_GetInstanceInfo("Type") <> $Map_Explorable Or Agent_GetAgentInfo(-2, "IsDead") Or Agent_GetAgentInfo(-2, "Knocked") Or Agent_GetAgentInfo(-2, "IsCasting") Then Return
+	If $aCastStart = 0 Then $aCastStart = $RuptTimer
+	If Map_GetInstanceInfo("Type") <> $Map_Explorable Or Agent_GetAgentInfo(-2, "IsDead") Or Agent_GetAgentInfo(-2, "IsKnocked") Then Return 0
 
-;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>		Rupt and Cancel Skill to avoid Rupt		<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-	;~ For cancel casting
-	If $aCasterID == Agent_GetMyID() Then
-		;Out("I am casting " & $aSkill_Name[$aSkillID])
-		$MyActivation = Memory_Read($lSkillPtr + 60, 'float') * 1000	; storing my activation time into a global variable for the next skill parsing
-		$MyAftercast = Memory_Read($lSkillPtr + 64, 'float') * 750
-		$MySkillID = $aSkillID
-		$MyTargetID = $aTargetID
-		$AftercastTimer = TimerInit()
-		;Return ;<<< Are you sure about it ?
-	EndIf
-
-	;~ Cancel casting to avoid rupt
 	If IsHardRuptSkill($aSkillID) And $aTargetID = Agent_GetMyID() Then
-		Out($aCasterID & " is interrupting my " & $aSkill_Name[$MySkillID])
-		If TimerDiff($AftercastTimer) > $MyActivation * 1000 Then Return
-		If $MyActivation > 250 Then DoubleCancel()
+		Out($aCasterID & " is interrupting my " & Skill_NameFromID(OurSkillID()))
+		Local $lTimeToRupt = TimeToRupt($aSkillID, $aCasterID, $aTargetID)
+		If $lTimeToRupt > TimerDiff($AftercastTimer) Then Return 0
+		If OurSkillActivationMs() > 250 Then DoubleCancel()
 		$AftercastTimer = TimerInit()
-		Return
+		Return 0
 	EndIf
 
-	;~ 	Rupt Skills
-	If RuptSlots[0] > 0 Then
-		If TimerDiff($AftercastTimer) < $MyAftercast Then Return
-		If Agent_GetAgentInfo($aCasterID, "Allegiance") <> 3 Or Agent_GetDistance($aCasterID) > 1200 Then Return
-		$lRuptSlot = GetRuptSlot($aSkillID, $aCasterID)
-		If $lRuptSlot > 0 Then
-			Skill_TryUseSkill($lRuptSlot, $aCasterID)
-			If Agent_GetAgentInfo($lCasterPtr, "IsCasting") = 0 Then Out("Interrupted " & $aSkill_Name[$aSkillID] & "!!!")
-			Out("Rupt(): " & TimerDiff($RuptTimer))
-			Return
-		EndIf
-	EndIf
+	Local $lRupt = TryDispatchRupt($aCasterID, $aTargetID, $aSkillID, $aCastStart, $aAggroRange)
+	If $lRupt = 1 Or $lRupt = 2 Then Return $lRupt
 
-	;~ 	Prot skills
+	If OurActivationBusyMs() > 0 Or Agent_GetAgentInfo(-2, "IsCasting") Then Return 0
 
 	If $ProtSlots[0] > 0 Then
-		If Agent_GetAgentInfo($aCasterID, "Allegiance") <> 3 Or Agent_GetDistance($aTargetID) > 1250 Then Return
-		$ProtSlots  = GetProtSlot($aSkillID, $aCasterID, $aTargetID)
-		If $ProtSlots > 0 Then
-			Skill_TryUseSkill($ProtSlots, $aTargetID)
-			Return
+		If Agent_GetAgentInfo($aCasterID, "Allegiance") <> 3 Or Agent_GetDistance($aTargetID) > 1250 Then Return 0
+		Local $lProtSlot = GetProtSlot($aSkillID, $aCasterID, $aTargetID)
+		If $lProtSlot > 0 Then
+			If Skill_TryUseSkill($lProtSlot, $aTargetID, False, 0) Then Return 1
 		EndIf
 	EndIf
 
 ;~ ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>		Cancel, switch defensive set, stop moving		<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 	;~ 	Cancel casting to avoid damage
 	If IsAnnoyingSkill($aSkillID) = 1 And $aTargetID = Agent_GetMyID() Or IsAnnoyingSkill($aSkillID) = 2 And $aTargetID = Agent_GetMyID() Then ;Maybe separate 1 and 2
-		Out($aCasterID & " Hurt me " & $aSkill_Name[$MySkillID])
-		If TimerDiff($AftercastTimer) > $MyActivation * 1000 Then Return
-		If $MyActivation > 250 Then DoubleCancel()
+		Out($aCasterID & " Hurt me " & Skill_NameFromID(OurSkillID()))
+		If TimerDiff($AftercastTimer) > OurSkillActivationMs() Then Return
+		If OurSkillActivationMs() > 250 Then DoubleCancel()
 		$AftercastTimer = TimerInit()
 		Return
 	EndIf
 
 	;~ 	Cancel Skill to avoid Melee rupt
 	If IsAnnoyingSkill($aSkillID) = 9 And $aTargetID = Agent_GetMyID() Then
-		Out($aCasterID & " Hurt me " & $aSkill_Name[$MySkillID])
-		If TimerDiff($AftercastTimer) > $MyActivation * 1000 Then Return
-		If $MyActivation > 250 Then DoubleCancel()
+		Out($aCasterID & " Hurt me " & Skill_NameFromID(OurSkillID()))
+		If TimerDiff($AftercastTimer) > OurSkillActivationMs() Then Return
+		If OurSkillActivationMs() > 250 Then DoubleCancel()
 		$AftercastTimer = TimerInit()
 		Return
 	EndIf
@@ -527,8 +1673,10 @@ Func AttackActivation($aCasterID, $aTargetID, $aSkillID, $lActivation)
 				Out("Use Block Skill to avoid Melee and Daze")
 			Else
 				Out("Can't use block, cancel action")
-				If TimerDiff($AftercastTimer) > $MyActivation * 1000 Then Return
-				If $MyActivation > 250 Then DoubleCancel()
+				If TimerDiff($AftercastTimer) <= OurSkillActivationMs() Then
+					If OurSkillActivationMs() > 250 Then DoubleCancel()
+					$AftercastTimer = TimerInit()
+				EndIf
 			EndIf
 		EndIf
 		Return
@@ -536,7 +1684,7 @@ Func AttackActivation($aCasterID, $aTargetID, $aSkillID, $lActivation)
 
 	;~ Cancel Attack to avoid damage
 	If IsAnnoyingSkill($aSkillID) = 3 And $aTargetID = Agent_GetMyID() Then
-		Out($aCasterID & " counter attack me " & $aSkill_Name[$MySkillID])
+		Out($aCasterID & " counter attack me " & Skill_NameFromID(OurSkillID()))
 		If Agent_GetAgentInfo(-2, "Attacking") Then DoubleCancel()
 		Out("Stop Attacking to avoid Damage")
 		Return
@@ -544,7 +1692,7 @@ Func AttackActivation($aCasterID, $aTargetID, $aSkillID, $lActivation)
 
 	;~ 	Cancel Moving cause melee try to KD me
 	If IsAnnoyingSkill($aSkillID) = 4 And $aTargetID = Agent_GetMyID() Then
-		Out($aCasterID & " KD me " & $aSkill_Name[$MySkillID])
+		Out($aCasterID & " KD me " & Skill_NameFromID(OurSkillID()))
 		If Agent_GetAgentInfo(-2, "Moving") Then DoubleCancel()
 		Out("Stop Moving to avoid KD")
 		Return
@@ -600,161 +1748,69 @@ Func AttackActivation($aCasterID, $aTargetID, $aSkillID, $lActivation)
 		Return
 	EndIf
 
-EndFunc   ;==>Rupt
+EndFunc   ;==>DispatchEnemyAttackSkill
 
-Func GetRuptSlot($aSkillID, $aCasterID)
-    Out("GetRuptSlot | Enemy skill:" & $aSkillID & " | RuptSlots count:" & $RuptSlots[0])
+Func AttackActivation($aCasterID, $aTargetID, $aSkillID, $lActivation, $aCastStart = 0, $aAggroRange = 1320)
+	Return DispatchEnemyAttackSkill($aCasterID, $aTargetID, $aSkillID, $lActivation, $aCastStart, $aAggroRange)
+EndFunc   ;==>AttackActivation
 
-    Local $iDist = Agent_GetDistance($aCasterID)
-    If $iDist > 1500 Or $iDist = 0 Then
-        Out("  → caster out of range, aborting")
-        Return 0
-    EndIf
+; Pick a ready interrupt slot for this enemy cast. Soft rupts (Power Drain etc.) are valid unless
+; the cast RequiresHardRupt (attack skills). Energy-gain rupts win first when CurrentEnergy < 20.
+Func GetBestRupt($aSkillID, $aCasterID, $aAggroRange = 1320)
+	Local $iDist = Agent_GetDistance($aCasterID)
+	If $iDist > $aAggroRange Or $iDist = 0 Then Return 0
 
-    Local $bNeedsHardRupt = RequiresHardRupt($aSkillID)
-    Out("  → needs hard rupt: " & $bNeedsHardRupt)
+	Local $bNeedsHardRupt = RequiresHardRupt($aSkillID)
+	Local $lEnergy = Agent_GetAgentInfo(-2, "CurrentEnergy")
+	Local $lReadySlot = 0
 
-    For $i = 1 To $RuptSlots[0]
-        Local $aSkillSlot = $RuptSlots[$i]
-        Out("  checking slot " & $aSkillSlot & " (skill " & $SkillBarCache[$aSkillSlot][$all] & ")")
-
-        If Not Skill_GetSkillbarInfo($aSkillSlot, "IsRecharged") Then ContinueLoop
-        If $SkillBarCache[$aSkillSlot][$energyreq] > Agent_GetAgentInfo(-2, "CurrentEnergy") Then ContinueLoop
-        If $bNeedsHardRupt And $SkillBarCache[$aSkillSlot][$hardrupt] = "" Then ContinueLoop
-        Return $aSkillSlot
-    Next
-    Return 0
-EndFunc   ;==>GetRuptSlot
-
-;~ Description: Returns the skill ID of an equipped skill.
-;~ Uses Logic-style offset math; pointer comes from GwAu3
-Func GetSkillbarInfo($aSkillSlot, $aHeroNumber = 0)
-    Local $pSkillbar = _GetSkillbarPtr($aHeroNumber)
-    If Not IsPtr($pSkillbar) Then Return 0
-    $aSkillSlot -= 1
-    Return Memory_Read($pSkillbar + 16 + $aSkillSlot * 20, "dword")
-EndFunc
-
-; Internal helper – caches the pointer for the local player
-Func _GetSkillbarPtr($aHeroNumber = 0)
-    Static $pCached = 0
-    Static $iCachedHero = -1
-
-    If $aHeroNumber = $iCachedHero And IsPtr($pCached) Then
-        Return $pCached
-    EndIf
-
-    Local $l_p_Ptr = World_GetWorldInfo("SkillbarArray")
-    Local $l_i_Size = World_GetWorldInfo("SkillbarArraySize")
-    Local $l_i_HeroID
-    If $aHeroNumber = 0 Then
-        $l_i_HeroID = Agent_GetMyID()
-    Else
-        $l_i_HeroID = Party_GetMyPartyHeroInfo($aHeroNumber, "AgentID")
-    EndIf
-
-    For $i = 0 To $l_i_Size - 1
-        Local $p = $l_p_Ptr + (0xBC * $i)
-        If Memory_Read($p, "long") = $l_i_HeroID Then
-            $pCached = $p
-            $iCachedHero = $aHeroNumber
-            Return $p
-        EndIf
-    Next
-    Return 0
-EndFunc
-
-
-Func Fight($x, $y, $aAggroRange = 1320, $careful = False, $aMaxDistanceToXY = 5000, $aAgent = 0) ; Fighting mechanics
-; REVIEW: GwAu3 equivalent is UAI_Fight(). Call this one when you want the Logic interrupt path.
-	Out("Fighting enemies")
-	Local $TimerToGetOut = TimerInit()
-	; SetEvent("SpellActivation", "AttackActivation", "", "", "", "") ; only active during fight to avoid crashes
-
-	Do
-		If CanAttack($aAggroRange) Then
-			CallTarget($BestTargetPtr)
-			Attack($BestTargetPtr, False) ; CanAttack() sets $besttarget global variable to best target, turned to False to avoid crashes
-		EndIf
-		Precast($aAggroRange, $careful)
-		If $careful Then
-			CancelAll()
-			Move(Agent_X($BestTargetPtr), Agent_Y($BestTargetPtr))
-			RndSleep(300)
-		EndIf
-		UseSkills($x, $y, $aAggroRange, $all, $aMaxDistanceToXY, $aAgent)
-	Until Agent_NoEnemiesAround($aAggroRange) Or TimerDiff($TimerToGetOut) > 240000 ;UseSkills($x, $y, $aAggroRange, $all, $aMaxDistanceToXY, $aAgent) = False Or TimerDiff($TimerToGetOut) > 240000
-	; SetEvent("", "", "", "", "", "")
-EndFunc   ;==>Fight
-
-;~ Use this function to cast all of your skills  or skills of a certain type.
-;~ $skilltype: $all = 0, $type, $target, $hexes, $pressure, $bind, $speedBoost, $survive, $attackskill, $heal, $prot, $bond, $condremove, $hexremove, $rupt, $HardRupt, $precast
-Func UseSkills($x, $y, $aAggroRange = 1320, $skilltype = $all, $aMaxDistanceToXY = 5000, $aAgent = 0)
-; REVIEW: GwAu3 equivalent is UAI_UseSkills() / UAI_TryUseSkill(). This version walks $SkillBarCache.
-	For $aSkillSlot In $Skillbar
-		If Agent_GetAgentInfo(-2, "IsDead") Or Map_GetInstanceInfo("Type") == 2 Then Return False
-		If Agent_GetAgentInfo($BestTargetPtr, "Allegiance") = 3 And Agent_GetAgentInfo($BestTargetPtr, "IsDead") Then Return False
-		UpdateAndDispatchCasts()
-		If Agent_NoEnemiesAround($aAggroRange) Then Return False
-		If $SkillBarCache[$aSkillSlot][$skilltype] = "" Then ContinueLoop
-		If CanUse($aSkillSlot, $aAggroRange) Then Skill_UseSkill($aSkillSlot, $BestTargetPtr)
-
-		If $aSkillSlot = 8 Then
-			If $aAgent <> 0 Then
-				If Agent_GetDistance($aAgent) > $aMaxDistanceToXY Then Return False
-			ElseIf $aMaxDistancetoXY <> 5000 Then
-				If Agent_GetDistanceToXY($x, $y) > $aMaxDistanceToXY Then Return False	; exit fight if we deviate for waypoints by more than allowed distance
-			EndIf
-			$aSkillSlot = 1
-		EndIf
+	For $i = 1 To $RuptSlots[0]
+		Local $aSkillSlot = $RuptSlots[$i]
+		If Not Skill_GetSkillbarInfo($aSkillSlot, "IsRecharged") Then ContinueLoop
+		If $SkillBarCache[$aSkillSlot][$energyreq] > $lEnergy Then ContinueLoop
+		If $bNeedsHardRupt And $SkillBarCache[$aSkillSlot][$hardrupt] = "" Then ContinueLoop
+		; Priority: Power Drain / energy-gain rupt when low energy.
+		If IsEnergyGainRuptSkill($SkillBarCache[$aSkillSlot][$all]) And $lEnergy < 20 Then Return $aSkillSlot
+		If $lReadySlot = 0 Then $lReadySlot = $aSkillSlot
 	Next
-	Return True
-EndFunc   ;==>UseSkills
+	Return $lReadySlot
+EndFunc   ;==>GetBestRupt
 
-Func Skill_TryUseSkill($aSkillSlot, $aTarget = -2, $aCallTarget = False)
-	If Not CanCast($aSkillSlot) Then Return
-    Skill_UseSkill($aSkillSlot, $aTarget)
+;~ Description: Compatibility wrapper. Prefer Skill_GetSkillbarInfo directly.
+;~ GetSkillbarInfo($slot[, $hero]) -> SkillID
+;~ GetSkillbarInfo($slot, "SkillID"|"IsRecharged"|..., [$hero]) -> GwAu3 info form
+Func GetSkillbarInfo($aSkillSlot, $aInfoOrHero = 0, $aHeroNumber = 0)
+	If IsString($aInfoOrHero) Then
+		Return Skill_GetSkillbarInfo($aSkillSlot, $aInfoOrHero, $aHeroNumber)
+	EndIf
+	Return Skill_GetSkillbarInfo($aSkillSlot, "SkillID", $aInfoOrHero)
 EndFunc
 
 Func UnFight($x, $y, $aAggroRange = 1320, $aMaxDistanceToXY = 5000, $aAgent = 0)
 	UseUnfightSkills($x, $y, $aAggroRange, $all, $aMaxDistanceToXY, $aAgent)
 EndFunc   ;==>Fight
 
-; For skills (pointer, struct, or ID) → skill ID
-Func GetSkillID($aSkill)
-    If IsPtr($aSkill) Then
-        Return Memory_Read($aSkill, "long")          ; skill ID is at offset 0
-    ElseIf IsDllStruct($aSkill) Then
-        Return DllStructGetData($aSkill, "ID")
-    Else
-        Return $aSkill                               ; already a skill ID
-    EndIf
-EndFunc
+; For skills (pointer, struct, or ID) ? skill ID
 
 Func UseUnfightSkills($x, $y, $aAggroRange = 1320, $skilltype = $all, $aMaxDistanceToXY = 5000, $aAgent = 0)
+	; Unfight: single column pass (no EnemySkillWatch rupt/strip priority).
 	For $aSkillSlot In $Skillbar
 		If Agent_GetAgentInfo(-2, "IsDead") Or Map_GetInstanceInfo("Type") == 2 Then Return False
-		If Memory_Read($BestTargetPtr + 433, "byte") = 3 And Agent_GetAgentInfo($BestTargetPtr, "IsDead") Then Return False
+		If $BestTarget <> 0 And Agent_GetAgentInfo($BestTarget, "Allegiance") = 3 And Agent_GetAgentInfo($BestTarget, "IsDead") Then Return False
 		If $SkillBarCache[$aSkillSlot][$skilltype] = "" Then ContinueLoop
-		If CanUse($aSkillSlot, $aAggroRange) Then
-			Skill_UseSkill($aSkillSlot, $BestTargetPtr)
-		EndIf
-
-		If $aSkillSlot = 8 Then
-			If $aAgent <> 0 Then
-				If Agent_GetDistance($aAgent) > $aMaxDistanceToXY Then Return False
-			ElseIf $aMaxDistancetoXY <> 5000 Then
-				If Agent_GetDistanceToXY($x, $y) > $aMaxDistanceToXY Then Return False	; exit fight if we deviate for waypoints by more than allowed distance
-			EndIf
-			$aSkillSlot = 1
-		EndIf
+		If CanUse($aSkillSlot, $aAggroRange, $skilltype) Then Skill_TryUseSkill($aSkillSlot, $BestTarget)
 	Next
+	If $aAgent <> 0 Then
+		If Agent_GetDistance($aAgent) > $aMaxDistanceToXY Then Return False
+	ElseIf $aMaxDistanceToXY <> 5000 Then
+		If Agent_GetDistanceToXY($x, $y) > $aMaxDistanceToXY Then Return False
+	EndIf
 	Return True
-EndFunc   ;==>UseSkills
+EndFunc   ;==>UseUnfightSkills
 
 Func SkillCancel($aCasterID, $aTargetID, $aSkillID)
 	Local $lCasterPtr = Agent_GetAgentPtr($aCasterID), $lTargetPtr = Agent_GetAgentPtr($aTargetID), $lSkillPtr = Skill_GetSkillPtr($aSkillID)
-	If Map_GetInstanceInfo("Type") <> $Map_Explorable Or Agent_GetAgentInfo(-2, "IsDead") Or Agent_GetAgentInfo(-2, "Knocked") Then Return
+	If Map_GetInstanceInfo("Type") <> $Map_Explorable Or Agent_GetAgentInfo(-2, "IsDead") Or Agent_GetAgentInfo(-2, "IsKnocked") Then Return
 
 	Switch $aSkillID
 		Case 30, 51
@@ -768,7 +1824,7 @@ EndFunc
 
 Func SkillComplete($aCasterID, $aTargetID, $aSkillID)
 	Local $lCasterPtr = Agent_GetAgentPtr($aCasterID), $lTargetPtr = Agent_GetAgentPtr($aTargetID), $lSkillPtr = Skill_GetSkillPtr($aSkillID)
-	If Map_GetInstanceInfo("Type") <> $Map_Explorable Or Agent_GetAgentInfo(-2, "IsDead") Or Agent_GetAgentInfo(-2, "Knocked") Then Return
+	If Map_GetInstanceInfo("Type") <> $Map_Explorable Or Agent_GetAgentInfo(-2, "IsDead") Or Agent_GetAgentInfo(-2, "IsKnocked") Then Return
 
 	Switch $aSkillID
 		Case 30, 51
@@ -812,7 +1868,7 @@ Func UseBlock()
 	For $i = 1 To 8
 		If IsBlock(DllStructGetData($lSkillbar, 'ID' & $i)) And DllStructGetData($lSkillbar, 'Recharge' & $i) == 0 Then
 			If DllStructGetData(GetSkillByID(DllStructGetData($lSkillbar,'ID'&$i)), 'Adrenaline') <= DllStructGetData($lSkillbar, 'AdrenalineA' & $i) Then
-				Skill_Use($i, -2)
+				Skill_TryUseSkill($i, -2)
 				Return 1
 			EndIf
 		EndIf
@@ -832,7 +1888,7 @@ Func UseBalanced()
 	For $i = 1 To 8
 		If IsBalanced(DllStructGetData($lSkillbar, 'ID' & $i)) And DllStructGetData($lSkillbar, 'Recharge' & $i) == 0 Then
 			If DllStructGetData(GetSkillByID(DllStructGetData($lSkillbar,'ID'&$i)), 'Adrenaline') <= DllStructGetData($lSkillbar, 'AdrenalineA' & $i) Then
-				Skill_Use($i, -2)
+				Skill_TryUseSkill($i, -2)
 				Return 1
 			EndIf
 		EndIf
@@ -890,114 +1946,187 @@ Func GetProtSlot($aSkillID, $lCasterPtr, $aTargetPtr)
 		EndIf
 	Next
 	Return 0
-EndFunc   ;==>GetRuptSlot
+EndFunc   ;==>GetProtSlot
 
 Func CanAttack($aRange = 1320)
-	If Map_GetInstanceInfo("Type") == 2 Then Connection_CheckAndReconnect()
-	If Map_GetInstanceInfo("Type") == 0 Then Return
-	$BestTargetPtr = 0
- 	If $BestTargetPtr = 0 Then Global $BestTargetPtr = Agent_GetBestTarget($aRange)
-
-	Out(Agent_GetAgentInfo(-2, "ID") & " - My ID: " & ID(-2))
-	If $BestTargetPtr = 0 Or IsWormAgent($BestTargetPtr) Then Return False	; prevents crash from attacking enemies that burry into the ground
-	If CanCast() Then Return True
-	Return False
-EndFunc   ;==>CanAttack
-
-;~ Description: Determines whether we should cast based the type of skill being used and shut-down effects on us. Also prevents stances when the effect already exists.
-Func CanCast($aSkillSlot = 0)
-; REVIEW: GwAu3 equivalent is UAI_CanUse() + per-skill CanUse_* handlers. This one uses $SkillBarCache.
-	Local $pEffects = World_GetWorldInfo("AgentEffectsArray")
-	Local $iSize = World_GetWorldInfo("AgentEffectsArraySize")
-	Out("Effects array: " & $pEffects & " size: " & $iSize)
-	Local $lAgentID = Memory_Read($pEffects, "long")
-	Local $lEffectPtr = Memory_Read($pEffects + 0x14, "ptr")
-	Local $lEffectCount = Memory_Read($pEffects + 0x1C, "long")
-	Out("Array agent: " & $lAgentID & " my ID: " & Agent_GetMyID())
-	Out("Effect ptr: " & $lEffectPtr & " count: " & $lEffectCount)
-	If $lEffectCount > 0 And $lEffectPtr <> 0 Then
-    For $j = 0 To $lEffectCount - 1
-        Local $lSkillID = Memory_Read($lEffectPtr + $j * 0x18, "long")
-        Out("  Effect " & $j & ": " & $lSkillID)
-    Next
+	Local $lMapType = Map_GetInstanceInfo("Type")
+	Out("CanAttack: mapType=" & $lMapType & " range=" & $aRange)
+	If $lMapType == 2 Then Connection_CheckAndReconnect()
+	If $lMapType == 0 Then
+		Out("CanAttack FAIL: mapType=0 (not explorable)")
+		Return False
 	EndIf
 
-	UAI_CachePlayerEffectsAndBonds()
-	; In CanCast, after UAI_CachePlayerEffectsAndBonds():
-	Out("Effects count: " & $g_i_PlayerEffectsCount)
-	For $i = 0 To $g_i_PlayerEffectsCount - 1
-		Out("  Effect " & $i & ": " & $g_amx3_PlayerEffects[0][$i][$GC_UAI_EFFECT_SkillID])
-	Next
+	Local $lKnocked = Agent_GetAgentInfo(-2, "IsKnocked")
+	Local $lDead = Agent_GetAgentInfo(-2, "IsDead")
+	Local $lWipe = Wipe()
+	Out("CanAttack: knocked=" & $lKnocked & " dead=" & $lDead & " wipe=" & $lWipe)
+	If $lKnocked Or $lDead Or $lWipe Then
+		Out("CanAttack FAIL: knocked/dead/wipe")
+		Return False
+	EndIf
 
-	Local $Requi
+	Local $lEnemyCount = Agent_GetNumberOfEnemies($aRange)
+	Out("CanAttack: Agent_GetNumberOfEnemies(" & $aRange & ")=" & $lEnemyCount)
+
+	; Modules API â€” returns ptr; test <> 0 (not an ID).
+	Local $lNearestPtr = Agent_GetNearestAgent(-2, 0xDB, 3)
+	Local $lNearDist = 0
+	If $lNearestPtr <> 0 Then $lNearDist = Agent_GetDistance($lNearestPtr)
+	Local $lNearWorm = False
+	If $lNearestPtr <> 0 Then $lNearWorm = Agent_IsWormAgent($lNearestPtr)
+	Out("CanAttack nearest ptr=" & $lNearestPtr & " id=" & Agent_ConvertID($lNearestPtr) & " dist=" & Floor($lNearDist) & " inRange=" & ($lNearDist <= $aRange) & " worm=" & $lNearWorm)
+	If $lNearestPtr <> 0 And $lNearDist <= $aRange And Not $lNearWorm Then
+		$BestTarget = $lNearestPtr
+		Out("CanAttack OK via nearest BestTargetPtr=" & $BestTarget)
+		Return True
+	EndIf
+	If $lNearestPtr = 0 Then
+		Out("CanAttack nearest FAIL: ptr=0")
+	ElseIf $lNearDist > $aRange Then
+		Out("CanAttack nearest FAIL: dist " & Floor($lNearDist) & " > range " & $aRange)
+	ElseIf $lNearWorm Then
+		Out("CanAttack nearest FAIL: worm agent")
+	EndIf
+
+	$BestTarget = Agent_GetBestTarget($aRange)
+	Out("CanAttack GetBestTarget ptr=" & $BestTarget & " id=" & Agent_ConvertID($BestTarget))
+	If $BestTarget = 0 Then
+		Out("CanAttack FAIL: GetBestTarget ptr=0")
+		Return False
+	EndIf
+	Local $lBestDist = Agent_GetDistance($BestTarget)
+	Out("CanAttack best dist=" & Floor($lBestDist) & " worm=" & Agent_IsWormAgent($BestTarget))
+	If $lBestDist > $aRange Then
+		Out("CanAttack FAIL: best dist " & Floor($lBestDist) & " > range " & $aRange)
+		$BestTarget = 0
+		Return False
+	EndIf
+	If Agent_IsWormAgent($BestTarget) Then
+		Out("CanAttack FAIL: best is worm")
+		$BestTarget = 0
+		Return False
+	EndIf
+	Out("CanAttack OK via GetBestTarget BestTargetPtr=" & $BestTarget)
+	Return True
+EndFunc   ;==>CanAttack
+
+;~ Description: Determines whether we should cast based on recharge/energy/adrenaline and
+;~ a few hard shut-downs (knocked/dead). Activation busy / IsCasting block; aftercast does not.
+Func CanCast($aSkillSlot = 0)
+; REVIEW: GwAu3 equivalent is UAI_CanUse() + per-skill CanUse_* handlers. This one uses $SkillBarCache.
+	UAI_CachePlayerEffectsAndBonds()
+
 	If Map_GetInstanceInfo("Type") == 2 Then Connection_CheckAndReconnect()
-	If Map_GetInstanceInfo("Type") == 0 Then Return
-	If Agent_GetAgentInfo(-2, "Knocked") Or Agent_GetAgentInfo(-2, "IsDead") Or Wipe = 1 Then Return False
+	If Map_GetInstanceInfo("Type") == 0 Then Return False
+	If Agent_GetAgentInfo(-2, "IsKnocked") Or Agent_GetAgentInfo(-2, "IsDead") Or Wipe() Then Return False
+	If OurActivationBusyMs() > 0 Or Agent_GetAgentInfo(-2, "IsCasting") Then Return False
 
 	If $aSkillSlot <> 0 Then
 		If Not Skill_GetSkillbarInfo($aSkillSlot, "IsRecharged") Then Return False
-		If Agent_GetAgentInfo(-2, "CurrentEnergy") < $SkillBarCache[$aSkillSlot][$energyreq] Then Return False;* (1 + Skill_HasEffect($Quickening_Zephyr) * 30 / 100) Then Return False
-		If Skill_HasEffect($Quickening_Zephyr) Then
-			$Requi = $SkillBarCache[$aSkillSlot][$energyreq] * 30 / 100
-			If Agent_GetAgentInfo(-2, "CurrentEnergy") < $Requi Then Return False
-		EndIf
-		If $SkillBarCache[$aSkillSlot][$adrereq] <> 0 And GetSkillbarSkillAdrenaline($aSkillslot) < $SkillBarCache[$aSkillSlot][$adrereq]  Then Return False
+		Local $lEnergyReq = $SkillBarCache[$aSkillSlot][$energyreq]
+		If Skill_HasEffect($Quickening_Zephyr) Then $lEnergyReq = $lEnergyReq * 1.3
+		If Agent_GetAgentInfo(-2, "CurrentEnergy") < $lEnergyReq Then Return False
+		If $SkillBarCache[$aSkillSlot][$adrereq] <> 0 And Skill_GetSkillbarInfo($aSkillSlot, "Adrenaline") < $SkillBarCache[$aSkillSlot][$adrereq] Then Return False
 	EndIf
 
-	If $aSkillSlot = 0 Then $aType = $attack
-	Out("CanCast slot " & $aSkillSlot & " | Backfire:" & Skill_HasEffect($Backfire) & " | Diversion:" & Skill_HasEffect($Diversion))
-	Switch $SkillBarCache[$aSkillSlot][$type]
-		Case $Hex, $Spell, $Enchantment, $Well, $Ward, $ItemSpell, $WeaponSpell
-			Switch True
-				Case Skill_HasEffect($Diversion), Skill_HasEffect($Visions_of_Regret), _
-					 Skill_HasEffect($Visions_of_Regret_PvP), Skill_HasEffect($Backfire), _
-					 Skill_HasEffect($Soul_Leech), Skill_HasEffect($Mistrust), _
-					 Skill_HasEffect($Mistrust_PvP), Skill_HasEffect($Mark_of_Subversion), _
-					 Skill_HasEffect($Spiteful_Spirit)
-					Out("Can't cast - blocked by effect")
-					Return False
-			EndSwitch
-		Case $Stance
-			If Skill_HasEffect($SkillBarCache[$aSkillSlot][$all]) Then Return False
-		Case $Attack
-			Switch True
-				Case Skill_HasEffect($Ineptitude), Skill_HasEffect($Clumsiness), _
-					 Skill_HasEffect($Spiteful_Spirit), Skill_HasEffect($Wandering_Eye), _
-					 Skill_HasEffect($Wandering_Eye_PvP)
-					Out("Can't Attack")
-					Return False
-			EndSwitch
-		Case $Ritual, $Signet, $Glyph, $Shout, $Preparation, $Trap, $Chant, $EchoRefrain, $Disguise
-			Switch True
-				Case Skill_HasEffect($Diversion), Skill_HasEffect($Visions_of_Regret), _
-					 Skill_HasEffect($Visions_of_Regret_PvP), Skill_HasEffect($Spiteful_Spirit)
-					Return False
-			EndSwitch
-		Case $Shout, $Chant
-			Switch True
-				Case Skill_HasEffect($Cacophony), Skill_HasEffect($Ulcerous_Lungs), _
-					 Skill_HasEffect($Vocal_Minority), Skill_HasEffect($Well_of_Silence)
-					Return False
-			EndSwitch
-		Case $Signet
-			Switch True
-				Case Skill_HasEffect($Ignorance), Skill_HasEffect($Rust)
-					Return False
-			EndSwitch
-	EndSwitch
+	; Stance already active -> skip re-cast
+	If $aSkillSlot <> 0 And $SkillBarCache[$aSkillSlot][$type] = $Stance Then
+		If Skill_HasEffect($SkillBarCache[$aSkillSlot][$all]) Then Return False
+	EndIf
 	Return True
 
 EndFunc   ;==>CanCast
 
+; Remaining ms of our current activation (not aftercast). 0 = free to start another skill.
+Func OurActivationBusyMs()
+	If $MySkillSlot < 1 Or $MySkillSlot > 8 Then Return 0
+	If Not IsNumber($AftercastTimer) Or $AftercastTimer = 501 Then Return 0
+	Local $iNeed = OurSkillActivationMs()
+	If $iNeed <= 0 Then Return 0
+	Local $iElapsed = TimerDiff($AftercastTimer)
+	If $iElapsed >= $iNeed Then Return 0
+	Return $iNeed - $iElapsed
+EndFunc   ;==>OurActivationBusyMs
+
+Func OurSkillActivationMs()
+	If $MySkillSlot < 1 Or $MySkillSlot > 8 Then Return 0
+	Local $iSkill = $SkillBarCache[$MySkillSlot][$all]
+	If $iSkill = 0 Then Return 0
+	; Busy clock: activation+ping only (no projectile travel).
+	Return Skill_GetMyActivationTime($iSkill, 0)
+EndFunc   ;==>OurSkillActivationMs
+
+Func OurSkillID()
+	If $MySkillSlot < 1 Or $MySkillSlot > 8 Then Return 0
+	Return $SkillBarCache[$MySkillSlot][$all]
+EndFunc   ;==>OurSkillID
+
+Func CanUse_ESW($aSkillSlot, $aAggroRange = 1200, $aKnownTarget = 0)
+	If Number($aKnownTarget) <> 0 Then
+		$BestTarget = Number($aKnownTarget)
+		Return CanCast($aSkillSlot) And $BestTarget <> 0
+	EndIf
+	Return CanUse($aSkillSlot, $aAggroRange, $all)
+EndFunc
+
 ;~ Tests if a skill can be used based on them belonging to one or more skill types;
-;~ Tests if we have a valid target for the skillslot being tested
-;~ Can also be used to cast other skills before the actual skill
-Func CanUse($aSkillSlot, $aAggroRange = 1320)
+;~ $aSkillType = SkillBarCache column ($rupt / $enchantremove / $hexremove / $all / …).
+;~ Target source switches on that column; TryUseSkill stays outside.
+Func CanUse($aSkillSlot, $aAggroRange = 1320, $aSkillType = $all)
 ; REVIEW: GwAu3 equivalent is UAI_CanUse(). Keep this while using Logic cache.
-	;If Not CanCast($aSkillSlot) Then Return False
 	If $aSkillSlot = "" Then Return
-	If GetBestTargetBySkillSlot($aSkillSlot, $aAggroRange) = 0 Then Return False        ; This sets §besttarget global variable to the best target for the skillslot if valid
+	; Reactive columns: aftercast must not block; still require energy/recharge via CanCastFollowUp.
+	Switch $aSkillType
+		Case $rupt, $enchantremove, $hexremove, $hexes
+			If Not CanCastFollowUp($aSkillSlot) Then Return False
+		Case Else
+			If Not CanCast($aSkillSlot) Then Return False
+	EndSwitch
 	If Skill_HasEffect($Glyph_Of_Sacrifice) And $aSkillSlot <> $SkillbarSlot[$Meteor_Shower] Then Return False
+
+	Switch $aSkillType
+		Case $rupt
+			If $SkillBarCache[$aSkillSlot][$rupt] = "" Then Return False
+			$BestTarget = ESW_BestRuptTargetForSlot($aSkillSlot, $aAggroRange)
+			If $BestTarget = 0 Then Return False
+			Return True
+
+		Case $enchantremove
+			If $SkillBarCache[$aSkillSlot][$enchantremove] = "" Then Return False
+			$BestTarget = ESW_BestEnchantStripTarget($aAggroRange)
+			If $BestTarget = 0 Or Agent_GetDistance($BestTarget) > $aAggroRange Then
+				$BestTarget = 0
+				Return False
+			EndIf
+			Return True
+
+		Case $hexremove
+			If $SkillBarCache[$aSkillSlot][$hexremove] = "" Then Return False
+			$BestTarget = ESW_BestHexRemoveTarget($aAggroRange)
+			If $BestTarget = 0 Then $BestTarget = Agent_GetMostHexedAlly($aAggroRange)
+			If $BestTarget = 0 Or Agent_GetDistance($BestTarget) > $aAggroRange Then
+				$BestTarget = 0
+				Return False
+			EndIf
+			; Fall through for hexremove-specific skill conditions below.
+
+		Case $hexes
+			If $SkillBarCache[$aSkillSlot][$hexes] = "" Then Return False
+			If GetBestTargetBySkillSlot($aSkillSlot, $aAggroRange) = 0 Then Return False
+			; Fall through — Diversion/Shame/BF/Guilt gates below.
+
+		Case Else
+			; Else / category passes: never steal pool-driven slots.
+			If $aSkillType = $all Then
+				If $SkillBarCache[$aSkillSlot][$rupt] <> "" Then Return False
+				If $SkillBarCache[$aSkillSlot][$enchantremove] <> "" Then Return False
+				If $SkillBarCache[$aSkillSlot][$hexremove] <> "" Then Return False
+			ElseIf $SkillBarCache[$aSkillSlot][$aSkillType] = "" Then
+				Return False
+			EndIf
+			If GetBestTargetBySkillSlot($aSkillSlot, $aAggroRange) = 0 Then Return False
+	EndSwitch
 
 ;~ BINDING RITUALS
 	If $SkillBarCache[$aSkillSlot][$bind] <> "" Then
@@ -1018,7 +2147,7 @@ Func CanUse($aSkillSlot, $aAggroRange = 1320)
 				If Agent_GetMySpiritCount() < $PressureSpiritSkills Then Return False
 			Case $Shelter, $Union, $Displacement, $Winter, $Edge_of_Extinction, $Soul_Twisting
 				If Skill_HasEffect($SkillBarCache[$aSkillSlot][$bind]) Then Return False
-				If Skill_GetSkillbarInfo($SkillbarSlot[$Soul_Twisting], "IsRecharged") And Not Skill_HasEffect($Soul_Twisting) Then Skill_UseSkill($SkillbarSlot[$Soul_Twisting], -2)
+				If Skill_GetSkillbarInfo($SkillbarSlot[$Soul_Twisting], "IsRecharged") And Not Skill_HasEffect($Soul_Twisting) Then Skill_TryUseSkill($SkillbarSlot[$Soul_Twisting], -2)
 		EndSwitch
 	EndIf
 
@@ -1026,7 +2155,7 @@ Func CanUse($aSkillSlot, $aAggroRange = 1320)
 	If $SkillBarCache[$aSkillSlot][$survive] <> "" Then
 		Switch $SkillBarCache[$aSkillSlot][$survive]
 			Case $I_Am_Unstoppable
-				If GetEffectTimeRemaining($Shadow_Form) > 5000 And Not Agent_GetAgentInfo(-2, "Knocked") Then Return False
+				If GetEffectTimeRemaining($Shadow_Form) > 5000 And Not Agent_GetAgentInfo(-2, "IsKnocked") Then Return False
 			Case $Glyph_of_Swiftness
 				If GetEffectTimeRemaining($Shadow_Form) > 5000 Then Return False
 				If GetSkillbarSkillRecharge($SkillbarSlot[$Shadow_Form]) > 5000 Then Return False
@@ -1112,7 +2241,7 @@ Func CanUse($aSkillSlot, $aAggroRange = 1320)
 
 ;~ HEAL SKILLS
 	If $SkillBarCache[$aSkillSlot][$heal] <> "" Then
-		$lowestally = GetLowestAlly()
+		$lowestally = Agent_GetLowestAlly()
 		Switch $SkillBarCache[$aSkillSlot][$heal]
 			Case $Word_of_Healing
 				If Agent_GetAgentInfo($lowestally, "HP") > 0.5 Then Return False
@@ -1121,7 +2250,7 @@ Func CanUse($aSkillSlot, $aAggroRange = 1320)
 			Case $Mend_Body_and_Soul
 				If Agent_GetAgentInfo($lowestally, "HP") > 0.5 And Not Agent_GetAgentInfo($lowestally, "IsDead") Then Return False
 			Case $Divine_Healing, $Heal_Party, $Heavens_Delight, $Protective_Was_Kaolai, $Protective_Was_Kaolai_PvP, $Heal_Party, $Mystic_Healing, $Mystic_Healing_PvP, $Courageous_Was_Saidra
-				If GetPartyHealth() > 0.90 Or Agent_GetAgentInfo($lowestally, "HP") > 0.75 Then Return False
+				If Party_GetPartyHealth() > 0.90 Or Agent_GetAgentInfo($lowestally, "HP") > 0.75 Then Return False
 			Case Else
 				If IsHealSkill($SkillBarCache[$aSkillSlot][$heal]) And Agent_GetAgentInfo($lowestally, "HP") > 0.8 Then Return False
 				If IsSelfHealSkill($SkillBarCache[$aSkillSlot][$heal]) And Agent_GetAgentInfo(-2, "HP") > 0.8 Then Return False
@@ -1131,7 +2260,7 @@ Func CanUse($aSkillSlot, $aAggroRange = 1320)
 ;~ CONDITION REMOVE SKILLS
 	If $SkillBarCache[$aSkillSlot][$condremove] <> "" Then
 		If RequiresCondition($SkillBarCache[$aSkillSlot][$condremove]) And Not Agent_GetAgentInfo($MostConditionedAllyPtr, "IsDead") Then Return False
-		$lowestally = GetLowestAlly()
+		$lowestally = Agent_GetLowestAlly()
 		Switch $SkillBarCache[$aSkillSlot][$heal]
 			Case $Martyr, $Pure_Was_Li_Ming
 				If GetNumberOfConditionedAllies() = 0 Then Return False
@@ -1144,9 +2273,13 @@ Func CanUse($aSkillSlot, $aAggroRange = 1320)
 
 ;~ HEX REMOVE SKILLS
 	If $SkillBarCache[$aSkillSlot][$hexremove] <> "" Then
-		$MostHexedAllyPtr = MostHexedAlly()
+		$MostHexedAllyPtr = Agent_GetMostHexedAlly()
 
-		If RequiresHex($SkillBarCache[$aSkillSlot][$hexremove]) And Not Agent_GetAgentInfo($BestTargetPtr, "IsDead") Then Return False
+		; Requires a living hexed target (old check inverted IsDead and blocked every living ally).
+		If RequiresHex($SkillBarCache[$aSkillSlot][$hexremove]) Then
+			If $BestTarget = 0 Or Agent_GetAgentInfo($BestTarget, "IsDead") Then Return False
+			If Not Agent_GetAgentInfo($BestTarget, "IsHexed") Then Return False
+		EndIf
 
 		Switch $SkillBarCache[$aSkillSlot][$hexremove]
 			Case $Divert_Hexes, $Cure_Hex                                                         ;Heal and remove hex (me and ally)
@@ -1165,7 +2298,7 @@ Func CanUse($aSkillSlot, $aAggroRange = 1320)
 				If Not Agent_GetAgentInfo($MostHexedAllyPtr, "IsDead") Then Return False 					;Can remove if only want Remove Hex
 			Case $Signet_of_Removal ;															Removes one hex and one condition. If target is enchanted. (me and ally)
 				If Not Agent_GetAgentInfo($MostHexedAllyPtr, "Enchanted") Then Return False
-			Case Else ;$Reverse_Hex, $Remove_Hex, $Expel_Hexes, $Inspired_Hex, $Revealed_Hex, $Spotless_Mind, $Convert_Hexes, $Deny_Hexes, _ ; remove hex (me and ally)
+			Case Else ;$Reverse_Hex, $Remove_Hex, $Expel_Hexes, $Inspired_Hex, $Revealed_Hex, $Spotless_Mind, $Convert_Hexes, $Deny_Hexes, $Shatter_Hex, ï¿½
 				Return True
 		EndSwitch
 	EndIf
@@ -1178,7 +2311,8 @@ Func CanUse($aSkillSlot, $aAggroRange = 1320)
 			Case $Save_Yourselves_Kurzick, $Save_Yourselves_Luxon, $Theres_Nothing_to_Fear
 				If Skill_HasEffect($Cacophony) Or Skill_HasEffect($Vocal_Minority) Then UseHeroHexRemoval()
 				; If GetNumberOfEnemies(1400) = 0 Then Return False We don't need this because when are not using those skills when enemies are not around
-				If GetLowestAlly() > 0.90 Then Return False ;GetPartyHealth() > 0.9
+				Local $lLowestAlly = Agent_GetLowestAlly()
+				If $lLowestAlly = 0 Or Agent_GetAgentInfo($lLowestAlly, "HP") > 0.90 Then Return False ;Party_GetPartyHealth() > 0.9
 			Case $Heroic_Refrain, $Mending_Refrain, $Bladeturn_Refrain, $Burning_Refrain
 				If Agent_GetAgentInfo(-2, "CurrentEnergy") < 20 And Not Skill_HasEffect($Blood_is_Power) And Agent_GetAgentInfo(Agent_GetHero($BiP[0], "HP")) > 0.4 Then Skill_UseHero($BiP[0], $BiP[1], -2)
 				If Agent_GetAgentInfo(-2, "IsDead") Then Return False
@@ -1189,8 +2323,8 @@ Func CanUse($aSkillSlot, $aAggroRange = 1320)
 		EndSwitch
 	EndIf
 
-;~ INTERRUPTS
-	If $SkillBarCache[$aSkillSlot][$rupt] <> "" Then Return False ; managed through event system
+;~ INTERRUPTS — pool pass owns $rupt; never cast them from Else / category CanUse.
+	If $SkillBarCache[$aSkillSlot][$rupt] <> "" Then Return False
 
 ;~ 	Switch $SkillBarCache[$aSkillSlot][$all]
 ;~ 		Case $Ether_Signet
@@ -1199,24 +2333,24 @@ Func CanUse($aSkillSlot, $aAggroRange = 1320)
 ;~ 	EndSwitch
 
 ;~ JUNUNDU
-	If $SkillBarCache[$aSkillSlot][$rupt] <> "" Then
+	If $SkillBarCache[$aSkillSlot][$junundu] <> "" Then
 		Switch $SkillBarCache[$aSkillSlot][$junundu]
 			Case $Junundu_Strike	; only affects adjacent range but will run to enemy
 				If Agent_GetNearestDistance() > $Earshot_Range Then Return False
-				MoveTo(Agent_X($BestTargetPtr), Agent_Y($BestTargetPtr))
+				MoveTo(Agent_X($BestTarget), Agent_Y($BestTarget))
 			Case $Burning_Breath, $Junundu_Siege1	; skill fails if target is closer than nearbyrange, check if we should move out of range before using
-				If Agent_GetDistance($BestTargetPtr) < $Nearby_Range Then Return False
+				If Agent_GetDistance($BestTarget) < $Nearby_Range Then Return False
 			Case $Blinding_Breath, $Choking_Breath, $Junundu_Smash ; untargeted skill, only affects adjacent foes
 				If CanCast($SkillbarSlot[$Burning_Breath]) Or CanCast($SkillbarSlot[$Junundu_Siege1]) Then Return False
-				MoveTo(Agent_X($BestTargetPtr), Agent_Y($BestTargetPtr))
+				MoveTo(Agent_X($BestTarget), Agent_Y($BestTarget))
 			Case $Junundu_Bite	; does not heal if target is not knocked down and easily reachable
-				If Not Agent_GetAgentInfo($BestTargetPtr, "Knocked") And Agent_GetDistance($BestTargetPtr) < $Nearby_Range Then Return False
+				If Not Agent_GetAgentInfo($BestTarget, "Knocked") And Agent_GetDistance($BestTarget) < $Nearby_Range Then Return False
 			Case $Junundu_Feast
 				If GetNumberOfCorpses($Adjacent_Range) = 0 Then Return False
 			Case $Junundu_Tunnel	; stance is used on recharge as per CanCast() conditions
 				For $aHero = 1 To GetPartySize() -1	; make heroes run with us, they won't use on their own
 					For $aSkillSlot = 1 To 8
-						$aSkillID = GetSkillbarInfo($i, "SkillID")($aSkillSlot, $aHero)
+						$aSkillID = Skill_GetSkillbarInfo($aSkillSlot, "SkillID", $aHero)
 						If $aSkillID = $Junundu_Tunnel Then UseHeroSkill($aHero, $aSkillSlot)
 					Next
 				Next
@@ -1241,21 +2375,32 @@ Func CanUse($aSkillSlot, $aAggroRange = 1320)
 		EndSwitch
 	EndIf
 
-;~ HEX
+;~ HEX — IsAnnoyingSkill gates (Diversion/BF/Shame/Guilt etc.)
 	If $SkillBarCache[$aSkillSlot][$hexes] <> "" Then
+		If $BestTarget = 0 Then Return False
 		Switch $SkillBarCache[$aSkillSlot][$hexes]
-			Case $Panic, $Panic_PvP, $Overload, $Mistrust, $Mistrust_PvP ; targeted spells will already fail if no valid target, but non targeted won't
-				If Agent_GetAgentInfo($BestTargetPtr, "Knocked") Then Return False
+			Case $Panic, $Panic_PvP, $Overload
+				If Agent_GetAgentInfo($BestTarget, "Knocked") Then Return False
+			Case $Diversion, $Visions_of_Regret, $Visions_of_Regret_PvP, $Backfire, $Soul_Leech
+				; IsAnnoyingSkill = 1 — need a casting (or recently casting) foe.
+				If Not Agent_GetAgentInfo($BestTarget, "IsCasting") _
+					And Not EnemyHasRecentCastMode($BestTarget, "foe", 3000) _
+					And Not EnemyHasRecentCastMode($BestTarget, "ally", 3000) Then Return False
+			Case $Guilt, $Mistrust, $Mistrust_PvP
+				If Not EnemyHasRecentCastMode($BestTarget, "foe", 3000) Then Return False
+			Case $Shame, $Mark_of_Subversion
+				; IsAnnoyingSkill = 2 — need recent ally/heal cast (GetBestTarget prefers Mo/Rt + heal pool).
+				If Not EnemyHasRecentCastMode($BestTarget, "ally", 3000) Then Return False
 		EndSwitch
 	EndIf
 
 ;~  OTHER
-    If $SkillBarCache[$aSkillSlot][$all] <> "" Then
-        Switch $SkillBarCache[$aSkillSlot][$all]
-            Case $Ineptitude, $Wandering_Eye, $Clumsiness, $Signet_of_Clumsiness, $Signet_of_Clumsiness_PvP
-				If Agent_GetAgentInfo($BestTargetPtr, "Knocked") Then Return False
+	If $SkillBarCache[$aSkillSlot][$all] <> "" Then
+		Switch $SkillBarCache[$aSkillSlot][$all]
+			Case $Ineptitude, $Wandering_Eye, $Clumsiness, $Signet_of_Clumsiness, $Signet_of_Clumsiness_PvP
+				If Agent_GetAgentInfo($BestTarget, "Knocked") Then Return False
 			Case $Accumulated_Pain
-				If Not Agent_GetAgentInfo($BestTargetPtr, "IsDead") Then Return False
+				If Not Agent_GetAgentInfo($BestTarget, "IsDead") Then Return False
 			Case $Vow_of_Piety
 				If Skill_HasEffect($Vow_of_Piety) Then Return False
 			Case $Glyph_Of_Sacrifice
@@ -1263,115 +2408,213 @@ Func CanUse($aSkillSlot, $aAggroRange = 1320)
 				If Not CanCast($SkillbarSlot[$Meteor_Shower]) Then Return False
 			Case $Meteor_Shower
 				If Not Skill_HasEffect($Glyph_Of_Sacrifice) Then Return False
-        EndSwitch
-    EndIf
+			Case $Diversion, $Visions_of_Regret, $Visions_of_Regret_PvP, $Backfire, $Soul_Leech
+				If $BestTarget = 0 Then Return False
+				If Not Agent_GetAgentInfo($BestTarget, "IsCasting") _
+					And Not EnemyHasRecentCastMode($BestTarget, "foe", 3000) _
+					And Not EnemyHasRecentCastMode($BestTarget, "ally", 3000) Then Return False
+			Case $Guilt, $Mistrust, $Mistrust_PvP
+				If $BestTarget = 0 Or Not EnemyHasRecentCastMode($BestTarget, "foe", 3000) Then Return False
+			Case $Shame, $Mark_of_Subversion
+				If $BestTarget = 0 Or Not EnemyHasRecentCastMode($BestTarget, "ally", 3000) Then Return False
+		EndSwitch
+	EndIf
 
 	Return True
 EndFunc   ;==>CanUse
 
-;~ Description: Finds the best target for a skillslot based on target requirements and the type of skill, and returns 0 if no good skill ca be used
+; Best target for a skillslot. Shame/Guilt/Mistrust/Mark of Subversion scoring lives here
+; (not separate helpers). CounterEnemyCasts uses the same function for rupt targeting.
 Func GetBestTargetBySkillSlot($aSkillSlot, $aAggroRange = 1320)
 	If Map_GetInstanceInfo("Type") == 2 Then Connection_CheckAndReconnect()
-	If Map_GetInstanceInfo("Type") == 0 Then Return
+	If Map_GetInstanceInfo("Type") == 0 Then Return 0
 	$MyPtr = Agent_GetAgentPtr(-2)
+	$BestTarget = 0
+
 	Switch $SkillBarCache[$aSkillSlot][$hexes]
-		Case $Panic, $Panic_PvP, $Wastrels_Worry, $Wastrels_Demise, $Wastrels_Demise_PvP, $Overload, $Mistrust, $Mistrust_PvP ; targeted spells will already fail if no valid target, but non targeted won't
-			$BestTargetPtr = Agent_GetBestTarget($aAggroRange)
-			Return $BestTargetPtr
-		EndSwitch
+		Case $Panic, $Panic_PvP, $Wastrels_Worry, $Wastrels_Demise, $Wastrels_Demise_PvP, $Overload
+			$BestTarget = Agent_GetBestTarget($aAggroRange)
+			Return $BestTarget
+	EndSwitch
 
 	Switch $SkillBarCache[$aSkillSlot][$all]
 		Case $Meteor_Shower, $Meteor
-			$BestTargetPtr = Agent_GetBestTarget($aAggroRange)
-			Return $BestTargetPtr
+			$BestTarget = Agent_GetBestTarget($aAggroRange)
+			Return $BestTarget
 	EndSwitch
 
+	; Ally helpers: ($aRange [, $excludeself=False]). Only Case 4 (other ally) passes True.
+	; All of these return ptrs â€” test with <> 0 / IsPtr, never treat as raw IDs.
 	Switch $SkillBarCache[$aSkillSlot][$target]
 		Case 0	; self
+			Local $lNearEnemy = Agent_GetNearestAgent(-2, 0xDB, 3)
 			Switch $SkillBarCache[$aSkillSlot][$type]
 				Case $Ward, $Ritual, $Signet
-					If Agent_GetDistance(Agent_GetNearestEnemy()) > $aAggroRange Then Return False
+					If $lNearEnemy = 0 Or Agent_GetDistance($lNearEnemy) > $aAggroRange Then Return 0
+					$BestTarget = $MyPtr
 				Case Else
-					If $SkillBarCache[$aSkillslot][$precast] == 0 And Agent_GetDistance(Agent_GetNearestEnemy(-2)) > $aAggroRange Then Return False
-					$BestTargetPtr = $MyPtr
+					If $SkillBarCache[$aSkillSlot][$precast] == 0 Then
+						If $lNearEnemy = 0 Or Agent_GetDistance($lNearEnemy) > $aAggroRange Then Return 0
+					EndIf
+					$BestTarget = $MyPtr
 			EndSwitch
 
-		Case 3	; ally
+		Case 3	; ally â€” self allowed (default excludeself=False)
 			If $SkillBarCache[$aSkillSlot][$condremove] <> "" Then
-				$BestTargetPtr = MostCondsAlly()
+				$BestTarget = Agent_GetMostCondsAlly($aAggroRange)
 			ElseIf $SkillBarCache[$aSkillSlot][$hexremove] <> "" Then
 				Switch $SkillBarCache[$aSkillSlot][$hexremove]
 					Case $Hex_Eater_Signet, $Hex_Eater_Vortex, $Shatter_Hex, $Smite_Hex
-						$BestTargetPtr = GetMostBalledHexedAlly()
+						$BestTarget = Agent_GetMostBalledHexedAlly($aAggroRange)
+						If $BestTarget = 0 Then $BestTarget = Agent_GetMostHexedAlly($aAggroRange)
 					Case Else
-						$BestTargetPtr = MostHexedAlly()
+						$BestTarget = Agent_GetMostHexedAlly($aAggroRange)
 				EndSwitch
 			ElseIf $SkillBarCache[$aSkillSlot][$precast] <> "" Then
-				$BestTargetPtr = $MyPtr
+				$BestTarget = $MyPtr
 			ElseIf $SkillBarCache[$aSkillSlot][$survive] <> "" Then
-				$BestTargetPtr = $MyPtr
+				$BestTarget = $MyPtr
 			ElseIf $SkillBarCache[$aSkillSlot][$type] = $EchoRefrain Then
-				$BestTargetPtr = NeedEchoAlly($SkillBarCache[$aSkillSlot][$echochantshout])
+				$BestTarget = Agent_NeedEchoAlly($SkillBarCache[$aSkillSlot][$echochantshout])
 			Else
-				$BestTargetPtr = GetLowestAlly()
-			EndIf
-		Case 4	; other ally
-			If $SkillBarCache[$aSkillSlot][$condremove] <> "" Then
-				$BestTargetPtr = MostCondsAlly(True)
-			ElseIf $SkillBarCache[$aSkillSlot][$hexremove] <> "" Then
-				$BestTargetPtr = MostHexedAlly(True)
-			ElseIf $SkillBarCache[$aSkillSlot][$heal] <> "" Then
-				$BestTargetPtr = GetLowestAlly(True)
-			ElseIf $SkillBarCache[$aSkillSlot][$precast] <> "" Then
-				$BestTargetPtr = $MyPtr
-			ElseIf $SkillBarCache[$aSkillSlot][$survive] <> "" Then
-				$BestTargetPtr = $MyPtr
-			ElseIf $SkillBarCache[$aSkillSlot][$type] = $EchoRefrain Then
-				$BestTargetPtr = NeedEchoAlly($SkillBarCache[$aSkillSlot][$echochantshout])
-			Else
-				$BestTargetPtr = GetLowestAlly(True)
+				$BestTarget = Agent_GetLowestAlly($aAggroRange)
 			EndIf
 
-		Case 5	; enemy,
+		Case 4	; other ally â€” exclude self (only case that passes True)
+			If $SkillBarCache[$aSkillSlot][$condremove] <> "" Then
+				$BestTarget = Agent_GetMostCondsAlly($aAggroRange, True)
+			ElseIf $SkillBarCache[$aSkillSlot][$hexremove] <> "" Then
+				Switch $SkillBarCache[$aSkillSlot][$hexremove]
+					Case $Hex_Eater_Signet, $Hex_Eater_Vortex, $Shatter_Hex, $Smite_Hex
+						$BestTarget = Agent_GetMostBalledHexedAlly($aAggroRange, True)
+						If $BestTarget = 0 Then $BestTarget = Agent_GetMostHexedAlly($aAggroRange, True)
+					Case Else
+						$BestTarget = Agent_GetMostHexedAlly($aAggroRange, True)
+				EndSwitch
+			ElseIf $SkillBarCache[$aSkillSlot][$heal] <> "" Then
+				$BestTarget = Agent_GetLowestAlly($aAggroRange, True)
+			ElseIf $SkillBarCache[$aSkillSlot][$precast] <> "" Then
+				$BestTarget = $MyPtr
+			ElseIf $SkillBarCache[$aSkillSlot][$survive] <> "" Then
+				$BestTarget = $MyPtr
+			ElseIf $SkillBarCache[$aSkillSlot][$type] = $EchoRefrain Then
+				$BestTarget = Agent_NeedEchoAlly($SkillBarCache[$aSkillSlot][$echochantshout])
+			Else
+				$BestTarget = Agent_GetLowestAlly($aAggroRange, True)
+			EndIf
+
+		Case 5	; enemy
 			If $SkillBarCache[$aSkillSlot][$hexes] <> "" Then
-				$BestTargetPtr = GetNoHexEnemy($aAggroRange) = 0
-				If $BestTargetPtr = 0 Then $BestTargetPtr = Agent_GetBestTarget($aAggroRange)
+				Switch $SkillBarCache[$aSkillSlot][$hexes]
+					Case $Shame, $Mark_of_Subversion
+						; Pool heal / ally-mode cast is the strongest signal; else Mo/Rt with recent ally cast.
+						$BestTarget = ESW_BestShameTarget($aAggroRange)
+						If $BestTarget = 0 Then
+							Local $aAgents = Agent_GetAgentArray(0xDB)
+							Local $lBestScore = -1
+							For $i = 1 To $aAgents[0]
+								Local $lPtr = $aAgents[$i]
+								If Agent_GetAgentInfo($lPtr, "Allegiance") <> 3 Then ContinueLoop
+								If Agent_GetAgentInfo($lPtr, "IsDead") Or Agent_GetAgentInfo($lPtr, "IsHexed") Then ContinueLoop
+								If Agent_GetDistance($lPtr) > $aAggroRange Then ContinueLoop
+								If Not EnemyHasRecentCastMode($lPtr, "ally", 3000) Then ContinueLoop
+								Local $lScore = Agent_GetNumberOfEnemiesNearAgent(300, $lPtr)
+								If Agent_IsSupportCasterProfession($lPtr) Then $lScore += 100
+								If Agent_GetAgentInfo($lPtr, "IsCasting") Then $lScore += 50
+								If $lScore > $lBestScore Then
+									$lBestScore = $lScore
+									$BestTarget = $lPtr
+								EndIf
+							Next
+						EndIf
+					Case $Guilt, $Mistrust, $Mistrust_PvP
+						; Foe-mode pool cast (spell on us / enemies) → Guilt / Mistrust.
+						$BestTarget = ESW_BestGuiltTarget($aAggroRange)
+						If $BestTarget = 0 Then
+							Local $aAgents = Agent_GetAgentArray(0xDB)
+							Local $lBestScore = -1
+							For $i = 1 To $aAgents[0]
+								Local $lPtr = $aAgents[$i]
+								If Agent_GetAgentInfo($lPtr, "Allegiance") <> 3 Then ContinueLoop
+								If Agent_GetAgentInfo($lPtr, "IsDead") Or Agent_GetAgentInfo($lPtr, "IsHexed") Then ContinueLoop
+								If Agent_GetDistance($lPtr) > $aAggroRange Then ContinueLoop
+								If Not EnemyHasRecentCastMode($lPtr, "foe", 3000) Then ContinueLoop
+								Local $lScore = Agent_GetNumberOfEnemiesNearAgent(300, $lPtr)
+								If Agent_GetAgentInfo($lPtr, "IsCasting") Then $lScore += 50
+								If Agent_IsSupportCasterProfession($lPtr) Then $lScore += 10
+								If $lScore > $lBestScore Then
+									$lBestScore = $lScore
+									$BestTarget = $lPtr
+								EndIf
+							Next
+						EndIf
+					Case $Diversion, $Visions_of_Regret, $Visions_of_Regret_PvP, $Backfire, $Soul_Leech
+						; IsAnnoyingSkill = 1 — casting / recently casting foe (not random no-hex).
+						Local $aAgents = Agent_GetAgentArray(0xDB)
+						Local $lBestScore = -1
+						For $i = 1 To $aAgents[0]
+							Local $lPtr = $aAgents[$i]
+							If Agent_GetAgentInfo($lPtr, "Allegiance") <> 3 Then ContinueLoop
+							If Agent_GetAgentInfo($lPtr, "IsDead") Or Agent_GetAgentInfo($lPtr, "IsHexed") Then ContinueLoop
+							If Agent_GetDistance($lPtr) > $aAggroRange Then ContinueLoop
+							If Not Agent_GetAgentInfo($lPtr, "IsCasting") _
+								And Not EnemyHasRecentCastMode($lPtr, "foe", 3000) _
+								And Not EnemyHasRecentCastMode($lPtr, "ally", 3000) Then ContinueLoop
+							Local $lScore = Agent_GetNumberOfEnemiesNearAgent(300, $lPtr)
+							If Agent_GetAgentInfo($lPtr, "IsCasting") Then $lScore += 50
+							If $lScore > $lBestScore Then
+								$lBestScore = $lScore
+								$BestTarget = $lPtr
+							EndIf
+						Next
+					Case Else
+						$BestTarget = Agent_GetNoHexEnemy($aAggroRange)
+						If $BestTarget = 0 Then $BestTarget = Agent_GetBestTarget($aAggroRange)
+				EndSwitch
 			ElseIf $SkillBarCache[$aSkillSlot][$enchantremove] <> "" Then
-				$BestTargetPtr = GetBalledEnchantedEnemy($aAggroRange)
+				$BestTarget = Agent_GetBalledEnchantedEnemy($aAggroRange)
 			ElseIf $SkillBarCache[$aSkillSlot][$attackskill] <> "" Then
-				$BestTargetPtr = GetBestMeleeTarget($SkillBarCache[$aSkillSlot][$attackskill])
+				$BestTarget = GetBestMeleeTarget($SkillBarCache[$aSkillSlot][$attackskill])
 			ElseIf $SkillBarCache[$aSkillSlot][$rupt] <> "" Then
-				$BestTargetPtr = GetMostBalledCastingEnemy($aAggroRange)    ; finds only enemies that are casting a spell
+				; CastingOnly=True is 2nd arg of Agent_GetBestTarget (via MostBalledCastingEnemy).
+				$BestTarget = Agent_GetMostBalledCastingEnemy($aAggroRange)
 			Else
 				Switch $SkillBarCache[$aSkillSlot][$all]
 					Case $Unnatural_Signet
-						$BestTargetPtr = Agent_GetBestTarget(1320, False, True)
-						If $BestTargetPtr = 0 then $BestTargetPtr = Agent_GetBestTarget($aAggroRange)
+						; ($range, CastingOnly=False, NoHexOnly=True)
+						$BestTarget = Agent_GetBestTarget($aAggroRange, False, True)
+						If $BestTarget = 0 Then $BestTarget = Agent_GetBestTarget($aAggroRange)
 					Case Else
-						$BestTargetPtr = Agent_GetBestTarget($aAggroRange)
-					EndSwitch
+						$BestTarget = Agent_GetBestTarget($aAggroRange)
+				EndSwitch
 			EndIf
+
 		Case 6	; dead ally
-			$BestTargetPtr = Agent_GetNearestDeadAlly()
+			$BestTarget = Agent_GetNearestDeadAlly($aAggroRange)
 		Case 14	; spirit, minion
-			$BestTargetPtr = GetNearestMinionAlly()
+			$BestTarget = GetNearestMinionAlly()
 	EndSwitch
 
-
-	If $BestTargetPtr <> 0 Then Return $BestTargetPtr
+	; Never hand Fight/UseSkills an enemy outside the requested range.
+	If $BestTarget <> 0 Then
+		If Agent_GetAgentInfo($BestTarget, "Allegiance") = 3 And Agent_GetDistance($BestTarget) > $aAggroRange Then
+			$BestTarget = 0
+			Return 0
+		EndIf
+		Return $BestTarget
+	EndIf
 	Return 0
-
 EndFunc   ;==>GetBestTargetBySkillSlot
 
 Func Survive($aAggroRange = 1500)
 	If Agent_GetAgentInfo(-2, "IsDead") Then Return
-	If CanUse($SkillbarSlot[$I_Am_Unstoppable], $aAggroRange) Then Skill_UseSkill($SkillbarSlot[$I_Am_Unstoppable])
-	If CanUse($SkillbarSlot[$Glyph_of_Swiftness], $aAggroRange) Then Skill_UseSkill($SkillbarSlot[$Glyph_of_Swiftness])
-	If CanUse($SkillbarSlot[$Shadow_Form], $aAggroRange) Then Skill_UseSkill($SkillbarSlot[$Shadow_Form])
+	If CanUse($SkillbarSlot[$I_Am_Unstoppable], $aAggroRange) Then Skill_TryUseSkill($SkillbarSlot[$I_Am_Unstoppable])
+	If CanUse($SkillbarSlot[$Glyph_of_Swiftness], $aAggroRange) Then Skill_TryUseSkill($SkillbarSlot[$Glyph_of_Swiftness])
+	If CanUse($SkillbarSlot[$Shadow_Form], $aAggroRange) Then Skill_TryUseSkill($SkillbarSlot[$Shadow_Form])
 
-	If CanUse($SkillbarSlot[$Protective_Spirit], $aAggroRange) Then Skill_UseSkill($SkillbarSlot[$Protective_Spirit])
-	If CanUse($SkillbarSlot[$Shielding_Hands], $aAggroRange) Then Skill_UseSkill($SkillbarSlot[$Shielding_Hands])
-;~ 	If CanUse($SkillbarSlot[$Spirit_Bond]) Then Skill_UseSkill($SkillbarSlot[$Spirit_Bond])
+	If CanUse($SkillbarSlot[$Protective_Spirit], $aAggroRange) Then Skill_TryUseSkill($SkillbarSlot[$Protective_Spirit])
+	If CanUse($SkillbarSlot[$Shielding_Hands], $aAggroRange) Then Skill_TryUseSkill($SkillbarSlot[$Shielding_Hands])
+;~ 	If CanUse($SkillbarSlot[$Spirit_Bond]) Then Skill_TryUseSkill($SkillbarSlot[$Spirit_Bond])
 
 	For $aSkillSlot In $Skillbar
 		If Agent_GetAgentInfo(-2, "IsDead") Then ExitLoop
@@ -1383,36 +2626,36 @@ Func Survive($aAggroRange = 1500)
 		EndIf
 
 		If $SkillBarCache[$aSkillSlot][$survive] = "" Then ContinueLoop
-		If CanUse($aSkillSlot, $aAggroRange) Then Skill_UseSkill($aSkillSlot, $BestTargetPtr)
+		If CanUse($aSkillSlot, $aAggroRange) Then Skill_TryUseSkill($aSkillSlot, $BestTarget)
 	Next
 EndFunc   ;==>Survive
 
 Func Precast($aAggroRange = $compass_range, $precastspirits = True)
 	If $precastspirits Then PrecastWardsAndSpirits()
-	If CanUse($SkillbarSlot[$Ebon_Battle_Standard_Of_Honor], $longbow_range) Then Skill_UseSkill($SkillbarSlot[$Ebon_Battle_Standard_Of_Honor])
-	If CanUse($SkillbarSlot[$Summon_Spirits_Luxon]) Then Skill_UseSkill($SkillbarSlot[$Summon_Spirits_Luxon])
-	If CanUse($SkillbarSlot[$Painful_Bond]) Then Skill_UseSkill($SkillbarSlot[$Painful_Bond], $BestTargetPtr)
-	If CanUse($SkillbarSlot[$Boon_Of_Creation]) Then Skill_UseSkill($SkillbarSlot[$Boon_Of_Creation])
+	If CanUse($SkillbarSlot[$Ebon_Battle_Standard_Of_Honor], $longbow_range) Then Skill_TryUseSkill($SkillbarSlot[$Ebon_Battle_Standard_Of_Honor])
+	If CanUse($SkillbarSlot[$Summon_Spirits_Luxon]) Then Skill_TryUseSkill($SkillbarSlot[$Summon_Spirits_Luxon])
+	If CanUse($SkillbarSlot[$Painful_Bond]) Then Skill_TryUseSkill($SkillbarSlot[$Painful_Bond], $BestTarget)
+	If CanUse($SkillbarSlot[$Boon_Of_Creation]) Then Skill_TryUseSkill($SkillbarSlot[$Boon_Of_Creation])
 EndFunc   ;==>Precast
 
 Func SpreadChants()
 	For $aSkillSlot In $Skillbar
 		If $SkillBarCache[$aSkillSlot][$echochantshout] = "" Then ContinueLoop
-		If CanUse($aSkillSlot) Then Skill_UseSkill($aSkillSlot, $BestTargetPtr)
+		If CanUse($aSkillSlot) Then Skill_TryUseSkill($aSkillSlot, $BestTarget)
 	Next
 EndFunc   ;==>SpreadChants
 
 Func Precastupkeep()
 	For $aSkillSlot In $Skillbar
 		If $SkillBarCache[$aSkillSlot][$precast] = "" Then ContinueLoop
-		If CanUse($aSkillSlot) Then Skill_UseSkill($aSkillSlot, -2)
+		If CanUse($aSkillSlot) Then Skill_TryUseSkill($aSkillSlot, -2)
 	Next
 EndFunc   ;==>Precastupkeep
 
 Func SpeedBoost()
 	For $aSkillSlot In $Skillbar
 		If $SkillBarCache[$aSkillSlot][$speedBoost] = "" Then ContinueLoop
-		If CanUse($aSkillSlot) Then Skill_UseSkill($aSkillSlot, $BestTargetPtr)
+		If CanUse($aSkillSlot) Then Skill_TryUseSkill($aSkillSlot, $BestTarget)
 	Next
 EndFunc   ;==>SpeedBoost
 
@@ -1441,7 +2684,7 @@ Func Rezz($aAggroRange = 5000)
 	Out("Resurrecting")
 	For $aSkillSlot In $Skillbar
 		If $SkillBarCache[$aSkillSlot][$rezz] = "" Then ContinueLoop
-		If CanUse($aSkillSlot) Then Skill_UseSkill($aSkillSlot, $BestTargetPtr)
+		If CanUse($aSkillSlot) Then Skill_TryUseSkill($aSkillSlot, $BestTarget)
 	Next
 EndFunc    ;==>Rezz
 
@@ -1474,7 +2717,7 @@ Func IsPrecastSkill($aSkillID) ; priority skills used first in a fight, to be ex
 	EndSwitch
 	If IsSelfPrehealSkill($aSkillID) Then Return True
 	If IsDisguiseskill($aSkillID) Then Return True
-	If Memory_Read(Skill_GetSkillPtr($aSkillID) + 12, "long") = $Ward Then Return True ; Type
+	If Skill_GetSkillInfo($aSkillID, "SkillType") = $Ward Then Return True ; Type
 	Return False
 EndFunc   ;==>IsPrecastSkill
 
@@ -1513,7 +2756,7 @@ Func GetAvailableRezz()        ; returns the number of available rezz skills exc
 		If Agent_GetAgentInfo($aHeroPtr, "IsDead") Or Agent_GetDistance($aHeroPtr) > 5000 Then ContinueLoop
 		;Out($aHeroNumber & " - Hero ID" & ID($aHeroPtr) & " , dead = " & Agent_GetAgentInfo($aHeroPtr))
 		For $aSkillSlot = 1 To 8
-			$aSkill = GetSkillbarInfo($i, "SkillID")($aSkillSlot, $aHeroNumber)
+			$aSkill = Skill_GetSkillbarInfo($aSkillSlot, "SkillID", $aHeroNumber)
 			If IsResSkill($aSkill) Then
 				;Out("Skill " & $aSkillSlot & " on Hero " & $aHeroNumber & "(ID = " & GetHeroID($aHeroNumber) & ") is a rezz. Dead = " & Agent_GetAgentInfo(GetHeroPtr($aHeroNumber)))
 				; Out("Hero HP: " & Agent_GetAgentInfo(GetHeroPtr($aHeroNumber, "HP")))
@@ -1638,228 +2881,29 @@ Func IsSpeedAttackBoost($aSkill)
 EndFunc   ;==>IsSpeedAttackBoost
 
 ; Returns whether a skill is a hex spell
-Func IsHexSpell($aSkill)
-; REVIEW: GwAu3 equivalent is Skill_IsHexType()
-	If IsPtr($aSkill) <> 0 Then
-		Return Memory_Read($aSkill + 12, "long") = $Hex
-	ElseIf IsDllStruct($aSkill) <> 0 Then
-		Return DllStructGetData($aSkill, "Type") = $Hex
-	Else
-		Return Memory_Read(Skill_GetSkillPtr($aSkill) + 12, "long") = $Hex
-	EndIf
-EndFunc   ;==>IsHexSpell
 
 ; Returns whether a skill is a condition spell
-Func IsConditionSpell($aSkill)
-; REVIEW: GwAu3 has Skill_Is*Type() helpers for this. Consider wrapping later.
-	If IsPtr($aSkill) <> 0 Then
-		Return Memory_Read($aSkill + 12, "long") = $Condition
-	ElseIf IsDllStruct($aSkill) <> 0 Then
-		Return DllStructGetData($aSkill, "Type") = $Condition
-	Else
-		Return Memory_Read(Skill_GetSkillPtr($aSkill) + 12, "long") = $Condition
-	EndIf
-EndFunc   ;==>IsConditionSpell
 
 ; Returns whether a skill is a Ritual spell
-Func IsRitualSkill($aSkill)
-; REVIEW: GwAu3 has Skill_Is*Type() helpers for this. Consider wrapping later.
-	If IsPtr($aSkill) <> 0 Then
-		Local $lskillid = Memory_Read($aSkill + 12, "long") = $Ritual
-	ElseIf IsDllStruct($aSkill) <> 0 Then
-		Local $lskillid = DllStructGetData($aSkill, "Type") = $Ritual
-	Else
-		Return Memory_Read(Skill_GetSkillPtr($aSkill) + 12, "long") = $Ritual
-	EndIf
-EndFunc   ;==>IsRitualSkill
 
-Func IsWeaponSpell($aSkill)
-; REVIEW: GwAu3 has Skill_Is*Type() helpers for this. Consider wrapping later.
-	If IsPtr($aSkill) <> 0 Then
-		Local $lskillid = Memory_Read($aSkill + 12, "long") = $WeaponSpell
-	ElseIf IsDllStruct($aSkill) <> 0 Then
-		Local $lskillid = DllStructGetData($aSkill, "Type") = $WeaponSpell
-	Else
-		Return Memory_Read(Skill_GetSkillPtr($aSkill) + 12, "long") = $WeaponSpell
-	EndIf
-EndFunc   ;==>IsWeaponSpell
 
 ; Returns whether a skill is an enchantment skill
-Func IsEnchantmentSkill($aSkill)
-; REVIEW: GwAu3 has Skill_Is*Type() helpers for this. Consider wrapping later.
-	If IsPtr($aSkill) <> 0 Then
-		Return Memory_Read($aSkill + 12, "long") = $Enchantment
-	ElseIf IsDllStruct($aSkill) <> 0 Then
-		Return DllStructGetData($aSkill, "Type") = $Enchantment
-	Else
-		Return Memory_Read(Skill_GetSkillPtr($aSkill) + 12, "long") = $Enchantment
-	EndIf
-EndFunc   ;==>IsEnchantmentSkill
 
 ; Returns whether a skill is an attack skill
-Func IsAttackSkill($aSkill)
-; REVIEW: GwAu3 equivalent is Skill_IsAttackType()
-	If IsPtr($aSkill) <> 0 Then
-		Return Memory_Read($aSkill + 12, "long") = $Attack
-	ElseIf IsDllStruct($aSkill) <> 0 Then
-		Return DllStructGetData($aSkill, "Type") = $Attack
-	Else
-		Return Memory_Read(Skill_GetSkillPtr($aSkill) + 12, "long") = $Attack
-	EndIf
-EndFunc   ;==>IsAttackSkill
 
-Func IsStanceskill($aSkill)
-; REVIEW: GwAu3 has Skill_Is*Type() helpers for this. Consider wrapping later.
-	If IsPtr($aSkill) <> 0 Then
-		Return Memory_Read($aSkill + 12, "long") = $Stance
-	ElseIf IsDllStruct($aSkill) <> 0 Then
-		Return DllStructGetData($aSkill, "Type") = $Stance
-	Else
-		Return Memory_Read(Skill_GetSkillPtr($aSkill) + 12, "long") = $Stance
-	EndIf
-EndFunc   ;==>IsStanceskill
 
-Func Skill_IsSpellskill($aSkill)
-; REVIEW: GwAu3 equivalent is Skill_IsSpellType() or Skill_IsType($id, $GC_I_SKILL_TYPE_SPELL)
-	If IsPtr($aSkill) <> 0 Then
-		Return Memory_Read($aSkill + 12, "long") = $Spell
-	ElseIf IsDllStruct($aSkill) <> 0 Then
-		Return DllStructGetData($aSkill, "Type") = $Spell
-	Else
-		Return Memory_Read(Skill_GetSkillPtr($aSkill) + 12, "long") = $Spell
-	EndIf
-EndFunc   ;==>IsSpellskill
 
-Func IsSignetskill($aSkill)
-; REVIEW: GwAu3 has Skill_Is*Type() helpers for this. Consider wrapping later.
-	If IsPtr($aSkill) <> 0 Then
-		Return Memory_Read($aSkill + 12, "long") = $Signet
-	ElseIf IsDllStruct($aSkill) <> 0 Then
-		Return DllStructGetData($aSkill, "Type") = $Signet
-	Else
-		Return Memory_Read(Skill_GetSkillPtr($aSkill) + 12, "long") = $Signet
-	EndIf
-EndFunc   ;==>IsSignetskill
 
-Func IsWellskill($aSkill)
-; REVIEW: GwAu3 has Skill_Is*Type() helpers for this. Consider wrapping later.
-	If IsPtr($aSkill) <> 0 Then
-		Return Memory_Read($aSkill + 12, "long") = $Well
-	ElseIf IsDllStruct($aSkill) <> 0 Then
-		Return DllStructGetData($aSkill, "Type") = $Well
-	Else
-		Return Memory_Read(Skill_GetSkillPtr($aSkill) + 12, "long") = $Well
-	EndIf
-EndFunc   ;==>IsWellskill
 
-Func IsSkill($aSkill)
-	If IsPtr($aSkill) <> 0 Then
-		Return Memory_Read($aSkill + 12, "long") = $SKILL
-	ElseIf IsDllStruct($aSkill) <> 0 Then
-		Return DllStructGetData($aSkill, "Type") = $SKILL
-	Else
-		Return Memory_Read(Skill_GetSkillPtr($aSkill) + 12, "long") = $SKILL
-	EndIf
-EndFunc   ;==>IsSkill
 
-Func IsWardskill($aSkill)
-; REVIEW: GwAu3 has Skill_Is*Type() helpers for this. Consider wrapping later.
-	If IsPtr($aSkill) <> 0 Then
-		Return Memory_Read($aSkill + 12, "long") = $Ward
-	ElseIf IsDllStruct($aSkill) <> 0 Then
-		Return DllStructGetData($aSkill, "Type") = $Ward
-	Else
-		Return Memory_Read(Skill_GetSkillPtr($aSkill) + 12, "long") = $Ward
-	EndIf
-EndFunc   ;==>IsWardskill
 
-Func IsGlyphskill($aSkill)
-; REVIEW: GwAu3 has Skill_Is*Type() helpers for this. Consider wrapping later.
-	If IsPtr($aSkill) <> 0 Then
-		Return Memory_Read($aSkill + 12, "long") = $Glyph
-	ElseIf IsDllStruct($aSkill) <> 0 Then
-		Return DllStructGetData($aSkill, "Type") = $Glyph
-	Else
-		Return Memory_Read(Skill_GetSkillPtr($aSkill) + 12, "long") = $Glyph
-	EndIf
-EndFunc   ;==>IsGlyphskill
 
-Func IsShoutskill($aSkill)
-; REVIEW: GwAu3 has Skill_Is*Type() helpers for this. Consider wrapping later.
-	If IsPtr($aSkill) <> 0 Then
-		Return Memory_Read($aSkill + 12, "long") = $Shout
-	ElseIf IsDllStruct($aSkill) <> 0 Then
-		Return DllStructGetData($aSkill, "Type") = $Shout
-	Else
-		Return Memory_Read(Skill_GetSkillPtr($aSkill) + 12, "long") = $Shout
-	EndIf
-EndFunc   ;==>IsShoutskill
 
-Func IsPreparationskill($aSkill)
-; REVIEW: GwAu3 equivalent is Skill_IsPreparationType() or Skill_IsType(..., $GC_I_SKILL_TYPE_PREPARATION)
-	If IsPtr($aSkill) <> 0 Then
-		Return Memory_Read($aSkill + 12, "long") = $Preparation
-	ElseIf IsDllStruct($aSkill) <> 0 Then
-		Return DllStructGetData($aSkill, "Type") = $Preparation
-	Else
-		Return Memory_Read(Skill_GetSkillPtr($aSkill) + 12, "long") = $Preparation
-	EndIf
-EndFunc   ;==>IsPreparationskill
 
-Func IsTrapskill($aSkill)
-; REVIEW: GwAu3 has Skill_Is*Type() helpers for this. Consider wrapping later.
-	If IsPtr($aSkill) <> 0 Then
-		Return Memory_Read($aSkill + 12, "long") = $Trap
-	ElseIf IsDllStruct($aSkill) <> 0 Then
-		Return DllStructGetData($aSkill, "Type") = $Trap
-	Else
-		Return Memory_Read(Skill_GetSkillPtr($aSkill) + 12, "long") = $Trap
-	EndIf
-EndFunc   ;==>IsTrapskill
 
-Func IsItemSpellskill($aSkill)
-; REVIEW: GwAu3 has Skill_Is*Type() helpers for this. Consider wrapping later.
-	If IsPtr($aSkill) <> 0 Then
-		Return Memory_Read($aSkill + 12, "long") = $ItemSpell
-	ElseIf IsDllStruct($aSkill) <> 0 Then
-		Return DllStructGetData($aSkill, "Type") = $ItemSpell
-	Else
-		Return Memory_Read(Skill_GetSkillPtr($aSkill) + 12, "long") = $ItemSpell
-	EndIf
-EndFunc   ;==>IsItemSpellskill
 
-Func IsChantskill($aSkill)
-; REVIEW: GwAu3 has Skill_Is*Type() helpers for this. Consider wrapping later.
-	If IsPtr($aSkill) <> 0 Then
-		Return Memory_Read($aSkill + 12, "long") = $Chant
-	ElseIf IsDllStruct($aSkill) <> 0 Then
-		Return DllStructGetData($aSkill, "Type") = $Chant
-	Else
-		Return Memory_Read(Skill_GetSkillPtr($aSkill) + 12, "long") = $Chant
-	EndIf
-EndFunc   ;==>IsChantskill
 
-Func IsEchoRefrainskill($aSkill)
-; REVIEW: GwAu3 has Skill_Is*Type() helpers for this. Consider wrapping later.
-	If IsPtr($aSkill) <> 0 Then
-		Return Memory_Read($aSkill + 12, "long") = $EchoRefrain
-	ElseIf IsDllStruct($aSkill) <> 0 Then
-		Return DllStructGetData($aSkill, "Type") = $EchoRefrain
-	Else
-		Return Memory_Read(Skill_GetSkillPtr($aSkill) + 12, "long") = $EchoRefrain
-	EndIf
-EndFunc   ;==>IsEchoRefrainskill
 
-Func IsDisguiseskill($aSkill)
-; REVIEW: GwAu3 has Skill_Is*Type() helpers for this. Consider wrapping later.
-	If IsPtr($aSkill) <> 0 Then
-		Return Memory_Read($aSkill + 12, "long") = $Disguise
-	ElseIf IsDllStruct($aSkill) <> 0 Then
-		Return DllStructGetData($aSkill, "Type") = $Disguise
-	Else
-		Return Memory_Read(Skill_GetSkillPtr($aSkill) + 12, "long") = $Disguise
-	EndIf
-EndFunc   ;==>IsDisguiseskill
 
 Func IsBindingSkill($aSkillID)
 	Switch $aSkillID
@@ -1914,8 +2958,16 @@ EndFunc   ;==>IsRuptSkill
 
 Func IsRuptSkill($aSkill, $hardrupt = False)
 ; REVIEW: Keep this. Uses Effect2 bit (+0x20) + soft-rupt exceptions. GwAu3 has no direct equivalent.
-	Local $lSkillEffect2 = Memory_Read(Skill_GetSkillPtr($aSkill) + 32, 'long')
+	Local $lSkillEffect2 = Skill_GetSkillInfo($aSkill, "Effect2")
 	Local $lSkillID = GetSkillID($aSkill)
+
+	; Punish-on-cast hexes: Effect2 often looks like an interrupt, but they are too slow for
+	; dispatch rupt and belong on the skillbar as hexes (Shame ~2s activation).
+	Switch $lSkillID
+		Case $Shame, $Mark_of_Subversion, $Guilt, $Diversion, $Backfire, $Mistrust, $Mistrust_PvP, _
+				$Visions_of_Regret, $Visions_of_Regret_PvP, $Soul_Leech
+			Return False
+	EndSwitch
 
 	Switch $lSkillID	; interrupt skills that are incorrectly categorized via Effect2 or soft rupts for separation
 		Case $Power_Drain, $Power_Flux, $Power_Leak, $Power_Leech, $Power_Lock, $Power_Return, $Power_Spike, $Leech_Signet    ; soft rupts
@@ -2028,18 +3080,22 @@ EndFunc   ;==>IsAoESkill
 #EndRegion Skill Controls
 
 #Region Requirements
+; Attack skills need a hard/fast interrupt. Soft rupts (Power Drain, Leech Signet, ï¿½) can stop
+; spells/hexes/chants/signets and most NPC "Skill" activations ï¿½ whitelist was too narrow before
+; (type Skill=10 / Chant never matched ? soft rupts never selected in CounterEnemyCasts).
 Func RequiresHardRupt($aSkillID)
-	Switch DllStructGetData(GetSkillByID($aSkillID), 'Type')
-		Case $Hex, $Spell, $Enchantment, $Signet, $Well, $Ward, $ItemSpell, $WeaponSpell
+	Switch Skill_GetSkillInfo($aSkillID, "SkillType")
+		Case $Attack
+			Return True
+		Case Else
 			Return False
 	EndSwitch
-	Return True
 EndFunc   ;==>RequiresHardRupt
 
 Func RequiresBleeding($aSkill)
-	Local $Mcondition = Memory_Read(getskillptr($aSkill) + 28, "long")
+	Local $Mcondition = Skill_GetSkillInfo($aSkill, "Condition")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read($aSkill + 28, "long"), 1)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Condition"), 1)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, "Condition"), 1)
 	Else
@@ -2048,9 +3104,9 @@ Func RequiresBleeding($aSkill)
 EndFunc   ;==>RequiresBleeding
 
 Func RequiresBlind($aSkill)
-	Local $Mcondition = Memory_Read(getskillptr($aSkill) + 28, "long")
+	Local $Mcondition = Skill_GetSkillInfo($aSkill, "Condition")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read($aSkill + 28, "long"), 2)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Condition"), 2)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, "Condition"), 2)
 	Else
@@ -2059,9 +3115,9 @@ Func RequiresBlind($aSkill)
 EndFunc   ;==>RequiresBlind
 
 Func RequiresBurning($aSkill)
-	Local $Mcondition = Memory_Read(getskillptr($aSkill) + 28, "long")
+	Local $Mcondition = Skill_GetSkillInfo($aSkill, "Condition")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read($aSkill + 28, "long"), 4)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Condition"), 4)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, "Condition"), 4)
 	Else
@@ -2070,9 +3126,9 @@ Func RequiresBurning($aSkill)
 EndFunc   ;==>RequiresBurning
 
 Func RequiresCripple($aSkill)
-	Local $Mcondition = Memory_Read(getskillptr($aSkill) + 28, "long")
+	Local $Mcondition = Skill_GetSkillInfo($aSkill, "Condition")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read($aSkill + 28, "long"), 8)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Condition"), 8)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, "Condition"), 8)
 	Else
@@ -2081,9 +3137,9 @@ Func RequiresCripple($aSkill)
 EndFunc   ;==>RequiresCripple
 
 Func RequiresCrippleAndBleed($aSkill)
-	Local $Mcondition = Memory_Read(getskillptr($aSkill) + 28, "long")
+	Local $Mcondition = Skill_GetSkillInfo($aSkill, "Condition")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read($aSkill + 28, "long"), 9)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Condition"), 9)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, "Condition"), 9)
 	Else
@@ -2092,9 +3148,9 @@ Func RequiresCrippleAndBleed($aSkill)
 EndFunc   ;==>RequiresCrippleAndBleed
 
 Func SkillRequiresDeepwound($aSkill)
-	Local $Mcondition = Memory_Read(getskillptr($aSkill) + 28, "long")
+	Local $Mcondition = Skill_GetSkillInfo($aSkill, "Condition")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read($aSkill + 28, "long"), 16)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Condition"), 16)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, "Condition"), 16)
 	Else
@@ -2103,9 +3159,9 @@ Func SkillRequiresDeepwound($aSkill)
 EndFunc   ;==>SkillRequiresDeepwound
 
 Func SkillRequiresDeepWoundAndBleed($aSkill)
-	Local $Mcondition = Memory_Read(getskillptr($aSkill) + 28, "long")
+	Local $Mcondition = Skill_GetSkillInfo($aSkill, "Condition")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read($aSkill + 28, "long"), 17)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Condition"), 17)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, "Condition"), 17)
 	Else
@@ -2114,9 +3170,9 @@ Func SkillRequiresDeepWoundAndBleed($aSkill)
 EndFunc   ;==>SkillRequiresDeepWoundAndBleed
 
 Func SkillRequiresDisease($aSkill)
-	Local $Mcondition = Memory_Read(getskillptr($aSkill) + 28, "long")
+	Local $Mcondition = Skill_GetSkillInfo($aSkill, "Condition")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read($aSkill + 28, "long"), 32)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Condition"), 32)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, "Condition"), 32)
 	Else
@@ -2125,9 +3181,9 @@ Func SkillRequiresDisease($aSkill)
 EndFunc   ;==>SkillRequiresDisease
 
 Func SkillRequiresEarthhex($aSkill)
-	Local $Mcondition = Memory_Read(getskillptr($aSkill) + 28, "long")
+	Local $Mcondition = Skill_GetSkillInfo($aSkill, "Condition")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read($aSkill + 28, "long"), 64)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Condition"), 64)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, "Condition"), 64)
 	Else
@@ -2136,9 +3192,9 @@ Func SkillRequiresEarthhex($aSkill)
 EndFunc   ;==>SkillRequiresEarthhex
 
 Func RequiresKnockdown($aSkill)
-	Local $Mcondition = Memory_Read(getskillptr($aSkill) + 28, "long")
+	Local $Mcondition = Skill_GetSkillInfo($aSkill, "Condition")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read($aSkill + 28, "long"), 128)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Condition"), 128)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, "Condition"), 128)
 	Else
@@ -2147,9 +3203,9 @@ Func RequiresKnockdown($aSkill)
 EndFunc   ;==>RequiresKnockdown
 
 Func RequiresCrippleAndKnockDown($aSkill)
-	Local $Mcondition = Memory_Read(getskillptr($aSkill) + 28, "long")
+	Local $Mcondition = Skill_GetSkillInfo($aSkill, "Condition")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read($aSkill + 28, "long"), 136)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Condition"), 136)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, "Condition"), 136)
 	Else
@@ -2158,9 +3214,9 @@ Func RequiresCrippleAndKnockDown($aSkill)
 EndFunc   ;==>RequiresCrippleAndKnockDown
 
 Func RequiresPoison($aSkill)
-	Local $Mcondition = Memory_Read(getskillptr($aSkill) + 28, "long")
+	Local $Mcondition = Skill_GetSkillInfo($aSkill, "Condition")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read($aSkill + 28, "long"), 256)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Condition"), 256)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, "Condition"), 256)
 	Else
@@ -2169,9 +3225,9 @@ Func RequiresPoison($aSkill)
 EndFunc   ;==>RequiresPoison
 
 Func RequiresDaze($aSkill)
-	Local $Mcondition = Memory_Read(getskillptr($aSkill) + 28, "long")
+	Local $Mcondition = Skill_GetSkillInfo($aSkill, "Condition")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read($aSkill + 28, "long"), 512)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Condition"), 512)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, "Condition"), 512)
 	Else
@@ -2180,9 +3236,9 @@ Func RequiresDaze($aSkill)
 EndFunc   ;==>RequiresDaze
 
 Func RequiresDazeAndBlind($aSkill)
-	Local $Mcondition = Memory_Read(getskillptr($aSkill) + 28, "long")
+	Local $Mcondition = Skill_GetSkillInfo($aSkill, "Condition")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read($aSkill + 28, "long"), 514)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Condition"), 514)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, "Condition"), 514)
 	Else
@@ -2191,9 +3247,9 @@ Func RequiresDazeAndBlind($aSkill)
 EndFunc   ;==>RequiresDazeAndBlind
 
 Func RequiresWeakness($aSkill)
-	Local $Mcondition = Memory_Read(getskillptr($aSkill) + 28, "long")
+	Local $Mcondition = Skill_GetSkillInfo($aSkill, "Condition")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read($aSkill + 28, "long"), 1024)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Condition"), 1024)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, "Condition"), 1024)
 	Else
@@ -2202,9 +3258,9 @@ Func RequiresWeakness($aSkill)
 EndFunc   ;==>RequiresWeakness
 
 Func RequiresWeaknessAndDeepWound($aSkill)
-	Local $Mcondition = Memory_Read(getskillptr($aSkill) + 28, "long")
+	Local $Mcondition = Skill_GetSkillInfo($aSkill, "Condition")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read($aSkill + 28, "long"), 1040)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Condition"), 1040)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, "Condition"), 1040)
 	Else
@@ -2213,9 +3269,9 @@ Func RequiresWeaknessAndDeepWound($aSkill)
 EndFunc   ;==>RequiresWeaknessAndDeepWound
 
 Func RequiresWeaknessAndKnockDown($aSkill)
-	Local $Mcondition = Memory_Read(getskillptr($aSkill) + 28, "long")
+	Local $Mcondition = Skill_GetSkillInfo($aSkill, "Condition")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read($aSkill + 28, "long"), 1152)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Condition"), 1152)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, "Condition"), 1152)
 	Else
@@ -2224,9 +3280,9 @@ Func RequiresWeaknessAndKnockDown($aSkill)
 EndFunc   ;==>RequiresWeaknessAndKnockDown
 
 Func SkillRequiresWaterHex($aSkill)
-	Local $Mcondition = Memory_Read(getskillptr($aSkill) + 28, "long")
+	Local $Mcondition = Skill_GetSkillInfo($aSkill, "Condition")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read($aSkill + 28, "long"), 2048)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Condition"), 2048)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, "Condition"), 2048)
 	Else
@@ -2277,9 +3333,9 @@ EndFunc   ;==>IsAntiMeleeSkill
 #Region Skill Special
 ;Return True if it's a boss's Skill
 Func IsBossSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 1048576)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 1048576)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 1048576)
 	Else
@@ -2289,9 +3345,9 @@ EndFunc   ;==>IsBossSkill
 
 ;Return True if it's flash enchant with failure risk if don't have recommended attr points
 Func IsFlashEnchantFailureSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 8388672)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 8388672)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 8388672)
 	Else
@@ -2301,9 +3357,9 @@ EndFunc   ;==>IsFlashEnchantFailureSkill
 
 ;Return True if it's a Elite Flash Enchantment skill's
 Func IsEliteFlashEnchantSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 8388612)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 8388612)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 8388612)
 	Else
@@ -2313,9 +3369,9 @@ EndFunc   ;==>IsEliteFlashEnchantSkill
 
 ;Return True if it's a Flash Enchantment skill's
 Func IsFlashEnchantSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 8388608)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 8388608)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 8388608)
 	Else
@@ -2325,9 +3381,9 @@ EndFunc   ;==>IsFlashEnchantSkill
 
 ;Return True if it's a pve rez skill
 Func IsRezPveSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 526336)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 526336)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 526336)
 	Else
@@ -2337,9 +3393,9 @@ EndFunc   ;==>IsRezPveSkill
 
 ;Return True if it's pve degen hex
 Func IsHexDegenPveSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 524800)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 524800)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 524800)
 	Else
@@ -2349,9 +3405,9 @@ EndFunc   ;==>IsHexDegenPveSkill
 
 ;Return True if it's pve trap skill
 Func IsTrapPveSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 524576)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 524576)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 524576)
 	Else
@@ -2361,9 +3417,9 @@ EndFunc   ;==>IsTrapPveSkill
 
 ;Return True if it's pve Ritual skill
 Func IsRitualPveSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 524544)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 524544)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 524544)
 	Else
@@ -2373,9 +3429,9 @@ EndFunc   ;==>IsRitualPveSkill
 
 ;Return True if it's capture elite skill's
 Func IsCapEliteSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 524304)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 524304)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 524304)
 	Else
@@ -2385,9 +3441,9 @@ EndFunc   ;==>IsCapEliteSkill
 
 ;Return True if it's pve elite skill
 Func IsElitePveSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 524292)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 524292)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 524292)
 	Else
@@ -2397,9 +3453,9 @@ EndFunc   ;==>IsElitePveSkill
 
 ;Return True if it's pve touch skill
 Func IsTouchPveSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 524290)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 524290)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 524290)
 	Else
@@ -2409,9 +3465,9 @@ EndFunc   ;==>IsTouchPveSkill
 
 ;Return True if it's rest of pve skill
 Func IsPveSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 524288)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 524288)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 524288)
 	Else
@@ -2421,9 +3477,9 @@ EndFunc   ;==>IsPveSkill
 
 ;Return True if it's Elite Exploit Corpse skill with Health Regen
 Func IsEliteExploitCorpseHealthRegenSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 262656)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 262656)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 262656)
 	Else
@@ -2433,9 +3489,9 @@ EndFunc   ;==>IsEliteExploitCorpseHealthRegenSkill
 
 ;Return True if it's Elite exploit corpse with failure riskif don't have recommanded attr
 Func IsEliteExploitCorpseFailureSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 262208)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 262208)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 262208)
 	Else
@@ -2445,9 +3501,9 @@ EndFunc   ;==>IsEliteExploitCorpseFailureSkill
 
 ;Return True if it's Elite exploit corpse skill
 Func IsEliteExploitCorpseSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 262148)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 262148)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 262148)
 	Else
@@ -2457,9 +3513,9 @@ EndFunc   ;==>IsEliteExploitCorpseSkill
 
 ;Return True if it's Exploit corpse skill
 Func IsExploitCorpseSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 262144)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 262144)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 262144)
 	Else
@@ -2469,9 +3525,9 @@ EndFunc   ;==>IsExploitCorpseSkill
 
 ;Return True if it's Elite off hand skill
 Func IsEliteOffHandSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 32772)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 32772)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 32772)
 	Else
@@ -2481,9 +3537,9 @@ EndFunc   ;==>IsEliteOffHandSkill
 
 ;Return True if it's off hand skill
 Func IsOffHandSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 32768)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 32768)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 32768)
 	Else
@@ -2493,9 +3549,9 @@ EndFunc   ;==>IsOffHandSkill
 
 ;Return True if it's condition skill
 Func IsConditionSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 8192)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 8192)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 8192)
 	Else
@@ -2505,9 +3561,9 @@ EndFunc   ;==>IsConditionSkill
 
 ;Return True if have risk of failure if don't have 8 points in this attr skill
 Func IsFailureBelow8Skill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 4100)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 4100)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 4100)
 	Else
@@ -2517,9 +3573,9 @@ EndFunc   ;==>IsFailureBelow8Skill
 
 ;Return True if this spirit skills can rez
 Func IsRessurectionSpiritSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 2304)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 2304)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 2304)
 	Else
@@ -2529,9 +3585,9 @@ EndFunc   ;==>IsRessurectionSpiritSkill
 
 ;Return True if it's half range skill
 Func IsRessurectionSpellHalfRangeSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 2056)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 2056)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 2056)
 	Else
@@ -2541,9 +3597,9 @@ EndFunc   ;==>IsRessurectionSpellHalfRangeSkill
 
 ;Return True if It's Elite Ressurection Spell Skill
 Func IsEliteRessurectionSpellSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 2052)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 2052)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 2052)
 	Else
@@ -2553,9 +3609,9 @@ EndFunc   ;==>IsEliteRessurectionSpellSkill
 
 ;Return True if It's Touch Ressurection Spell
 Func IsTouchRessurectionSpellSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 2050)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 2050)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 2050)
 	Else
@@ -2565,9 +3621,9 @@ EndFunc   ;==>IsTouchRessurectionSpellSkill
 
 ;Return True if It's Ressurection Spell
 Func IsRessurectionSpellSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 2048)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 2048)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 2048)
 	Else
@@ -2577,9 +3633,9 @@ EndFunc   ;==>IsRessurectionSpellSkill
 
 ;Return True if It's Elite Degen Hex
 Func IsEliteDegenHexSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 516)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 516)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 516)
 	Else
@@ -2589,9 +3645,9 @@ EndFunc   ;==>IsEliteDegenHexSkill
 
 ;Return True if It's  Degen Hex
 Func IsDegenHexSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 512)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 512)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 512)
 	Else
@@ -2601,9 +3657,9 @@ EndFunc   ;==>IsDegenHexSkill
 
 ;Return True if We have malus armor when using this preparation skill
 Func IsPrepLessArmorWhileUsingSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 384)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 384)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 384)
 	Else
@@ -2613,9 +3669,9 @@ EndFunc   ;==>IsPrepLessArmorWhileUsingSkill
 
 ;Return True if is the smoke trap skill
 Func IsSmokeTrapSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 292)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 292)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 292)
 	Else
@@ -2625,9 +3681,9 @@ EndFunc   ;==>IsSmokeTrapSkill
 
 ;Return True if it's Trap skill with piercing damage
 Func IsTrapPiercingSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 288)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 288)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 288)
 	Else
@@ -2637,9 +3693,9 @@ EndFunc   ;==>IsTrapPiercingSkill
 
 ;Return True if it's Elite Trap and Ritual skill
 Func IsElitePrepTrapRitualSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 260)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 260)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 260)
 	Else
@@ -2649,9 +3705,9 @@ EndFunc   ;==>IsElitePrepTrapRitualSkill
 
 ;Return True if it's Trap and Ritual skill
 Func IsPrepTrapRitualSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 256)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 256)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 256)
 	Else
@@ -2661,9 +3717,9 @@ EndFunc   ;==>IsPrepTrapRitualSkill
 
 ;Return True if We have malus armor when using this skill
 Func IsLessArmorWhileUsingSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 128)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 128)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 128)
 	Else
@@ -2673,9 +3729,9 @@ EndFunc   ;==>IsLessArmorWhileUsingSkill
 
 ;Return True if it's Elite skill with risk of failure if don't have 4 points in this attr skill
 Func IsEliteFailureBelow4Skill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 68)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 68)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 68)
 	Else
@@ -2685,9 +3741,9 @@ EndFunc   ;==>IsEliteFailureBelow4Skill
 
 ;Return True if it's Elite skill with risk of failure if don't have 4 points in this attr skill (And knock down us while using)
 Func IsFailureBelow4KnockSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 65)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 65)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 65)
 	Else
@@ -2697,9 +3753,9 @@ EndFunc   ;==>IsFailureBelow4KnockSkill
 
 ;Return True if it's skill with risk of failure if don't have 4 points in this attr skill
 Func IsFailureBelow4Skill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 64)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 64)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 64)
 	Else
@@ -2709,9 +3765,9 @@ EndFunc   ;==>IsFailureBelow4Skill
 
 ;Return True if we can be Easily Interrupted while using this skill
 Func IsEasilyInterruptedSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 32)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 32)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 32)
 	Else
@@ -2721,9 +3777,9 @@ EndFunc   ;==>IsEasilyInterruptedSkill
 
 ;Return True if it's Elite Half Range Skill
 Func IsEliteHalfRangeSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 12)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 12)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 12)
 	Else
@@ -2733,9 +3789,9 @@ EndFunc   ;==>IsEliteHalfRangeSkill
 
 ;Return True if it's Half Range Skill
 Func IsHalfRangeSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 8)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 8)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 8)
 	Else
@@ -2745,9 +3801,9 @@ EndFunc   ;==>IsHalfRangeSkill
 
 ;Return True if it's Elite Touch Skill
 Func IsEliteTouchSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 6)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 6)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 6)
 	Else
@@ -2757,9 +3813,9 @@ EndFunc   ;==>IsEliteTouchSkill
 
 ;Return True if it's Elite Exhaustion skill (Overcast condition)
 Func IsEliteExhaustionSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 5)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 5)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 5)
 	Else
@@ -2769,9 +3825,9 @@ EndFunc   ;==>IsEliteExhaustionSkill
 
 ;Return True if it's Elite skill
 Func IsEliteSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 4)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 4)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 4)
 	Else
@@ -2781,9 +3837,9 @@ EndFunc   ;==>IsEliteSkill
 
 ;Return True if it's Exhaustion touch skill (Overcast condition)
 Func IsExhaustionTouchSkillSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 3)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 3)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 3)
 	Else
@@ -2793,9 +3849,9 @@ EndFunc   ;==>IsExhaustionTouchSkillSkill
 
 ;Return True if it's Touch Skill
 ;Func IsTouchSkillSkill($aSkill)
-;~ 	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+;~ 	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 ;~ 	If IsPtr($aSkill) <> 0 Then
-;~ 		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 2)
+;~ 		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 2)
 ;~ 	ElseIf IsDllStruct($aSkill) <> 0 Then
 ;~ 		Return BitAND(DllStructGetData($aSkill, 'Special'), 2)
 ;~ 	Else
@@ -2805,9 +3861,9 @@ EndFunc   ;==>IsExhaustionTouchSkillSkill
 
 ;Return True if it's Exhaustion skill (Overcast condition)
 Func IsExhaustionSkill($aSkill)
-	Local $Mspecial = Memory_Read(getskillptr($aSkill) + 16, "long")
+	Local $Mspecial = Skill_GetSkillInfo($aSkill, "Special")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 16, "long"), 1)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "Special"), 1)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Special'), 1)
 	Else
@@ -2819,13 +3875,13 @@ EndFunc   ;==>IsExhaustionSkill
 #Region Skilltypes
 Func IsEnchantRemoveSkill($aSkill) ;
 	If IsPtr($aSkill) <> 0 Then
-		Local $lSkillEffect2 = Memory_Read($aSkill + 32, 'long')
-		Local $lSkillID = Memory_Read($aSkill, "long")
+		Local $lSkillEffect2 = Skill_GetSkillInfo($aSkill, "Effect2")
+		Local $lSkillID = Skill_GetSkillInfo($aSkill, "SkillID")
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Local $lSkillEffect2 = DllStructGetData($aSkill, 'Effect2')
 		Local $lSkillID = DllStructGetData($aSkill, 'ID')
 	Else
-		Local $lSkillEffect2 = Memory_Read(Skill_GetSkillPtr($aSkill) + 32, 'long')
+		Local $lSkillEffect2 = Skill_GetSkillInfo($aSkill, "Effect2")
 		Local $lSkillID = $aSkill
 	EndIf
 
@@ -2856,9 +3912,9 @@ Func IsBelow50PercentEnemySkill($SKILL) ;
 EndFunc   ;==>IsBelow50PercentEnemySkill
 
 Func IsElementalAttunementSkill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
+	Local $Mskilltype = Skill_GetSkillInfo($aSkill, "SkillType")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 131072)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "SkillType"), 131072)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 131072)
 	Else
@@ -2867,9 +3923,9 @@ Func IsElementalAttunementSkill($aSkill)
 EndFunc   ;==>IsElementalAttunementSkill
 
 Func IsKnockMySelfSkill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
+	Local $Mskilltype = Skill_GetSkillInfo($aSkill, "SkillType")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 65536)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "SkillType"), 65536)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 65536)
 	Else
@@ -2878,9 +3934,9 @@ Func IsKnockMySelfSkill($aSkill)
 EndFunc   ;==>IsKnockMySelfSkill
 
 Func IsAttackAndSppedMoveSkill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
+	Local $Mskilltype = Skill_GetSkillInfo($aSkill, "SkillType")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 32768)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "SkillType"), 32768)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 32768)
 	Else
@@ -2889,9 +3945,9 @@ Func IsAttackAndSppedMoveSkill($aSkill)
 EndFunc   ;==>IsAttackAndSppedMoveSkill
 
 Func IsReverseDamageSkill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
+	Local $Mskilltype = Skill_GetSkillInfo($aSkill, "SkillType")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 16384)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "SkillType"), 16384)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 16384)
 	Else
@@ -2900,9 +3956,9 @@ Func IsReverseDamageSkill($aSkill)
 EndFunc   ;==>IsReverseDamageSkill
 
 Func IsLooseEnchantAndHealAndRemoveHexSkill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
+	Local $Mskilltype = Skill_GetSkillInfo($aSkill, "SkillType")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 14336)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "SkillType"), 14336)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 14336)
 	Else
@@ -2911,9 +3967,9 @@ Func IsLooseEnchantAndHealAndRemoveHexSkill($aSkill)
 EndFunc   ;==>IsLooseEnchantAndHealAndRemoveHexSkill
 
 Func IsLooseEnchantAndEnergyRegenSkill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
+	Local $Mskilltype = Skill_GetSkillInfo($aSkill, "SkillType")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 8448)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "SkillType"), 8448)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 8448)
 	Else
@@ -2922,9 +3978,9 @@ Func IsLooseEnchantAndEnergyRegenSkill($aSkill)
 EndFunc   ;==>IsLooseEnchantAndEnergyRegenSkill
 
 Func IsDervHealSignetWithRemoveDervEnchantSkill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
+	Local $Mskilltype = Skill_GetSkillInfo($aSkill, "SkillType")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 8198)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "SkillType"), 8198)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 8198)
 	Else
@@ -2933,9 +3989,9 @@ Func IsDervHealSignetWithRemoveDervEnchantSkill($aSkill)
 EndFunc   ;==>IsDervHealSignetWithRemoveDervEnchantSkill
 
 Func IsDervHealWithRemoveDervEnchantAndHexSkill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
+	Local $Mskilltype = Skill_GetSkillInfo($aSkill, "SkillType")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 8196)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "SkillType"), 8196)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 8196)
 	Else
@@ -2944,9 +4000,9 @@ Func IsDervHealWithRemoveDervEnchantAndHexSkill($aSkill)
 EndFunc   ;==>IsDervHealWithRemoveDervEnchantAndHexSkill
 
 Func IsRemoveDervEnchantSkill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
+	Local $Mskilltype = Skill_GetSkillInfo($aSkill, "SkillType")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 8192)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "SkillType"), 8192)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 8192)
 	Else
@@ -2955,9 +4011,9 @@ Func IsRemoveDervEnchantSkill($aSkill)
 EndFunc   ;==>IsRemoveDervEnchantSkill
 
 Func IsHealAndConditionAndHexRemovalSkill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
+	Local $Mskilltype = Skill_GetSkillInfo($aSkill, "SkillType")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 6150)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "SkillType"), 6150)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 6150)
 	Else
@@ -2966,9 +4022,9 @@ Func IsHealAndConditionAndHexRemovalSkill($aSkill)
 EndFunc   ;==>IsHealAndConditionAndHexRemovalSkill
 
 Func IsConditionAndHexRemovalSkill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
+	Local $Mskilltype = Skill_GetSkillInfo($aSkill, "SkillType")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 6144)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "SkillType"), 6144)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 6144)
 	Else
@@ -2977,9 +4033,9 @@ Func IsConditionAndHexRemovalSkill($aSkill)
 EndFunc   ;==>IsConditionAndHexRemovalSkill
 
 Func IsConditionTransfertSkill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
+	Local $Mskilltype = Skill_GetSkillInfo($aSkill, "SkillType")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 4608)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "SkillType"), 4608)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 4608)
 	Else
@@ -2988,9 +4044,9 @@ Func IsConditionTransfertSkill($aSkill)
 EndFunc   ;==>IsConditionTransfertSkill
 
 Func IsConditionRemovalSpecialSkill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
+	Local $Mskilltype = Skill_GetSkillInfo($aSkill, "SkillType")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 4102)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "SkillType"), 4102)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 4102)
 	Else
@@ -2999,9 +4055,9 @@ Func IsConditionRemovalSpecialSkill($aSkill)
 EndFunc   ;==>IsConditionRemovalSpecialSkill
 
 Func IsHexRemovalWithEnergyGainSkill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
+	Local $Mskilltype = Skill_GetSkillInfo($aSkill, "SkillType")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 2304)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "SkillType"), 2304)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 2304)
 	Else
@@ -3010,9 +4066,9 @@ Func IsHexRemovalWithEnergyGainSkill($aSkill)
 EndFunc   ;==>IsHexRemovalWithEnergyGainSkill
 
 Func IsHexRemovalWithHealSkill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
+	Local $Mskilltype = Skill_GetSkillInfo($aSkill, "SkillType")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 2054)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "SkillType"), 2054)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 2054)
 	Else
@@ -3021,9 +4077,9 @@ Func IsHexRemovalWithHealSkill($aSkill)
 EndFunc   ;==>IsHexRemovalWithHealSkill
 
 Func IsEnchantOnAllyAffectEnemisSkill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
+	Local $Mskilltype = Skill_GetSkillInfo($aSkill, "SkillType")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 1024)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "SkillType"), 1024)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 1024)
 	Else
@@ -3032,9 +4088,9 @@ Func IsEnchantOnAllyAffectEnemisSkill($aSkill)
 EndFunc   ;==>IsEnchantOnAllyAffectEnemisSkill
 
 Func IsEnrgeyDegenSkill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
+	Local $Mskilltype = Skill_GetSkillInfo($aSkill, "SkillType")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 768)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "SkillType"), 768)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 768)
 	Else
@@ -3043,9 +4099,9 @@ Func IsEnrgeyDegenSkill($aSkill)
 EndFunc   ;==>IsEnrgeyDegenSkill
 
 Func IsTouchSkillSkill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
+	Local $Mskilltype = Skill_GetSkillInfo($aSkill, "SkillType")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 544)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "SkillType"), 544)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 544)
 	Else
@@ -3054,9 +4110,9 @@ Func IsTouchSkillSkill($aSkill)
 EndFunc   ;==>IsTouchSkillSkill
 
 Func IsCloseRangeSpell2Skill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
+	Local $Mskilltype = Skill_GetSkillInfo($aSkill, "SkillType")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 516)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "SkillType"), 516)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 516)
 	Else
@@ -3065,9 +4121,9 @@ Func IsCloseRangeSpell2Skill($aSkill)
 EndFunc   ;==>IsCloseRangeSpell2Skill
 
 Func IsCloseRangeSpellSkill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
+	Local $Mskilltype = Skill_GetSkillInfo($aSkill, "SkillType")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 512)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "SkillType"), 512)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 512)
 	Else
@@ -3076,9 +4132,9 @@ Func IsCloseRangeSpellSkill($aSkill)
 EndFunc   ;==>IsCloseRangeSpellSkill
 
 Func IsEnergyStealSkill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
+	Local $Mskilltype = Skill_GetSkillInfo($aSkill, "SkillType")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 320)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "SkillType"), 320)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 320)
 	Else
@@ -3087,9 +4143,9 @@ Func IsEnergyStealSkill($aSkill)
 EndFunc   ;==>IsEnergyStealSkill
 
 Func IsEnergyGainSpellSkill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
+	Local $Mskilltype = Skill_GetSkillInfo($aSkill, "SkillType")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 288)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "SkillType"), 288)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 288)
 	Else
@@ -3097,21 +4153,32 @@ Func IsEnergyGainSpellSkill($aSkill)
 	EndIf
 EndFunc   ;==>IsEnergyGainSpellSkill
 
+; Interrupts that restore energy on land (Power Drain Effect2=257; others lack that tag).
 Func IsEnergyGainRuptSkill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
-	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 257)
-	ElseIf IsDllStruct($aSkill) <> 0 Then
-		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 257)
+	Local $lID = 0
+	If IsPtr($aSkill) Or IsDllStruct($aSkill) Then
+		$lID = Skill_GetSkillInfo($aSkill, "SkillID")
 	Else
-		Return BitAND($Mskilltype, 257)
+		$lID = Number($aSkill)
 	EndIf
+	; Power Drain, Leech Signet, Power Leech, Power Return
+	Switch $lID
+		Case 25, 61, 803, 931
+			Return True
+	EndSwitch
+	Local $lEffect2 = 0
+	If IsDllStruct($aSkill) <> 0 Then
+		$lEffect2 = DllStructGetData($aSkill, 'Effect2')
+	Else
+		$lEffect2 = Skill_GetSkillInfo($lID, "Effect2")
+	EndIf
+	Return $lEffect2 = 257
 EndFunc   ;==>IsEnergyGainRuptSkill
 
 Func IsEnergyGainSkill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
+	Local $Mskilltype = Skill_GetSkillInfo($aSkill, "SkillType")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 256)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "SkillType"), 256)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 256)
 	Else
@@ -3120,9 +4187,9 @@ Func IsEnergyGainSkill($aSkill)
 EndFunc   ;==>IsEnergyGainSkill
 
 Func IsBlockSkill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
+	Local $Mskilltype = Skill_GetSkillInfo($aSkill, "SkillType")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 128)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "SkillType"), 128)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 128)
 	Else
@@ -3143,9 +4210,9 @@ Func IsBlockSkill_old($aSkill)
 EndFunc   ;==>IsBlockSkill_old
 
 Func IsSacrReturniceHeal2Skill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
+	Local $Mskilltype = Skill_GetSkillInfo($aSkill, "SkillType")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 38)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "SkillType"), 38)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 38)
 	Else
@@ -3154,9 +4221,9 @@ Func IsSacrReturniceHeal2Skill($aSkill)
 EndFunc   ;==>IsSacrReturniceHeal2Skill
 
 Func IsSacrReturniceHealSkill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
+	Local $Mskilltype = Skill_GetSkillInfo($aSkill, "SkillType")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 36)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "SkillType"), 36)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 36)
 	Else
@@ -3165,9 +4232,9 @@ Func IsSacrReturniceHealSkill($aSkill)
 EndFunc   ;==>IsSacrReturniceHealSkill
 
 Func IsSacrReturniceSkill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
+	Local $Mskilltype = Skill_GetSkillInfo($aSkill, "SkillType")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 32)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "SkillType"), 32)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 32)
 	Else
@@ -3176,9 +4243,9 @@ Func IsSacrReturniceSkill($aSkill)
 EndFunc   ;==>IsSacrReturniceSkill
 
 Func IsRezSignetSkill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
+	Local $Mskilltype = Skill_GetSkillInfo($aSkill, "SkillType")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 16)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "SkillType"), 16)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 16)
 	Else
@@ -3187,9 +4254,9 @@ Func IsRezSignetSkill($aSkill)
 EndFunc   ;==>IsRezSignetSkill
 
 Func IsRezSkill($aSkill)
-	Local $Mskilltype = Memory_Read($aSkill + 12, "long")
+	Local $Mskilltype = Skill_GetSkillInfo($aSkill, "SkillType")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 12, "long"), 8)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "SkillType"), 8)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect2'), 8)
 	Else
@@ -3198,7 +4265,7 @@ Func IsRezSkill($aSkill)
 EndFunc   ;==>IsRezSkill
 
 Func IsHealSkill($aSkill)
-	Switch Memory_Read(Skill_GetSkillPtr($aSkill) + 32, 'long')	; Effect 2
+	Switch Skill_GetSkillInfo($aSkill, "Effect2")	; Effect 2
 		Case 2, 4, 6, 36, 38, 4102, 4096, 6144, 8196, 8198, 14336
 			Return True
 		Case Else
@@ -3215,35 +4282,47 @@ Func IsHealSkill($aSkill)
 	Return False
 EndFunc   ;==>IsHealSkill
 
+; Self / ally / other-ally targeting (prot, heal, etc.) — Shame-side cast mode.
+Func SkillTargetsSelfOrAlly($aSkill)
+	Local $iID = GetSkillID($aSkill)
+	If $iID = 0 Then $iID = Number($aSkill)
+	If IsHealSkill($iID) Then Return True
+	Switch Number(Skill_GetSkillInfo($iID, "Target"))
+		Case $GC_I_SKILL_TARGET_SELF, $GC_I_SKILL_TARGET_ALLY, $GC_I_SKILL_TARGET_OTHER_ALLY, $GC_I_SKILL_TARGET_DEAD_ALLY
+			Return True
+	EndSwitch
+	Return False
+EndFunc   ;==>SkillTargetsSelfOrAlly
+
 Func IsSelfHealSkill($aSkill)    ; healing skills that can be used on self
-	Return IsPartyHealSkill($aSkill) And Memory_Read(Skill_GetSkillPtr($aSkill) + 49, "byte") <> 4
+	Return IsPartyHealSkill($aSkill) And Skill_GetSkillInfo($aSkill, "Target") <> 4
 EndFunc   ;==>IsSelfHealSkill
 
 Func IsSelfOnlyHealSkill($aSkill)    ; healing skills that can be used on self
-	Return IsPartyHealSkill($aSkill) And Memory_Read(Skill_GetSkillPtr($aSkill) + 49, "byte") = 0
+	Return IsPartyHealSkill($aSkill) And Skill_GetSkillInfo($aSkill, "Target") = 0
 EndFunc   ;==>IsSelfOnlyHealSkill
 
 Func IsHealOtherSkill($aSkill)    ; healing skills that can only be used on others
-	Return IsPartyHealSkill($aSkill) And Memory_Read(Skill_GetSkillPtr($aSkill) + 49, "byte") = 4
+	Return IsPartyHealSkill($aSkill) And Skill_GetSkillInfo($aSkill, "Target") = 4
 EndFunc   ;==>IsHealOtherSkill
 
 Func IsHealMySelfSkill($aSkill)
-	Local $lSkillType = Memory_Read(Skill_GetSkillPtr($aSkill) + 12, "long")
+	Local $lSkillType = Skill_GetSkillInfo($aSkill, "SkillType")
 	Return BitAND($lSkillType, 4)
 EndFunc   ;==>IsHealMySelfSkill
 
 Func IsHealAllySkill($aSkill)
-	Local $lSkillType = Memory_Read(Skill_GetSkillPtr($aSkill) + 12, "long")
+	Local $lSkillType = Skill_GetSkillInfo($aSkill, "SkillType")
 	Return BitAND($lSkillType, 2)
 EndFunc   ;==>IsHealAllySkill
 
 Func IsHexRemovalSkill($aSkill)
-	Local $lSkillType = Memory_Read(Skill_GetSkillPtr($aSkill) + 12, "long")
+	Local $lSkillType = Skill_GetSkillInfo($aSkill, "SkillType")
 	Return BitAND($lSkillType, 2048)
 EndFunc   ;==>IsHexRemovalSkill
 
 Func IsConditionRemovalSkill($aSkill)
-	Local $lSkillType = Memory_Read(Skill_GetSkillPtr($aSkill) + 12, "long")
+	Local $lSkillType = Skill_GetSkillInfo($aSkill, "SkillType")
 	Return BitAND($lSkillType, 4096)
 EndFunc   ;==>IsConditionRemovalSkill
 
@@ -3251,35 +4330,35 @@ EndFunc   ;==>IsConditionRemovalSkill
 
 #Region Target
 Func TargetSelfSkill($aSkill)
-	Return Memory_Read(Skill_GetSkillPtr($aSkill) + 49, "byte") = 0
+	Return Skill_GetSkillInfo($aSkill, "Target") = 0
 EndFunc   ;==>TargetSelfSkill
 
 Func TargetSpiritSkill($aSkill)
-	Return Memory_Read(Skill_GetSkillPtr($aSkill) + 49, "byte") = 1
+	Return Skill_GetSkillInfo($aSkill, "Target") = 1
 EndFunc   ;==>TargetSpiritSkill
 
 Func TargetAllySkill($aSkill)
-	Return Memory_Read(Skill_GetSkillPtr($aSkill) + 49, "byte") = 3
+	Return Skill_GetSkillInfo($aSkill, "Target") = 3
 EndFunc   ;==>TargetAllySkill
 
 Func TargetOtherAllySkill($aSkill)
-	Return Memory_Read(Skill_GetSkillPtr($aSkill) + 49, "byte") = 4
+	Return Skill_GetSkillInfo($aSkill, "Target") = 4
 EndFunc   ;==>TargetOtherAllySkill
 
 Func TargetEnemySkill($aSkill)
-	Return Memory_Read(Skill_GetSkillPtr($aSkill) + 49, "byte") = 5
+	Return Skill_GetSkillInfo($aSkill, "Target") = 5
 EndFunc   ;==>TargetEnemySkill
 
 Func TargetdeadAllySkill($aSkill)
-	Return Memory_Read(Skill_GetSkillPtr($aSkill) + 49, "byte") = 6
+	Return Skill_GetSkillInfo($aSkill, "Target") = 6
 EndFunc   ;==>TargetdeadAllySkill
 
 Func TargetMinionskill($aSkill)
-	Return Memory_Read(Skill_GetSkillPtr($aSkill) + 49, "byte") = 14
+	Return Skill_GetSkillInfo($aSkill, "Target") = 14
 EndFunc   ;==>TargetMinionskill
 
 Func TargetGroundskill($aSkill)
-	Return Memory_Read(Skill_GetSkillPtr($aSkill) + 49, "byte") = 16
+	Return Skill_GetSkillInfo($aSkill, "Target") = 16
 EndFunc   ;==>TargetGroundskill
 #EndRegion Target
 
@@ -3291,7 +4370,7 @@ Func CacheHeroHeals()
 	Out("Mapping your Heroe, that have heal")
 	For $aHero = 1 To GetPartySize() -1
 		For $aSkillSlot = 1 To 8            ; precast wards and binding rituals
-			$aSkillID = GetSkillbarInfo($i, "SkillID")($aSkillSlot, $aHero)
+			$aSkillID = Skill_GetSkillbarInfo($aSkillSlot, "SkillID", $aHero)
 			Switch $aSkillID
 ;~ 				Case $Cautery_Signet, $Martyr, $Extinguish, $Protective_Was_Kaolai, $Heal_Party, $Divine_Healing, $Heavens_Delight, $Mystic_Healing, $Courageous_Was_Saidra
 				Case $Martyr, $Extinguish, $Protective_Was_Kaolai, $Heal_Party, $Divine_Healing, $Heavens_Delight, $Mystic_Healing
@@ -3320,7 +4399,7 @@ EndFunc   ;==>CacheHeroHeals
 Func CacheBiP()
 	For $aHero = 1 To GetPartySize() -1
 		For $aSkillSlot = 1 To 8            ; precast wards and binding rituals
-			If GetSkillbarInfo($i, "SkillID")($aSkillSlot, $aHero) = $Blood_is_Power Then
+			If Skill_GetSkillbarInfo($aSkillSlot, "SkillID", $aHero) = $Blood_is_Power Then
 				$BiP[0] = $aHero
 				$BiP[1] = $aSkillSlot
 			EndIf
@@ -3337,9 +4416,9 @@ Func CacheHeroPrecast()
 	$HeroPrecast[0][2] = "skill slot"
 	For $aHero = 1 To GetPartySize() -1
 		For $aSkillSlot = 1 To 8            ; precast wards and binding rituals
-			$aSkillID = GetSkillbarInfo($i, "SkillID")($aSkillSlot, $aHero)
+			$aSkillID = Skill_GetSkillbarInfo($aSkillSlot, "SkillID", $aHero)
 			If $aSkillID = 0 Then ContinueLoop
-			$aSkillType = Memory_Read(Skill_GetSkillPtr($aSkillID) + 12, "long")
+			$aSkillType = Skill_GetSkillInfo($aSkillID, "SkillType")
 			Switch $aSkillID
 				Case $Soul_Twisting , $Signet_Of_Spirits, $Armor_of_Unfeeling
 					$HeroPrecast[0][0] += 1
@@ -3367,7 +4446,7 @@ Func CacheMysticHealing()
 	Local $k = 1
 	For $aHero = 1 To UBound(Getparty()) -2
 		For $aSkillSlot = 1 To 8
-			If GetSkillbarInfo($i, "SkillID")($aSkillSlot, $aHero) = $Mystic_Healing Then
+			If Skill_GetSkillbarInfo($aSkillSlot, "SkillID", $aHero) = $Mystic_Healing Then
 				ReDim $MysticHealingArray[$i][3]
 				$MysticHealingArray[$i - 1][0] = $i
 				$MysticHealingArray[$i - 1][1] = $aHero
@@ -3407,17 +4486,17 @@ Func PrecastWardsAndSpirits($aAggroRange = $spirit_range)
     Until Not Agent_GetAgentInfo(-2, "Moving")
     For $aSkillSlot In $Skillbar
         If $SkillBarCache[$aSkillSlot][$precast] = "" Then ContinueLoop
-        If CanUse($aSkillSlot, $aAggroRange) Then Skill_UseSkill($aSkillSlot, $BestTargetPtr)
+        If CanUse($aSkillSlot, $aAggroRange) Then Skill_TryUseSkill($aSkillSlot, $BestTarget)
 		If Agent_IsEnemyNear($aAggroRange) Then ExitLoop
     Next
     Out("Precasting hero wards and binding rituals")
     For $i = 1 to $HeroPrecast[0][0]
-		If GetEffectTimeRemaining(GetSkillbarInfo($i, "SkillID")($aSkillSlot)) > 15 Then ContinueLoop
-        Skill_UseHero($HeroPrecast[$i][1], $HeroPrecast[$i][2], 0)
+		If GetEffectTimeRemaining(Skill_GetSkillbarInfo($aSkillSlot)) > 15 Then ContinueLoop
+        Skill_UseHero($HeroPrecast[$i][1], "SkillID", $HeroPrecast[$i][2], 0)
         If Mod($i, 3) = 0  And CanUse($SkillbarSlot[$Heroic_Refrain]) Then
-            Skill_UseSkill($SkillbarSlot[$Heroic_Refrain], $BestTargetPtr)
-            If CanUse($SkillbarSlot[$Burning_Refrain]) Then Skill_UseSkill($SkillbarSlot[$Burning_Refrain])
-            If CanUse($SkillbarSlot[$Theyre_on_Fire]) Then Skill_UseSkill($SkillbarSlot[$Theyre_on_Fire])
+            Skill_TryUseSkill($SkillbarSlot[$Heroic_Refrain], $BestTarget)
+            If CanUse($SkillbarSlot[$Burning_Refrain]) Then Skill_TryUseSkill($SkillbarSlot[$Burning_Refrain])
+            If CanUse($SkillbarSlot[$Theyre_on_Fire]) Then Skill_TryUseSkill($SkillbarSlot[$Theyre_on_Fire])
 		EndIf
 		If Agent_IsEnemyNear($aAggroRange) Then ExitLoop
     Next
@@ -3425,10 +4504,10 @@ EndFunc   ;==>PrecastWardsAndSpirits
 
 Func ApplyHR()
 	While CanUse($SkillbarSlot[$Heroic_Refrain])
-        Skill_UseSkill($SkillbarSlot[$Heroic_Refrain], $BestTargetPtr)
+        Skill_TryUseSkill($SkillbarSlot[$Heroic_Refrain], $BestTarget)
 		; If $BiP[0] <> 0 And Agent_GetAgentInfo(-2, "CurrentEnergy") < 10 And Not Skill_HasEffect($Blood_is_Power) And Agent_GetAgentInfo($BiP[0], "HP") > 0.4 Then Skill_UseHero($BiP[1], $BiP[2], -2) ;Use Blood is Power on me
-		If CanUse($SkillbarSlot[$Theyre_on_Fire]) Then Skill_UseSkill($SkillbarSlot[$Theyre_on_Fire])
-		If CanUse($SkillbarSlot[$Burning_Refrain]) Then Skill_UseSkill($SkillbarSlot[$Burning_Refrain])
+		If CanUse($SkillbarSlot[$Theyre_on_Fire]) Then Skill_TryUseSkill($SkillbarSlot[$Theyre_on_Fire])
+		If CanUse($SkillbarSlot[$Burning_Refrain]) Then Skill_TryUseSkill($SkillbarSlot[$Burning_Refrain])
 		Sleep(11000)
     WEnd
 EndFunc   ;==>ApplyHR
@@ -3439,8 +4518,8 @@ Func PrecastBonds($aTargetAlly = 0)
 	For $aHero = UBound(Getparty()) - 1 To 0 Step -1
 		For $aSkillSlot = 1 To 8            ; precast bonds
 			ApplyHR()
-			If GetEffectTimeRemaining(GetEffect(GetSkillbarInfo($i, "SkillID")($aSkillSlot))) > 0 Then ContinueLoop
-			If IsBondSkill(GetSkillbarInfo($i, "SkillID")($aSkillSlot)) Then
+			If GetEffectTimeRemaining(GetEffect(Skill_GetSkillbarInfo($aSkillSlot))) > 0 Then ContinueLoop
+			If IsBondSkill(GetSkillbarInfo($i, "SkillID", "SkillID")($aSkillSlot)) Then
 				DisableHeroSkillSlot($aHero, $aSkillSlot)
 				Skill_UseHero($aHero, $aSkillSlot, $aTargetAlly)
 			EndIf
@@ -3459,9 +4538,9 @@ Func UseHeroHeals()
 				Out("Burning allies: " & GetNumberOfBurningAllies())
 				If GetNumberOfBurningAllies() > 0 Then Skill_UseHero($HeroHeals[$i][1], $HeroHeals[$i][2], 0)
 			Case Else
-				; Out("Party Health: " & GetPartyHealth())
-				; Out("Lowest HP: " & Floor(Agent_GetAgentInfo(GetLowestAlly(, "HP")) * 100) & "%")
-				If GetPartyHealth() < 0.90 Or Agent_GetAgentInfo(GetLowestAlly(, "HP")) < 0.8 Then Skill_UseHero($HeroHeals[$i][1], $HeroHeals[$i][2], 0)
+				; Out("Party Health: " & Party_GetPartyHealth())
+				; Out("Lowest HP: " & Floor(Agent_GetAgentInfo(Agent_GetLowestAlly(), "HP") * 100) & "%")
+				If Party_GetPartyHealth() < 0.90 Or Agent_GetAgentInfo(Agent_GetLowestAlly(), "HP") < 0.8 Then Skill_UseHero($HeroHeals[$i][1], $HeroHeals[$i][2], 0)
 		EndSwitch
 	Next
 EndFunc   ;==>UseHeroHeals
@@ -3477,7 +4556,8 @@ Func UseHeroHexRemoval()
 					ExitLoop
 				EndIf
 			Case $Shatter_Hex
-				If Skill_GetSkillbarInfo($HeroHexRemoval[$i][2], $HeroHexRemoval[$i][1]) And Agent_GetAgentInfo(GetHeroID($HeroHexRemoval[$i][1], "CurrentEnergy")) > 10 And Agent_GetNumberOfEnemiesNearAgent($area_range, -2) Then
+				; Prefer damage when foes are near, but still strip the hex with no one around.
+				If Skill_GetSkillbarInfo($HeroHexRemoval[$i][2], $HeroHexRemoval[$i][1]) And Agent_GetAgentInfo(GetHeroID($HeroHexRemoval[$i][1]), "CurrentEnergy") > 10 Then
 					Skill_UseHero($HeroHexRemoval[$i][1], $HeroHexRemoval[$i][2], -2)
 					ExitLoop
 				EndIf
@@ -3536,9 +4616,9 @@ EndFunc   ;==>MysticHealing
 
 #Region Skill Effect 1
 Func CausesBleedingSkill($aSkill)
-	Local $MSkillEffect1 = Memory_Read($aSkill + 24, "long")
+	Local $MSkillEffect1 = Skill_GetSkillInfo($aSkill, "WeaponReq")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 24, "long"), 1)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "WeaponReq"), 1)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect1'), 1)
 	Else
@@ -3547,9 +4627,9 @@ Func CausesBleedingSkill($aSkill)
 EndFunc   ;==>CausesBleedingSkill
 
 Func CausesBlindSkill($aSkill)
-	Local $MSkillEffect1 = Memory_Read($aSkill + 24, "long")
+	Local $MSkillEffect1 = Skill_GetSkillInfo($aSkill, "WeaponReq")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 24, "long"), 2)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "WeaponReq"), 2)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect1'), 2)
 	Else
@@ -3558,9 +4638,9 @@ Func CausesBlindSkill($aSkill)
 EndFunc   ;==>CausesBlindSkill
 
 Func CausesBurningSkill($aSkill)
-	Local $MSkillEffect1 = Memory_Read($aSkill + 24, "long")
+	Local $MSkillEffect1 = Skill_GetSkillInfo($aSkill, "WeaponReq")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 24, "long"), 4)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "WeaponReq"), 4)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect1'), 4)
 	Else
@@ -3569,9 +4649,9 @@ Func CausesBurningSkill($aSkill)
 EndFunc   ;==>CausesBurningSkill
 
 Func CausesCrippleSkill($aSkill)
-	Local $MSkillEffect1 = Memory_Read($aSkill + 24, "long")
+	Local $MSkillEffect1 = Skill_GetSkillInfo($aSkill, "WeaponReq")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 24, "long"), 8)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "WeaponReq"), 8)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect1'), 8)
 	Else
@@ -3580,9 +4660,9 @@ Func CausesCrippleSkill($aSkill)
 EndFunc   ;==>CausesCrippleSkill
 
 Func CausesDeepWoundSkill($aSkill)
-	Local $MSkillEffect1 = Memory_Read($aSkill + 24, "long")
+	Local $MSkillEffect1 = Skill_GetSkillInfo($aSkill, "WeaponReq")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 24, "long"), 16)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "WeaponReq"), 16)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect1'), 16)
 	Else
@@ -3591,9 +4671,9 @@ Func CausesDeepWoundSkill($aSkill)
 EndFunc   ;==>CausesDeepWoundSkill
 
 Func CausesDiseaseSkill($aSkill)
-	Local $MSkillEffect1 = Memory_Read($aSkill + 24, "long")
+	Local $MSkillEffect1 = Skill_GetSkillInfo($aSkill, "WeaponReq")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 24, "long"), 32)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "WeaponReq"), 32)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect1'), 32)
 	Else
@@ -3602,9 +4682,9 @@ Func CausesDiseaseSkill($aSkill)
 EndFunc   ;==>CausesDiseaseSkill
 
 Func CausesSlowerMoveSkill($aSkill)
-	Local $MSkillEffect1 = Memory_Read($aSkill + 24, "long")
+	Local $MSkillEffect1 = Skill_GetSkillInfo($aSkill, "WeaponReq")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 24, "long"), 64)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "WeaponReq"), 64)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect1'), 64)
 	Else
@@ -3613,9 +4693,9 @@ Func CausesSlowerMoveSkill($aSkill)
 EndFunc   ;==>CausesSlowerMoveSkill
 
 Func CausesKnockdownSkill($aSkill)
-	Local $MSkillEffect1 = Memory_Read($aSkill + 24, "long")
+	Local $MSkillEffect1 = Skill_GetSkillInfo($aSkill, "WeaponReq")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 24, "long"), 128)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "WeaponReq"), 128)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect1'), 128)
 	Else
@@ -3624,9 +4704,9 @@ Func CausesKnockdownSkill($aSkill)
 EndFunc   ;==>CausesKnockdownSkill
 
 Func CausesPoisonSkill($aSkill)
-	Local $MSkillEffect1 = Memory_Read($aSkill + 24, "long")
+	Local $MSkillEffect1 = Skill_GetSkillInfo($aSkill, "WeaponReq")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 24, "long"), 256)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "WeaponReq"), 256)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect1'), 256)
 	Else
@@ -3635,9 +4715,9 @@ Func CausesPoisonSkill($aSkill)
 EndFunc   ;==>CausesPoisonSkill
 
 Func CausesDazeSkill($aSkill)
-	Local $MSkillEffect1 = Memory_Read($aSkill + 24, "long")
+	Local $MSkillEffect1 = Skill_GetSkillInfo($aSkill, "WeaponReq")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 24, "long"), 512)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "WeaponReq"), 512)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect1'), 512)
 	Else
@@ -3646,9 +4726,9 @@ Func CausesDazeSkill($aSkill)
 EndFunc   ;==>CausesDazeSkill
 
 Func CauseWeaknessSkill($aSkill)
-	Local $MSkillEffect1 = Memory_Read($aSkill + 24, "long")
+	Local $MSkillEffect1 = Skill_GetSkillInfo($aSkill, "WeaponReq")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 24, "long"), 1024)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "WeaponReq"), 1024)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect1'), 1024)
 	Else
@@ -3657,9 +4737,9 @@ Func CauseWeaknessSkill($aSkill)
 EndFunc   ;==>CauseWeaknessSkill
 
 Func CauseWaterHexSkill($aSkill)
-	Local $MSkillEffect1 = Memory_Read($aSkill + 24, "long")
+	Local $MSkillEffect1 = Skill_GetSkillInfo($aSkill, "WeaponReq")
 	If IsPtr($aSkill) <> 0 Then
-		Return BitAND(Memory_Read(getskillptr($aSkill) + 24, "long"), 2048)
+		Return BitAND(Skill_GetSkillInfo($aSkill, "WeaponReq"), 2048)
 	ElseIf IsDllStruct($aSkill) <> 0 Then
 		Return BitAND(DllStructGetData($aSkill, 'Effect1'), 2048)
 	Else
@@ -6096,7 +7176,7 @@ Func IsRecharged($aSkillSlot, $aHeroNumber = 0, $aSkillbarPtr = 0)
 EndFunc
 
 Func GetIsKnocked($aAgent = -2)
-	Return Agent_GetAgentInfo($aAgent, "Knocked")
+	Return Agent_GetAgentInfo($aAgent, "IsKnocked")
 EndFunc
 
 Func GetEnergy($aAgent = -2)
@@ -6112,7 +7192,9 @@ Func GetAgentPtr($aAgent = -2)
 EndFunc
 
 Func GetPing()
-	Return 50 ; placeholder; replace with real ping if needed
+	Local $lPing = Other_GetPing()
+	If $lPing <= 0 Then Return 50
+	Return $lPing
 EndFunc
 
 Func CancelAction()
@@ -6123,7 +7205,7 @@ EndFunc
 ; ===== COMPATIBILITY BLOCK (Logic functions with no GwAu3 equivalent) =====
 
 Func GetAttributeByID($aAttributeID, $aHero = False)
-    ; Thin wrapper – adjust the second arg if your GwAu3 build differs
+    ; Thin wrapper ? adjust the second arg if your GwAu3 build differs
     If $aHero Then
         Return Attribute_GetPartyAttributeInfo($aAttributeID, 0, "Level")
     Else
@@ -6137,51 +7219,31 @@ Func GetSkillByID($aSkillID)
 	Local $p = Skill_GetSkillPtr($aSkillID)
 	If Not IsPtr($p) Then Return 0
 	Local $s = DllStructCreate("long ID; long Type; dword Adrenaline")
-	DllStructSetData($s, "ID", Memory_Read($p, "long"))
-	DllStructSetData($s, "Type", Memory_Read($p + 12, "long"))
-	DllStructSetData($s, "Adrenaline", Memory_Read($p + 56, "dword"))
+	DllStructSetData($s, "ID", Skill_GetSkillInfo($p, "SkillID"))
+	DllStructSetData($s, "Type", Skill_GetSkillInfo($p, "SkillType"))
+	DllStructSetData($s, "Adrenaline", Skill_GetSkillInfo($p, "Adrenaline"))
 	Return $s
 EndFunc
 
 
-Func Skill_HasEffect($aSkillID)
-    Local $pEffects = World_GetWorldInfo("AgentEffectsArray")
-    Local $iSize = World_GetWorldInfo("AgentEffectsArraySize")
-    If $pEffects = 0 Or $iSize = 0 Then Return False
-    Local $lMyID = Agent_GetMyID()
-    For $i = 0 To $iSize - 1
-        Local $lAgentID = Memory_Read($pEffects + $i * 0x24, "long")
-        If $lAgentID = $lMyID Then
-            Local $lEffectPtr = Memory_Read($pEffects + $i * 0x24 + 0x14, "ptr")
-            Local $lEffectCount = Memory_Read($pEffects + $i * 0x24 + 0x1C, "long")
-            If $lEffectPtr = 0 Or $lEffectCount = 0 Then Return False
-            For $j = 0 To $lEffectCount - 1
-                Local $lSkillID = Memory_Read($lEffectPtr + $j * 0x18, "long")
-                If $lSkillID = $aSkillID Then Return True
-            Next
-        EndIf
-    Next
-    Return False
+Func Skill_HasEffect($aSkillID, $aAgent = -2)
+	Return Agent_GetAgentEffectInfo($aAgent, $aSkillID, "HasEffect") = True
 EndFunc
 
-; Untested, we can test effets on self with Skill_HasEffect, need to see if this follows the same offsets for heroes as in logic
+; Remaining ms for a skill effect on an agent (0 if missing). Accepts skill ID.
+Func GetEffectTimeRemaining($aSkillID, $aAgent = -2)
+	If IsDllStruct($aSkillID) Then $aSkillID = DllStructGetData($aSkillID, "SkillID")
+	Local $lRemaining = Agent_GetAgentEffectInfo($aAgent, $aSkillID, "TimeRemaining")
+	If Not IsNumber($lRemaining) Then Return 0
+	Return $lRemaining
+EndFunc   ;==>GetEffectTimeRemaining
+
+; Returns effect entry pointer for a skill on an agent/hero (0 if missing).
 Func Skill_GetSkillEffectPtr($aSkillID, $aHeroID = 0)
-    Local $pEffects = World_GetWorldInfo("AgentEffectsArray")
-    Local $iSize = World_GetWorldInfo("AgentEffectsArraySize")
-    If $pEffects = 0 Or $iSize = 0 Then Return 0
-    If $aHeroID = 0 Then $aHeroID = Agent_GetMyID()
-    For $i = 0 To $iSize - 1
-        Local $lAgentID = Memory_Read($pEffects + $i * 0x24, "long")
-        If $lAgentID = $aHeroID Then
-            Local $lEffectPtr = Memory_Read($pEffects + $i * 0x24 + 0x14, "ptr")
-            Local $lEffectCount = Memory_Read($pEffects + $i * 0x24 + 0x1C, "long")
-            If $lEffectPtr = 0 Or $lEffectCount = 0 Then Return 0
-            For $j = 0 To $lEffectCount - 1
-                Local $lSkillID = Memory_Read($lEffectPtr + $j * 0x18, "long")
-                If $lSkillID = $aSkillID Then Return Ptr($lEffectPtr + $j * 0x18)
-            Next
-        EndIf
-    Next
-    Return 0
+	If $aHeroID = 0 Then $aHeroID = -2
+	Return Agent_GetAgentEffectInfo($aHeroID, $aSkillID, "")
 EndFunc
+
+
+
 

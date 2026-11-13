@@ -211,6 +211,9 @@ Global Const $GC_I_SKILL_REQUIRE_DAGGER = 8 ; All Dagger Attacks
 Global Const $GC_I_SKILL_REQUIRE_HAMMER = 16 ; All Hammer Attacks
 Global Const $GC_I_SKILL_REQUIRE_SCYTHE = 32 ; All Scythe Attacks
 Global Const $GC_I_SKILL_REQUIRE_SPEAR = 64 ; All Spear Attacks
+; Projectile travel (units/ms) for land-time estimates. Same values LogicCast used for rupt timing.
+Global Const $GC_F_PROJECTILE_ARROW_SPEED = 0.85
+Global Const $GC_F_PROJECTILE_SPEAR_SPEED = 1.05
 Global Const $GC_I_SKILL_REQUIRE_NO_WEAPON = 70 ; Ranged Attack non-Weapon Requirement
 Global Const $GC_I_SKILL_REQUIRE_SWORD = 128 ; All Sword Attacks
 Global Const $GC_I_SKILL_REQUIRE_MELEE_WEAPON = 185 ; All Melee Attack non-Weapon Requirement

@@ -200,10 +200,28 @@ Func Agent_GoToPlayer($Player = GetNearestAgentPtr(-2), $Interact = True)
 	If $Interact Then GoPlayer($Player)
 EndFunc   ;==>GoToNPC
 
-; Finds NPC nearest given coords and PlayerID and talks to him/her
-Func Agent_GoToNPCNearXY($a_f_X, $a_f_Y, $a_i_PlayerNumber = 0, $Interact = True) ; $dialog)
-	$l_p_npc = Agent_GetNearestNPCtoXY($a_f_X, $a_f_Y, $a_i_PlayerNumber = 0)
+; Finds agent nearest given coords (optional PlayerNumber) and talks to them.
+; Logic: PlayerNumber scan is allegiance-agnostic. Fallback is nearest living at XY (any allegiance),
+; not Allegiance=6 only — quest NPCs often flip to ally (1) while the quest is active.
+Func Agent_GoToNPCNearXY($a_f_X, $a_f_Y, $a_i_PlayerNumber = 0, $Interact = True)
+	Local $l_p_npc = 0
+	If $a_i_PlayerNumber <> 0 Then
+		$l_p_npc = Agent_GetAgentByPlayerNumber($a_i_PlayerNumber)
+		If $l_p_npc = 0 Then
+			Out("GoToNPCNearXY: PlayerNumber " & $a_i_PlayerNumber & " not found, falling back to nearest living at XY")
+			$l_p_npc = Agent_GetNearestAgentToXY($a_f_X, $a_f_Y)
+		EndIf
+	Else
+		$l_p_npc = Agent_GetNearestAgentToXY($a_f_X, $a_f_Y)
+		If $l_p_npc = 0 Then $l_p_npc = Agent_GetNearestNPCtoXY($a_f_X, $a_f_Y)
+	EndIf
+	If $l_p_npc = 0 Then
+		Out("GoToNPCNearXY: agent not found (PlayerNumber=" & $a_i_PlayerNumber & ", XY=" & $a_f_X & "," & $a_f_Y & ")")
+		Return False
+	EndIf
+	Out("GoToNPCNearXY: using ID=" & Agent_ConvertID($l_p_npc) & " PlayerNumber=" & Agent_GetAgentInfo($l_p_npc, "PlayerNumber") & " Allegiance=" & Agent_GetAgentInfo($l_p_npc, "Allegiance"))
 	Agent_GoToNPC($l_p_npc, $Interact)
+	Return True
 EndFunc   ;==>GoToNPCNearXY
 
 ;~ Description: Run to a signpost.

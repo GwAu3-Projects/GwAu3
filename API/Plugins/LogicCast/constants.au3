@@ -380,6 +380,9 @@ Global Const $PID_Hate					= 4230
 Global Const $PID_Suffering				= 4231
 
 Global Const $PID_Captain_Jerazh		= 5002
+; Quest / dungeon NPCs (PlayerNumber) — used by farm scripts as $questNPC
+Global Const $PID_Tekk					= 6795		; Bogroot / Tekk's War (Sparkfly) — live agent PlayerNumber (was incorrectly 6744)
+Global Const $PID_Shandra				= 7020		; Shards of Orr / Lost Souls
 #EndRegion Constant
 
 #Region Bosses
@@ -439,6 +442,19 @@ Global $aChestID[10000]
      $aChestID[6065] = "Margonite Chest"
      $aChestID[7053] = "Demonic Chest"
 	 $aChestID[8141] = "Locked Chest"
+	 ; EotN dungeon / misc chests (ExtraType) — needed by CheckForChest
+	 $aChestID[2] = "Sorrow's Furnace Chest"
+	 $aChestID[6] = "Chest"
+	 $aChestID[8926] = "Dungeon Chest"
+	 $aChestID[8927] = "Dungeon Chest"
+	 $aChestID[8928] = "Dungeon Chest"
+	 $aChestID[8929] = "Dungeon Chest"
+	 $aChestID[8930] = "Dungeon Chest"
+	 $aChestID[8931] = "Dungeon Chest"
+	 $aChestID[8932] = "Bogroot Chest"
+	 $aChestID[8933] = "Dungeon Chest"
+	 $aChestID[8934] = "Shards of Orr Chest"
+	 $aChestID[9523] = "Zaishen Chest"
 #EndRegion Chest
 
 #Region Keys

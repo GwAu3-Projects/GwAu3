@@ -1502,3 +1502,46 @@ Func Skill_GetSkillArg($a_i_SkillID, $a_s_Argument = "", $a_i_HeroNumber = 0)
 	EndSwitch
 EndFunc
 #EndRegion Argument
+
+;~ Description: Milliseconds until our skill lands on $a_v_TargetID.
+;~ Applies Fast Casting (Mesmer primary) for spells/signets, halves attack activation,
+;~ adds bow/spear projectile travel from distance to target, then ping*1.5.
+;~ Pass target 0 for activation+ping only (busy clock / no projectile).
+Func Skill_GetMyActivationTime($a_v_SkillID, $a_v_TargetID = 0)
+	Local $l_i_SkillID = Number($a_v_SkillID)
+	If IsPtr($a_v_SkillID) Then $l_i_SkillID = Number(Skill_GetSkillInfo($a_v_SkillID, "SkillID"))
+	If $l_i_SkillID <= 0 Then Return 0
+
+	Local $l_i_Act = Number(Skill_GetSkillInfo($l_i_SkillID, "Activation")) * 1000
+	Local $l_i_Type = Number(Skill_GetSkillInfo($l_i_SkillID, "SkillType"))
+	If $l_i_Type = $GC_I_SKILL_TYPE_ATTACK Then $l_i_Act *= 0.5
+
+	If $l_i_Act > 0 And Number(Agent_GetAgentInfo(-2, "Primary")) = $GC_I_PROFESSION_MESMER Then
+		Local $l_b_Spell = ($l_i_Type = $GC_I_SKILL_TYPE_SPELL Or $l_i_Type = $GC_I_SKILL_TYPE_HEX Or $l_i_Type = $GC_I_SKILL_TYPE_ENCHANTMENT)
+		Local $l_b_Signet = ($l_i_Type = $GC_I_SKILL_TYPE_SIGNET)
+		Local $l_b_MesmerSkill = (Number(Skill_GetSkillInfo($l_i_SkillID, "Profession")) = $GC_I_PROFESSION_MESMER)
+		If ($l_b_Spell Or $l_b_Signet) And ($l_b_MesmerSkill Or $l_i_Act >= 2000) Then
+			Local $l_i_FC = Number(Attribute_GetPartyAttributeInfo($GC_I_ATTRIBUTE_FAST_CASTING, 0, "Level"))
+			If $l_i_FC > 0 Then $l_i_Act = $l_i_Act * (2 ^ (-$l_i_FC / 15))
+		EndIf
+	EndIf
+
+	Local $l_i_Travel = 0
+	If Number($a_v_TargetID) <> 0 Then
+		Local $l_f_Speed = 0
+		Switch Number(Skill_GetSkillInfo($l_i_SkillID, "WeaponReq"))
+			Case $GC_I_SKILL_REQUIRE_BOW
+				$l_f_Speed = $GC_F_PROJECTILE_ARROW_SPEED
+			Case $GC_I_SKILL_REQUIRE_SPEAR
+				$l_f_Speed = $GC_F_PROJECTILE_SPEAR_SPEED
+		EndSwitch
+		If $l_f_Speed > 0 Then
+			Local $l_f_Dist = Agent_GetDistance($a_v_TargetID)
+			If $l_f_Dist > 0 Then $l_i_Travel = Int($l_f_Dist / $l_f_Speed)
+		EndIf
+	EndIf
+
+	Local $l_i_Ping = Number(Other_GetPing())
+	If $l_i_Ping <= 0 Then $l_i_Ping = 50
+	Return Int($l_i_Act + $l_i_Travel + $l_i_Ping * 1.5)
+EndFunc   ;==>Skill_GetMyActivationTime

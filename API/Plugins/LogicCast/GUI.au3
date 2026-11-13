@@ -157,8 +157,8 @@ Func GUI_Create()
 	local $tempCtrlTop = 0
 	Global $Title = $BOTNAME & " - v" & $VERSION & " - By " & $AUTHORS[0]
 
-	;Main
-	$GUI = GUICreate($Title, $GUI_WIDTH, $GUI_HEIGHT)
+	;Main — TOPMOST so the bot stays above the game; show without activating to avoid minimizing GW
+	$GUI = GUICreate($Title, $GUI_WIDTH, $GUI_HEIGHT, -1, -1, -1, BitOR($WS_EX_TOPMOST, $WS_EX_WINDOWEDGE))
 	GUISetOnEvent($GUI_EVENT_CLOSE, "GUI_onExit")
 	GUISetFont($GUI_FONTSIZE)
 	GUISetBkColor(0xAAAAAA)
@@ -206,7 +206,7 @@ Func GUI_Create()
 	$GUI_GroupSettings_CheckSell    	= GUICtrlCreateCheckbox("Auto-Sell"	  		, $GUI_BORDERSIZE * 2, $temp1[1] + $temp1[3] + 20 + $tempCtrlTop * 8, $GUI_CHECKBOX_WIDTH, $GUI_CHECKBOX_HEIGHT)
 	GUICtrlCreateGroup("", -99, -99, 1, 1)	;Closes a Group
 
-	GUICtrlSetOnEvent($GUI_GroupSettings_CheckRender, "ToggleRendering")
+	GUICtrlSetOnEvent($GUI_GroupSettings_CheckRender, "Ui_ToggleRendering")
 	GUICtrlSetOnEvent($GUI_GroupSettings_CheckSkills, "LoadBestSkillTemplate")
 	GUICtrlSetOnEvent($GUI_GroupSettings_CheckSell, "IdentifyBags")
 
@@ -284,24 +284,53 @@ Func GUI_Create()
 		GUI_IniCreate()
 	EndIf
 
-	GUICtrlSetState($GUI_GroupSettings_CheckHM, (IniRead($INI_PATH, "Settings", "Hard Mode", True)) ? $GUI_CHECKED : 0)
-	GUICtrlSetState($GUI_GroupSettings_CheckConsets, (IniRead($INI_PATH, "Settings", "Consets", True)) ? $GUI_UNCHECKED : 0)
-	GUICtrlSetState($GUI_GroupSettings_CheckScrolls, (IniRead($INI_PATH, "Settings", "Scrolls", True)) ? $GUI_CHECKED : 0)
-	GUICtrlSetState($GUI_GroupSettings_CheckStones, (IniRead($INI_PATH, "Settings", "Stones", True)) ? $GUI_CHECKED : 0)
-	GUICtrlSetState($GUI_GroupSettings_CheckChests, (IniRead($INI_PATH, "Settings", "OpenChests", True)) ? $GUI_UNCHECKED : 0)
-	GUICtrlSetState($GUI_GroupSettings_CheckRareSkins, (IniRead($INI_PATH, "Settings", "StoreRareSkins", True)) ? $GUI_CHECKED : 0)
-	GUICtrlSetState($GUI_GroupSettings_CheckSell, (IniRead($INI_PATH, "Settings", "AutoSell", True)) ? $GUI_CHECKED : 0)
+	; Ini keys must match $ValuesToBeSaved ("HardMode", not "Hard Mode"). Values are strings "True"/"False".
+	GUICtrlSetState($GUI_GroupSettings_CheckHM, (IniRead($INI_PATH, "Settings", "HardMode", "True") = "True") ? $GUI_CHECKED : $GUI_UNCHECKED)
+	GUICtrlSetState($GUI_GroupSettings_CheckConsets, (IniRead($INI_PATH, "Settings", "Consets", "True") = "True") ? $GUI_CHECKED : $GUI_UNCHECKED)
+	GUICtrlSetState($GUI_GroupSettings_CheckScrolls, (IniRead($INI_PATH, "Settings", "Scrolls", "True") = "True") ? $GUI_CHECKED : $GUI_UNCHECKED)
+	GUICtrlSetState($GUI_GroupSettings_CheckStones, (IniRead($INI_PATH, "Settings", "Stones", "True") = "True") ? $GUI_CHECKED : $GUI_UNCHECKED)
+	GUICtrlSetState($GUI_GroupSettings_CheckChests, (IniRead($INI_PATH, "Settings", "OpenChests", "True") = "True") ? $GUI_CHECKED : $GUI_UNCHECKED)
+	GUICtrlSetState($GUI_GroupSettings_CheckRareSkins, (IniRead($INI_PATH, "Settings", "StoreRareSkins", "True") = "True") ? $GUI_CHECKED : $GUI_UNCHECKED)
+	GUICtrlSetState($GUI_GroupSettings_CheckSell, (IniRead($INI_PATH, "Settings", "AutoSell", "True") = "True") ? $GUI_CHECKED : $GUI_UNCHECKED)
 	#EndRegion INI
 
-	GUISetState(@SW_SHOW)
+	; Show without stealing focus from Guild Wars, then pin on top
+	GUISetState(@SW_SHOWNOACTIVATE, $GUI)
+	WinSetOnTop($GUI, "", 1)
+	If IsDeclared("g_h_GWWindow") And $g_h_GWWindow <> 0 Then
+		WinSetState($g_h_GWWindow, "", @SW_RESTORE)
+		WinActivate($g_h_GWWindow)
+	EndIf
 EndFunc
 #EndRegion Creation
 
 #Region Events
+Func GUI_IniSave()
+	Local $aSettings[8][2]
+	$aSettings[0][0] = 7
+	$aSettings[1][0] = "HardMode"
+	$aSettings[1][1] = GUI_IsHMChecked() ? "True" : "False"
+	$aSettings[2][0] = "Consets"
+	$aSettings[2][1] = GUI_IsConsetsChecked() ? "True" : "False"
+	$aSettings[3][0] = "Scrolls"
+	$aSettings[3][1] = GUI_IsScrollsChecked() ? "True" : "False"
+	$aSettings[4][0] = "Stones"
+	$aSettings[4][1] = GUI_IsStonesChecked() ? "True" : "False"
+	$aSettings[5][0] = "OpenChests"
+	$aSettings[5][1] = GUI_IsChestChecked() ? "True" : "False"
+	$aSettings[6][0] = "StoreRareSkins"
+	$aSettings[6][1] = GUI_IsRareSkinsChecked() ? "True" : "False"
+	$aSettings[7][0] = "AutoSell"
+	$aSettings[7][1] = GUI_IsSellChecked() ? "True" : "False"
+	Return IniWriteSection($INI_PATH, "Settings", $aSettings)
+EndFunc   ;==>GUI_IniSave
+
 Func GUI_onExit()
-	Local $AgentName = Memory_Read($mCharname, 'wchar[30]')
-	WinSetTitle($mGWWindowHandle, '', 'Guild Wars')
-	WinSetState(GetWindowHandle(), "", @SW_SHOW)
+	GUI_IniSave()
+	If IsDeclared("g_h_GWWindow") And $g_h_GWWindow <> 0 Then
+		WinSetTitle($g_h_GWWindow, "", "Guild Wars")
+		WinSetState($g_h_GWWindow, "", @SW_SHOW)
+	EndIf
 	Exit
 EndFunc
 
@@ -335,6 +364,7 @@ Func GUI_MenuCallback() ;Checking here for the GUI does not work. Since every GU
 	    Case $GUI_idMenuFile_idOpenDir
 			Run("Explorer.exe " & @ScriptDir)
 		Case $GUI_idMenuFile_idExit
+			GUI_IniSave()
 			Exit
 	EndSwitch
 EndFunc
@@ -495,8 +525,8 @@ EndFunc
 ;Console
 Func GUI_SetRunCounter($Value = -1)
     If $Value = -1 Then
-	Out("Run Count: " & $GUI_RunCounter & "Instance time: " & GetInstanceUpTime())
-        If $GUI_RunCounter >= 0 And GetInstanceUpTime() < 15000 Then $GUI_RunCounter += 1
+	Out("Run Count: " & $GUI_RunCounter & " Instance time: " & Map_GetInstanceUpTime())
+        If $GUI_RunCounter >= 0 And Map_GetInstanceUpTime() < 15000 Then $GUI_RunCounter += 1
     Else
         $GUI_RunCounter = $Value
     EndIf
@@ -519,11 +549,20 @@ Func GUI_Print($Text, $TimeStamp = True, $ShowSeconds = False)
 EndFunc
 
 Func Out($Text, $TimeStamp = True, $ShowSeconds = False)
+	; Exact pre-timing Out path (GUI_GetConsoleText redeclares Global $GUI_idConsole).
 	Local $Out = ""
 	If GUI_GetConsoleText() <> "" Then $Out = @CRLF
 	If $TimeStamp Then $Out &= String_GetTimeStamp($ShowSeconds) & " "
-	GUICtrlSetData($GUI_idConsole, GUI_GetConsoleText() & $Out & $Text & "")
+	Local $sLine = $Out & $Text
+	GUICtrlSetData($GUI_idConsole, GUI_GetConsoleText() & $sLine)
 	_GUICtrlEdit_Scroll($GUI_idConsole, $SB_SCROLLCARET)
+
+	; Side channel only — does not gate the UI write above.
+	Local $hLog = FileOpen(@ScriptDir & "\RuptTiming.log", 1)
+	If $hLog <> -1 Then
+		FileWriteLine($hLog, StringStripWS($sLine, 1))
+		FileClose($hLog)
+	EndIf
 EndFunc
 
 Func GUI_SetRunTime($iTicks)

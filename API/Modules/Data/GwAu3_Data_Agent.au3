@@ -305,7 +305,7 @@ Func Agent_GetAgentInfo($a_i_AgentID = -2, $a_s_Info = "")
 			Return BitAND(Memory_Read($l_p_AgentPtr + 0x13C, "dword"), 0x0002) > 0
 		Case "IsCrippled"
 			Return BitAND(Memory_Read($l_p_AgentPtr + 0x13C, "dword"), 0x000A) = 0xA
-		Case "IsDead"
+		Case "IsDead", "Dead" ; "Dead" kept as alias for LogicCast migration
 			Return BitAND(Memory_Read($l_p_AgentPtr + 0x13C, "dword"), 0x0010) > 0
 		Case "IsDeepWounded"
 			Return BitAND(Memory_Read($l_p_AgentPtr + 0x13C, "dword"), 0x0020) > 0
@@ -524,11 +524,17 @@ Func Agent_GetAgentInfo($a_i_AgentID = -2, $a_s_Info = "")
 EndFunc
 
 ;~ Description: Finds and returns the first agent pointer matching a specific player or model number currently loaded in memory.
+; Logic GetAgentPtrByPlayerNumber: scan living agents (type 0xDB), no allegiance filter
+; (quest NPCs are often Allegiance 1/ally once the quest is active, not 6/NPC).
 Func Agent_GetAgentByPlayerNumber($aPlayerNumber, $aRange = 1200)
 	Local $lAgentPtrArray = Agent_GetAgentArray(0xDB)
+	Local $i, $lPtr, $lPN
 	For $i = 1 To $lAgentPtrArray[0]
-		If Agent_GetAgentInfo($lAgentPtrArray[$i], "IsDead") Then ContinueLoop
-		If Agent_GetAgentInfo($lAgentPtrArray[$i], "PlayerNumber") = $aPlayerNumber Then Return $lAgentPtrArray[$i]
+		$lPtr = $lAgentPtrArray[$i]
+		If Agent_GetAgentInfo($lPtr, "IsDead") Then ContinueLoop
+		If $aRange <> 1200 And $aRange <> 5000 And Agent_GetDistance($lPtr) > $aRange Then ContinueLoop
+		$lPN = Agent_GetAgentInfo($lPtr, "PlayerNumber")
+		If Number($lPN) = Number($aPlayerNumber) Then Return $lPtr
 	Next
 	Return 0
 EndFunc   ;==>GetAgentPtrByPlayerNumber
@@ -748,7 +754,6 @@ EndFunc
 ;~ Description: Quickly creates an array of agents of a given type and allegiance using fully unified Agent_GetInfo framework properties.
 Func Agent_GetFilteredAgentArray($aMode = 0, $aType = 0xDB, $aAllegiance = 3, $aRange = 1320, $aAgent = Agent_GetAgentPtr(-2), $aEffect = 0, $x = Agent_GetAgentInfo($aAgent, "X"), $y = Agent_GetAgentInfo($aAgent, "Y"))
 	Local $lMaxAgents = Agent_GetMaxAgents()
-	Out(Agent_GetMaxAgents())
 	Local $lTemp
 	Local $lAgentArray[$lMaxAgents + 1]
 	$lAgentArray[0] = 0
@@ -825,22 +830,27 @@ Func Agent_GetFilteredAgentArray($aMode = 0, $aType = 0xDB, $aAllegiance = 3, $a
 	Return $lAgentArray
 EndFunc   ;==>Agent_GetFilteredAgentArray
 
-Func Agent_GetDistanceSortedArray($aType)     ;returns a 2-dimensional array([agentID, [distance]) sorted by distance
-	Local $lDistance
-	Local $lAgentArray = GetAgentArray($lAgentType)
+; Returns [[agentID, distance], ...] nearest-first for agents of $aType (0 = any).
+; Logic alias: GetAgentArraySorted($aType).
+Func Agent_GetDistanceSortedArray($aType = 0)
+	Local $lAgentArray = Agent_GetAgentArray($aType)
 	Local $lReturnArray[1][2]
-	Local $lMe = Agent_GetAgentInfo(-2, "ID")
-	Local $AgentID
+	If Not IsArray($lAgentArray) Or $lAgentArray[0] = 0 Then Return $lReturnArray
+
+	ReDim $lReturnArray[$lAgentArray[0]][2]
+	Local $i, $lAgentID, $lX, $lY
+	Local $lMyX = Agent_GetAgentInfo(-2, "X")
+	Local $lMyY = Agent_GetAgentInfo(-2, "Y")
 	For $i = 1 To $lAgentArray[0]
-		$lDistance = (Agent_X(-2) - Agent_X($lAgentArray[$i])) ^ 2 + (Agent_Y(-2) - Agent_Y($lAgentArray[$i])) ^ 2
-		$AgentID = Agent_GetAgentInfo(-2, "ID")
-		ReDim $lReturnArray[$i][2]
-		$lReturnArray[$i - 1][0] = $AgentID
-		$lReturnArray[$i - 1][1] = Sqrt($lDistance)
+		$lAgentID = Agent_GetAgentInfo($lAgentArray[$i], "ID")
+		$lX = Agent_GetAgentInfo($lAgentArray[$i], "X")
+		$lY = Agent_GetAgentInfo($lAgentArray[$i], "Y")
+		$lReturnArray[$i - 1][0] = $lAgentID
+		$lReturnArray[$i - 1][1] = Sqrt(($lMyX - $lX) ^ 2 + ($lMyY - $lY) ^ 2)
 	Next
 	_ArraySort($lReturnArray, 0, 0, 0, 1)
 	Return $lReturnArray
-EndFunc   ;==>GetAgentArraySorted
+EndFunc   ;==>Agent_GetDistanceSortedArray
 
 ;~ Func Agent_GetAgentArray()
 ;~     Local $l_a_AgentArray = Memory_ReadArray($mAgentBase, 0x8)
@@ -938,43 +948,62 @@ Func Agent_GetDistanceSq($a_i_Agent1ID, $a_i_Agent2ID = -2)
     Return ($l_f_DX * $l_f_DX + $l_f_DY * $l_f_DY)
 EndFunc
 
-;~ Description: Returns the pointer variable for the nearest agent to an agent or optional set of coordinates.
-Func Agent_GetNearest($a_v_Agent = -2, $a_i_Type = 0xDB, $a_i_Allegiance = 2, $a_f_X = Agent_X($a_v_Agent), $a_f_Y = Agent_Y($a_v_Agent), $a_i_PlayerNumber = 0)
-	Local $l_p_AgentPtr = Agent_GetAgentPtr($a_v_Agent), $l_p_NearestAgentPtr = 0, $l_f_Distance = 0, $l_f_NearestDistance = 25000000
-	Local $l_ai_AgentPtrArray = 0
+;~ Description: Returns the pointer for the nearest agent to an agent or optional XY.
+;~ Living 0xDB uses FilteredAgentArray mode 3 (type+allegiance+range); other types use mode 1.
+Func Agent_GetNearestAgent($a_v_Agent = -2, $a_i_Type = 0xDB, $a_i_Allegiance = 2, $a_f_X = Default, $a_f_Y = Default, $a_i_PlayerNumber = 0)
+	Local $l_p_AgentPtr = Agent_GetAgentPtr($a_v_Agent)
+	If $a_f_X = Default Then $a_f_X = Agent_GetAgentInfo($l_p_AgentPtr, "X")
+	If $a_f_Y = Default Then $a_f_Y = Agent_GetAgentInfo($l_p_AgentPtr, "Y")
 
-	Switch $a_i_Type
-		Case 0x200
-			$l_ai_AgentPtrArray = Agent_GetFilteredAgentArray(1, $a_i_Type, $a_i_Allegiance, 5000)
-		Case 0xDB
-			$l_ai_AgentPtrArray = Agent_GetFilteredAgentArray(3, $a_i_Type, $a_i_Allegiance, 5000)
-	EndSwitch
-
+	Local $l_i_Mode = 1
+	If $a_i_Type = 0xDB Then $l_i_Mode = 3
+	Local $l_ai_AgentPtrArray = Agent_GetFilteredAgentArray($l_i_Mode, $a_i_Type, $a_i_Allegiance, 5000, $l_p_AgentPtr, 0, $a_f_X, $a_f_Y)
 	If Not IsArray($l_ai_AgentPtrArray) Or $l_ai_AgentPtrArray[0] = 0 Then Return 0
 
+	Local $l_p_NearestAgentPtr = 0, $l_f_NearestDistance = 25000000
 	For $l_i_Idx = 1 To $l_ai_AgentPtrArray[0]
 		Local $l_p_TargetPtr = $l_ai_AgentPtrArray[$l_i_Idx]
 		If $l_p_TargetPtr = $l_p_AgentPtr Then ContinueLoop
-
-		; Check player number using native framework accessor (replacing offset 244 read)
 		If $a_i_PlayerNumber <> 0 And Agent_GetAgentInfo($l_p_TargetPtr, "PlayerNumber") <> $a_i_PlayerNumber Then ContinueLoop
-
-		$l_f_Distance = Agent_GetDistanceToXY($a_f_X, $a_f_Y, $l_p_TargetPtr)
+		Local $l_f_Distance = Agent_GetDistanceToXY($a_f_X, $a_f_Y, $l_p_TargetPtr)
 		If $l_f_Distance < $l_f_NearestDistance Then
 			$l_f_NearestDistance = $l_f_Distance
 			$l_p_NearestAgentPtr = $l_p_TargetPtr
 		EndIf
 	Next
-
 	SetExtended($l_f_NearestDistance)
 	Return $l_p_NearestAgentPtr
-EndFunc   ;==>Agent_GetNearest
+EndFunc   ;==>Agent_GetNearestAgent
 
-;~ Description: Returns the pointer variable for the nearest NPC to a set of X and Y coordinates and optional PlayerNumber.
+;~ Description: Nearest living agent to XY. Allegiance 0 = any (mode 1 + skip dead); else mode 3.
+Func Agent_GetNearestAgentToXY($a_f_X, $a_f_Y, $a_i_PlayerNumber = 0, $a_i_Allegiance = 0)
+	Local $l_ai_AgentPtrArray
+	If $a_i_Allegiance = 0 Then
+		$l_ai_AgentPtrArray = Agent_GetFilteredAgentArray(1, 0xDB, 0, 5000, Agent_GetAgentPtr(-2), 0, $a_f_X, $a_f_Y)
+	Else
+		$l_ai_AgentPtrArray = Agent_GetFilteredAgentArray(3, 0xDB, $a_i_Allegiance, 50000, Agent_GetAgentPtr(-2), 0, $a_f_X, $a_f_Y)
+	EndIf
+	If Not IsArray($l_ai_AgentPtrArray) Or $l_ai_AgentPtrArray[0] = 0 Then Return 0
+
+	Local $l_p_Nearest = 0, $l_f_NearestDistance = 25000000
+	For $l_i_Idx = 1 To $l_ai_AgentPtrArray[0]
+		Local $l_p_TargetPtr = $l_ai_AgentPtrArray[$l_i_Idx]
+		If $a_i_Allegiance = 0 And Agent_GetAgentInfo($l_p_TargetPtr, "IsDead") Then ContinueLoop
+		If $a_i_PlayerNumber <> 0 And Agent_GetAgentInfo($l_p_TargetPtr, "PlayerNumber") <> $a_i_PlayerNumber Then ContinueLoop
+		Local $l_f_Distance = Agent_GetDistanceToXY($a_f_X, $a_f_Y, $l_p_TargetPtr)
+		If $l_f_Distance < $l_f_NearestDistance Then
+			$l_f_NearestDistance = $l_f_Distance
+			$l_p_Nearest = $l_p_TargetPtr
+		EndIf
+	Next
+	SetExtended($l_f_NearestDistance)
+	Return $l_p_Nearest
+EndFunc   ;==>Agent_GetNearestAgentToXY
+
+;~ Description: Nearest NPC to XY. If PlayerNumber is set, match that ID near XY (any allegiance — dungeon allies included).
 Func Agent_GetNearestNPCtoXY($a_f_X, $a_f_Y, $a_i_PlayerNumber = 0)
-	; Type 0xDB covers living agents (players and NPCs)
-	; By passing the coordinates directly, Agent_GetNearest evaluates distance from that point.
-	Return Agent_GetNearest(-2, 0xDB, 6, $a_f_X, $a_f_Y, 0)
+	If $a_i_PlayerNumber <> 0 Then Return Agent_GetNearestAgentToXY($a_f_X, $a_f_Y, $a_i_PlayerNumber)
+	Return Agent_GetNearestAgentToXY($a_f_X, $a_f_Y, 0, 6)
 EndFunc   ;==>Agent_GetNearestNPCByXY
 
 #Region Effect Related
@@ -1240,43 +1269,43 @@ Func Agent_GetPlayerLogInfo($a_s_Info = "")
 EndFunc
 #EndRegion Related Player Info
 
-; Finds the most balled target based on tactical criteria using pre-filtered Agent_GetFilteredArray()
+; Finds the most balled living enemy in range (Logic-compatible: Agent_GetAgentArray + Allegiance 3).
 Func Agent_GetBestTarget($a_i_Range = 1320, $a_b_CastingOnly = False, $a_b_NoHexOnly = False, $a_b_HexedOnly = False, $a_b_EnchantedOnly = False, $a_b_StationaryOnly = False, $a_b_PassiveOnly = False, $a_f_RefX = 0, $a_f_RefY = 0, $a_b_MeleeOnly = False, $a_b_CasterOnly = False)
 	Local $l_p_BestTargetPtr = 0
-	Local $l_p_LowestEnemyPtr = 0
 	Local $l_f_Distance, $l_f_LowestSum = 100000000
-	Local $l_f_HP, $l_f_LowestHP = 1
-
-	; Use framework pre-filtered array for living enemies (Allegiance = 3, Type = 0xDB) within range
-	Local $l_ai_AgentArray = Agent_GetFilteredAgentArray(0xDB, 3, $a_i_Range, $a_f_RefX, $a_f_RefY)
+	Local $l_ai_AgentArray = Agent_GetAgentArray(0xDB)
 	If Not IsArray($l_ai_AgentArray) Or $l_ai_AgentArray[0] = 0 Then Return 0
+
+	Local $l_f_X = $a_f_RefX, $l_f_Y = $a_f_RefY
+	If $l_f_X = 0 And $l_f_Y = 0 Then
+		$l_f_X = Agent_GetAgentInfo(-2, "X")
+		$l_f_Y = Agent_GetAgentInfo(-2, "Y")
+	EndIf
 
 	For $i = 1 To $l_ai_AgentArray[0]
 		Local $l_p_AgentPtr = $l_ai_AgentArray[$i]
 		If $l_p_AgentPtr = 0 Then ContinueLoop
+		If Agent_GetAgentInfo($l_p_AgentPtr, "IsDead") Then ContinueLoop
+		If Agent_GetAgentInfo($l_p_AgentPtr, "Allegiance") <> 3 Then ContinueLoop
+		If Agent_GetDistanceToXY($l_f_X, $l_f_Y, $l_p_AgentPtr) > $a_i_Range Then ContinueLoop
+		If Agent_GetNpcInfo(Agent_GetAgentInfo($l_p_AgentPtr, "PlayerNumber"), "IsSpirit") Then ContinueLoop
 
-		; Tactical filter checks
-		If Agent_GetAgentInfo($l_p_AgentPtr, "IsSpirit") Then ContinueLoop
 		If $a_b_EnchantedOnly And Not Agent_GetAgentInfo($l_p_AgentPtr, "IsEnchanted") Then ContinueLoop
 		If $a_b_NoHexOnly And Agent_GetAgentInfo($l_p_AgentPtr, "IsHexed") Then ContinueLoop
 		If $a_b_HexedOnly And Not Agent_GetAgentInfo($l_p_AgentPtr, "IsHexed") Then ContinueLoop
 		If $a_b_CastingOnly And Not Agent_GetAgentInfo($l_p_AgentPtr, "IsCasting") Then ContinueLoop
 		If $a_b_StationaryOnly And Agent_GetAgentInfo($l_p_AgentPtr, "IsMoving") Then ContinueLoop
 		If $a_b_PassiveOnly And Agent_GetAgentInfo($l_p_AgentPtr, "IsAttacking") Then ContinueLoop
-		If $a_b_MeleeOnly And Not Agent_GetAgentInfo($l_p_AgentPtr, "IsMartial") Then ContinueLoop
-		If $a_b_CasterOnly And Agent_GetAgentInfo($l_p_AgentPtr, "IsMartial") Then ContinueLoop
+		Local $l_i_Weapon = Agent_GetAgentInfo($l_p_AgentPtr, "WeaponType")
+		Local $l_b_Martial = ($l_i_Weapon >= 1 And $l_i_Weapon <= 7)
+		If $a_b_MeleeOnly And Not $l_b_Martial Then ContinueLoop
+		If $a_b_CasterOnly And $l_b_Martial Then ContinueLoop
 
-		; Lowest HP tracking (optional sub-logic preserved from your snippet)
-		$l_f_HP = Agent_GetAgentInfo($l_p_AgentPtr, "HP")
-		If $l_f_HP < $l_f_LowestHP Then
-			$l_p_LowestEnemyPtr = $l_p_AgentPtr
-			$l_f_LowestHP = $l_f_HP
-		EndIf
-
-		; Clustering / balling distance sum calculation
 		Local $l_f_SumDistances = 0
 		For $j = 1 To $l_ai_AgentArray[0]
 			If $l_ai_AgentArray[$j] = $l_p_AgentPtr Then ContinueLoop
+			If Agent_GetAgentInfo($l_ai_AgentArray[$j], "Allegiance") <> 3 Then ContinueLoop
+			If Agent_GetAgentInfo($l_ai_AgentArray[$j], "IsDead") Then ContinueLoop
 			$l_f_Distance = Agent_GetDistance($l_p_AgentPtr, $l_ai_AgentArray[$j])
 			$l_f_SumDistances += $l_f_Distance
 		Next
@@ -1288,7 +1317,7 @@ Func Agent_GetBestTarget($a_i_Range = 1320, $a_b_CastingOnly = False, $a_b_NoHex
 	Next
 
 	Return $l_p_BestTargetPtr
-EndFunc  ;==>GetBestTargetPtr
+EndFunc  ;==>Agent_GetBestTarget
 
 #Region Visible Effect
 Func Agent_CountVisibleEffects($a_i_AgentID = -2)
