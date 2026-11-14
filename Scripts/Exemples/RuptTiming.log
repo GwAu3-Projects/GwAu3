@@ -1,0 +1,26 @@
+[11:00] Exemple_SkillLog_Respond — CacheSkillBar arms OnSpell/OnMelee; loop drains Listen.
+[11:01] SkillLog detours disarmed
+[11:01] Exemple_SkillLog_Respond — CacheSkillBar arms OnSpell/OnMelee; loop drains Listen.
+[11:01] Mapping your skill bar
+[11:01] Rupts detected â€” SkillLog responders OnSpell / OnMelee
+[11:01] 0 pressure sprits on your skillbar
+[11:01] Mapping your skill bar - completed
+[11:01] SkillLog detours installed Caster→OnSpell hook=E90CFD1D01 start=0x00D4E3C1
+[11:01] SkillLog detours installed Melee→OnMelee hook=E952FE1D01 start=0x00D4E2C1
+[11:01] SkillLog procs caster=0x01F2E0D2 melee=0x01F2E118
+[11:01] SkillLog live=yes hits C/M=0/0
+[11:01] SkillLog live=no detours=on
+[11:01] SkillLog Respond armed â†’ OnSpell / OnMelee (live off until Fight/bot)
+[11:01] Skill bar cached
+[11:01] SkillLog live=yes detours=on
+[11:01] SkillLog live on → OnSpell / OnMelee
+[11:01] SkillLog CasterSkillLogStart=0x00D4E3C1
+[11:01] SkillLog MeleeSkillLogStart=0x00D4E2C1
+[11:01] SkillLog CasterSkillLogProc=0x01F2E0D2
+[11:01] SkillLog MeleeSkillLogProc=0x01F2E118
+[11:01] SkillLog patterns OK=yes
+[11:01] SkillLog armed=yes live=yes detours=on
+[11:01] SkillLog casterHook=E90CFD1D01 procHead=9C60
+[11:01] SkillLog meleeHook=E952FE1D01 procHead=9C60
+[11:01] SkillLog hits total=0 caster=0 melee=0
+[11:01] SkillLog probe=off armed=0

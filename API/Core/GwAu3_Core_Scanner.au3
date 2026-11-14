@@ -727,48 +727,51 @@ Func Scanner_ScanAllPatterns()
         Memory_Write($g_p_GwAu3Header + $GC_I_GWAU3_OFFSET_CMDPTR, 0)
     EndIf
 
-    Local $l_b_AllocScan = False
-    $g_p_GwAu3Scan = Memory_Read($g_p_GwAu3Header + $GC_I_GWAU3_OFFSET_SCANPTR, "ptr")
+	; --- Review note (keep): always fresh ScanPtr + ScanProc ---
+	; Bug: reusing Header.ScanPtr after the pattern list grows/changes (plugin Extend,
+	; extra Scanner_AddPattern, etc.) leaves an undersized / stale ASM scan buffer.
+	; GetScannedAddress then returns garbage (e.g. SkillLog Start 0xF04D9654 with
+	; hookBytes=0000000000 while CasterSkillLogProc head looked fine).
+	; Fix: allocate a new scan buffer sized to current $g_i_ASMSize and re-run ScanProc
+	; every ScanAllPatterns. Not SkillLog-specific — any late-added pattern needs this.
+	; Tradeoff: prior ScanPtr allocations are not freed here (small leak per rescan).
+	Local $l_b_AllocScan = True
+	Local $l_av_ScanAlloc = DllCall($g_h_Kernel32, "ptr", "VirtualAllocEx", _
+		"handle", $g_h_GWProcess, _
+		"ptr", 0, _
+		"ulong_ptr", $g_i_ASMSize, _
+		"dword", 0x1000, _
+		"dword", 0x40)
 
-    If $g_p_GwAu3Scan = 0 Then
-        Local $l_av_ScanAlloc = DllCall($g_h_Kernel32, "ptr", "VirtualAllocEx", _
-            "handle", $g_h_GWProcess, _
-            "ptr", 0, _
-            "ulong_ptr", $g_i_ASMSize, _
-            "dword", 0x1000, _
-            "dword", 0x40)
+	$g_p_GwAu3Scan = $l_av_ScanAlloc[0]
+	If $g_p_GwAu3Scan = 0 Then Return SetError(3, 0, 0)
 
-        $g_p_GwAu3Scan = $l_av_ScanAlloc[0]
-        If $g_p_GwAu3Scan = 0 Then Return SetError(3, 0, 0)
+	Memory_Write($g_p_GwAu3Header + $GC_I_GWAU3_OFFSET_SCANPTR, $g_p_GwAu3Scan)
 
-        Memory_Write($g_p_GwAu3Header + $GC_I_GWAU3_OFFSET_SCANPTR, $g_p_GwAu3Scan)
-        $l_b_AllocScan = True
-    EndIf
+	$g_p_ASMMemory = $g_p_GwAu3Scan
+	Assembler_CompleteASMCode()
 
-    $g_p_ASMMemory = $g_p_GwAu3Scan
-    Assembler_CompleteASMCode()
+	If $l_b_AllocScan Or $g_b_DevMode Then
+		Memory_WriteBinary($g_s_ASMCode, $g_p_ASMMemory + $g_i_ASMCodeOffset)
 
-    If $l_b_AllocScan Or $g_b_DevMode Then
-        Memory_WriteBinary($g_s_ASMCode, $g_p_ASMMemory + $g_i_ASMCodeOffset)
+		Local $l_h_Thread = DllCall($g_h_Kernel32, "int", "CreateRemoteThread", _
+			"int", $g_h_GWProcess, _
+			"ptr", 0, _
+			"int", 0, _
+			"int", Memory_GetLabelInfo("ScanProc"), _
+			"ptr", 0, _
+			"int", 0, _
+			"int", 0)
 
-        Local $l_h_Thread = DllCall($g_h_Kernel32, "int", "CreateRemoteThread", _
-            "int", $g_h_GWProcess, _
-            "ptr", 0, _
-            "int", 0, _
-            "int", Memory_GetLabelInfo("ScanProc"), _
-            "ptr", 0, _
-            "int", 0, _
-            "int", 0)
+		$l_h_Thread = $l_h_Thread[0]
 
-        $l_h_Thread = $l_h_Thread[0]
+		Local $l_av_Result
+		Do
+			$l_av_Result = DllCall($g_h_Kernel32, "int", "WaitForSingleObject", "int", $l_h_Thread, "int", 50)
+		Until $l_av_Result[0] <> 258
 
-        Local $l_av_Result
-        Do
-            $l_av_Result = DllCall($g_h_Kernel32, "int", "WaitForSingleObject", "int", $l_h_Thread, "int", 50)
-        Until $l_av_Result[0] <> 258
-
-        DllCall($g_h_Kernel32, "int", "CloseHandle", "int", $l_h_Thread)
-    EndIf
+		DllCall($g_h_Kernel32, "int", "CloseHandle", "int", $l_h_Thread)
+	EndIf
 
     For $l_i_Idx = 1 To $g_amx2_Patterns[0][0]
         $l_ap_Results[$l_i_Idx] = Memory_GetScannedAddress($g_amx2_Patterns[$l_i_Idx][0], $g_amx2_Patterns[$l_i_Idx][2])

@@ -549,18 +549,27 @@ Func GUI_Print($Text, $TimeStamp = True, $ShowSeconds = False)
 EndFunc
 
 Func Out($Text, $TimeStamp = True, $ShowSeconds = False)
-	; Exact pre-timing Out path (GUI_GetConsoleText redeclares Global $GUI_idConsole).
-	Local $Out = ""
-	If GUI_GetConsoleText() <> "" Then $Out = @CRLF
-	If $TimeStamp Then $Out &= String_GetTimeStamp($ShowSeconds) & " "
-	Local $sLine = $Out & $Text
-	GUICtrlSetData($GUI_idConsole, GUI_GetConsoleText() & $sLine)
-	_GUICtrlEdit_Scroll($GUI_idConsole, $SB_SCROLLCARET)
+	Local $sPrefix = ""
+	If $TimeStamp Then $sPrefix = String_GetTimeStamp($ShowSeconds) & " "
+	Local $sBody = $sPrefix & $Text
 
-	; Side channel only — does not gate the UI write above.
+	; External testers may use $g_h_EditText; LogicCast farm GUI uses $GUI_idConsole.
+	Local $idEdit = 0
+	If IsDeclared("g_h_EditText") And Number($g_h_EditText) > 0 Then
+		$idEdit = $g_h_EditText
+	ElseIf Number($GUI_idConsole) > 0 Then
+		$idEdit = $GUI_idConsole
+	EndIf
+	If $idEdit > 0 Then
+		Local $sPrev = GUICtrlRead($idEdit)
+		Local $sLine = (($sPrev <> "") ? ($sPrev & @CRLF) : "") & $sBody
+		GUICtrlSetData($idEdit, $sLine)
+		_GUICtrlEdit_Scroll($idEdit, $SB_SCROLLCARET)
+	EndIf
+
 	Local $hLog = FileOpen(@ScriptDir & "\RuptTiming.log", 1)
 	If $hLog <> -1 Then
-		FileWriteLine($hLog, StringStripWS($sLine, 1))
+		FileWriteLine($hLog, $sBody)
 		FileClose($hLog)
 	EndIf
 EndFunc

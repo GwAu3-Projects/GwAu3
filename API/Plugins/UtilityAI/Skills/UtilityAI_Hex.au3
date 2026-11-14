@@ -1364,8 +1364,8 @@ Func BestTarget_Overload($a_f_AggroRange)
 	; Concise description
 	; Spell. (5 seconds.) Causes -1...3...3 Health degeneration. If target foe is using a skill, that foe and all adjacent foes take 15...63...75 damage.
 
-	; Enemy with most adjacent (degen only, but positioned for AOE if they cast)
-	Return UAI_GetBestAOETarget(-2, $a_f_AggroRange, $GC_I_RANGE_ADJACENT, "UAI_Filter_IsLivingEnemy")
+	; Only hexed foes (stack / pay off existing hexes).
+	Return UAI_GetBestAOETarget(-2, $a_f_AggroRange, $GC_I_RANGE_ADJACENT, "UAI_Filter_IsLivingEnemy|UAI_Filter_IsHexed")
 EndFunc
 
 ; Skill ID: 899 - $GC_I_SKILL_ID_IMAGES_OF_REMORSE

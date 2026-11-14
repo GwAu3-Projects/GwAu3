@@ -18,7 +18,8 @@ Global $g_p_Action = DllStructGetPtr($g_d_Action)
 Global $g_d_Packet = DllStructCreate('ptr;dword;dword;dword;dword;dword;dword;dword;dword;dword;dword;dword;dword')
 Global $g_p_Packet = DllStructGetPtr($g_d_Packet)
 
-Global $g_d_SkillLog = DllStructCreate('dword;dword;dword');float')
+; Logic SkillLog layout (caster, target, skill, activation). Prefer SkillLog plugin struct.
+Global $g_d_SkillLog = DllStructCreate('dword;dword;dword;float')
 Global $g_p_SkillLog = DllStructGetPtr($g_d_SkillLog)
 Global $g_h_GUI = 0
 
