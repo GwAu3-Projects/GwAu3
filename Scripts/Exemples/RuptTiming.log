@@ -24,3 +24,516 @@
 [11:01] SkillLog meleeHook=E952FE1D01 procHead=9C60
 [11:01] SkillLog hits total=0 caster=0 melee=0
 [11:01] SkillLog probe=off armed=0
+[11:07] SkillLog detours disarmed
+[11:09] Exemple_SkillLog_Respond — CacheSkillBar arms OnSpell/OnMelee; loop drains Listen.
+[11:09] Mapping your skill bar
+[11:09] Rupts detected â€” SkillLog responders OnSpell / OnMelee
+[11:09] 0 pressure sprits on your skillbar
+[11:09] Mapping your skill bar - completed
+[11:09] SkillLog detours installed Caster→OnSpell hook=E90CFD1D01 start=0x00D4E3C1
+[11:09] SkillLog detours installed Melee→OnMelee hook=E952FE1D01 start=0x00D4E2C1
+[11:09] SkillLog procs caster=0x01F2E0D2 melee=0x01F2E118
+[11:09] SkillLog live=yes hits C/M=0/0
+[11:09] SkillLog live=no detours=on
+[11:09] SkillLog Respond armed â†’ OnSpell / OnMelee (live off until Fight/bot)
+[11:09] Skill bar cached
+[11:09] SkillLog live=yes detours=on
+[11:09] SkillLog live on → OnSpell / OnMelee
+[11:09] SkillLog CasterSkillLogStart=0x00D4E3C1
+[11:09] SkillLog MeleeSkillLogStart=0x00D4E2C1
+[11:09] SkillLog CasterSkillLogProc=0x01F2E0D2
+[11:09] SkillLog MeleeSkillLogProc=0x01F2E118
+[11:09] SkillLog patterns OK=yes
+[11:09] SkillLog armed=yes live=yes detours=on
+[11:09] SkillLog casterHook=E90CFD1D01 procHead=9C60
+[11:09] SkillLog meleeHook=E952FE1D01 procHead=9C60
+[11:09] SkillLog hits total=0 caster=0 melee=0
+[11:09] SkillLog probe=off armed=0
+[11:12] SkillLog detours disarmed
+[11:15] Exemple_SkillLog_Respond — arms OnSpell/OnMelee; press SkillLog: ON to activate.
+[11:15] Mapping your skill bar
+[11:15] Rupts detected â€” SkillLog responders OnSpell / OnMelee
+[11:15] 0 pressure sprits on your skillbar
+[11:15] Mapping your skill bar - completed
+[11:15] SkillLog WARN: CasterSkillLogProc bytes=2A50 (expected 9C60 pushfd/pushad) — ASM not injected
+[11:15] SkillLog WARN: MeleeSkillLogProc bytes=2A50 (expected 9C60) — ASM not injected
+[11:15] SkillLog detours installed Caster→OnSpell hook=E90CFD7429 start=0x00D4E3C1
+[11:15] SkillLog detours installed Melee→OnMelee hook=E952FE7429 start=0x00D4E2C1
+[11:15] SkillLog procs caster=0x2A49E0D2 melee=0x2A49E118
+[11:15] SkillLog live=yes hits C/M=0/0
+[11:15] SkillLog live=no detours=on
+[11:15] SkillLog Respond armed â†’ OnSpell / OnMelee (live off until Fight/bot)
+[11:15] Skill bar cached (SkillLog responders armed, live OFF until you press the button)
+[11:15] SkillLog CasterSkillLogStart=0x00D4E3C1
+[11:15] SkillLog MeleeSkillLogStart=0x00D4E2C1
+[11:15] SkillLog CasterSkillLogProc=0x2A49E0D2
+[11:15] SkillLog MeleeSkillLogProc=0x2A49E118
+[11:15] SkillLog patterns OK=yes
+[11:15] SkillLog armed=yes live=no detours=on
+[11:15] SkillLog casterHook=E90CFD7429 procHead=2A50
+[11:15] SkillLog meleeHook=E952FE7429 procHead=2A50
+[11:15] SkillLog hits total=0 caster=0 melee=0
+[11:15] SkillLog probe=off armed=0
+[11:17] SkillLog live=yes detours=on
+[11:17] SkillLog live ON → OnSpell / OnMelee (hits=0)
+[11:17] SkillLog detours disarmed
+[11:18] Exemple_SkillLog_Respond — arms OnSpell/OnMelee; press SkillLog: ON to activate.
+[11:18] Mapping your skill bar
+[11:18] Rupts detected â€” SkillLog responders OnSpell / OnMelee
+[11:18] 0 pressure sprits on your skillbar
+[11:18] Mapping your skill bar - completed
+[11:18] SkillLog detours installed Caster→OnSpell hook=E90CFDD407 start=0x00D4E3C1
+[11:18] SkillLog detours installed Melee→OnMelee hook=E952FED407 start=0x00D4E2C1
+[11:18] SkillLog procs caster=0x08A9E0D2 melee=0x08A9E118
+[11:18] SkillLog live=yes hits C/M=0/0
+[11:18] SkillLog live=no detours=on
+[11:18] SkillLog Respond armed â†’ OnSpell / OnMelee (live off until Fight/bot)
+[11:18] Skill bar cached (SkillLog responders armed, live OFF until you press the button)
+[11:18] SkillLog CasterSkillLogStart=0x00D4E3C1
+[11:18] SkillLog MeleeSkillLogStart=0x00D4E2C1
+[11:18] SkillLog CasterSkillLogProc=0x08A9E0D2
+[11:18] SkillLog MeleeSkillLogProc=0x08A9E118
+[11:18] SkillLog patterns OK=yes
+[11:18] SkillLog armed=yes live=no detours=on
+[11:18] SkillLog casterHook=E90CFDD407 procHead=9C60
+[11:18] SkillLog meleeHook=E952FED407 procHead=9C60
+[11:18] SkillLog hits total=0 caster=0 melee=0
+[11:18] SkillLog probe=off armed=0
+[11:18] SkillLog live=yes detours=on
+[11:18] SkillLog live ON → OnSpell / OnMelee (hits=0)
+[11:24] SkillLog detours disarmed
+[11:36] Exemple_SkillLog_Respond — arms OnSpell/OnMelee; press SkillLog: ON to activate.
+[11:36] Mapping your skill bar
+[11:36] Rupts detected â€” SkillLog responders OnSpell / OnMelee
+[11:36] 0 pressure sprits on your skillbar
+[11:36] Mapping your skill bar - completed
+[11:36] SkillLog detours installed Caster→OnSpell hook=E90CFDD407 start=0x00D4E3C1
+[11:36] SkillLog detours installed Melee→OnMelee hook=E952FED407 start=0x00D4E2C1
+[11:36] SkillLog procs caster=0x08A9E0D2 melee=0x08A9E118
+[11:36] SkillLog live=yes hits C/M=0/0
+[11:36] SkillLog live=no detours=on
+[11:36] SkillLog Respond armed â†’ OnSpell / OnMelee (live off until Fight/bot)
+[11:36] Skill bar cached (SkillLog responders armed, live OFF until you press the button)
+[11:36] SkillLog CasterSkillLogStart=0x00D4E3C1
+[11:36] SkillLog MeleeSkillLogStart=0x00D4E2C1
+[11:36] SkillLog CasterSkillLogProc=0x08A9E0D2
+[11:36] SkillLog MeleeSkillLogProc=0x08A9E118
+[11:36] SkillLog patterns OK=yes
+[11:36] SkillLog armed=yes live=no detours=on
+[11:36] SkillLog casterHook=E90CFDD407 procHead=9C60
+[11:36] SkillLog meleeHook=E952FED407 procHead=9C60
+[11:36] SkillLog hits total=0 caster=0 melee=0
+[11:36] SkillLog probe=off armed=0
+[11:36] SkillLog responders → Caster=RuptEX Melee=RuptEX (detours kept)
+[11:36] SkillLog live=yes hits C/M=0/0
+[11:36] SkillLog live=yes detours=on
+[11:36] SkillLog live ON → OnSpell / OnMelee (hits=0)
+[11:37] SkillLog live=no detours=on
+[11:37] SkillLog live OFF (detours kept, hits=0)
+[11:37] SkillLog detours disarmed
+[11:45] Exemple_SkillLog_Respond — arms OnSpell/OnMelee; press SkillLog: ON to activate.
+[11:45] Mapping your skill bar
+[11:45] Rupts detected â€” SkillLog responders OnSpell / OnMelee
+[11:45] 0 pressure sprits on your skillbar
+[11:45] Mapping your skill bar - completed
+[11:45] SkillLog WARN: CasterSkillLogProc bytes=0150 (expected 9C60 pushfd/pushad) — ASM not injected
+[11:45] SkillLog WARN: MeleeSkillLogProc bytes=0150 (expected 9C60) — ASM not injected
+[11:45] SkillLog detours installed Caster→OnSpell hook=E90CFDEA00 start=0x00D4E3C1
+[11:45] SkillLog detours installed Melee→OnMelee hook=E952FEEA00 start=0x00D4E2C1
+[11:45] SkillLog procs caster=0x01BFE0D2 melee=0x01BFE118
+[11:45] SkillLog live=yes hits C/M=0/0
+[11:45] SkillLog live=no detours=on
+[11:45] SkillLog Respond armed â†’ OnSpell / OnMelee (live off until Fight/bot)
+[11:45] Skill bar cached (SkillLog responders armed, live OFF until you press the button)
+[11:45] SkillLog CasterSkillLogStart=0x00D4E3C1
+[11:45] SkillLog MeleeSkillLogStart=0x00D4E2C1
+[11:45] SkillLog CasterSkillLogProc=0x01BFE0D2
+[11:45] SkillLog MeleeSkillLogProc=0x01BFE118
+[11:45] SkillLog patterns OK=yes
+[11:45] SkillLog armed=yes live=no detours=on
+[11:45] SkillLog casterHook=E90CFDEA00 procHead=0150
+[11:45] SkillLog meleeHook=E952FEEA00 procHead=0150
+[11:45] SkillLog hits total=0 caster=0 melee=0
+[11:45] SkillLog probe=off armed=0
+[11:45] SkillLog WARN: CasterSkillLogProc bytes=0150 (expected 9C60 pushfd/pushad) — ASM not injected
+[11:45] SkillLog WARN: MeleeSkillLogProc bytes=0150 (expected 9C60) — ASM not injected
+[11:45] SkillLog responders → Caster=RuptEX Melee=RuptEX (detours kept)
+[11:45] SkillLog live=yes hits C/M=0/0
+[11:45] SkillLog live=yes detours=on
+[11:45] SkillLog live ON → OnSpell / OnMelee (hits=0)
+[11:45] SkillLog detours disarmed
+[11:46] Exemple_SkillLog_Respond — arms OnSpell/OnMelee; press SkillLog: ON to activate.
+[11:46] Mapping your skill bar
+[11:46] Rupts detected â€” SkillLog responders OnSpell / OnMelee
+[11:46] 0 pressure sprits on your skillbar
+[11:46] Mapping your skill bar - completed
+[11:46] SkillLog detours installed Caster→OnSpell hook=E90CFD5F09 start=0x00D4E3C1
+[11:46] SkillLog detours installed Melee→OnMelee hook=E952FE5F09 start=0x00D4E2C1
+[11:46] SkillLog procs caster=0x0A34E0D2 melee=0x0A34E118
+[11:46] SkillLog live=yes hits C/M=0/0
+[11:46] SkillLog live=no detours=on
+[11:46] SkillLog Respond armed â†’ OnSpell / OnMelee (live off until Fight/bot)
+[11:46] Skill bar cached (SkillLog responders armed, live OFF until you press the button)
+[11:46] SkillLog CasterSkillLogStart=0x00D4E3C1
+[11:46] SkillLog MeleeSkillLogStart=0x00D4E2C1
+[11:46] SkillLog CasterSkillLogProc=0x0A34E0D2
+[11:46] SkillLog MeleeSkillLogProc=0x0A34E118
+[11:46] SkillLog patterns OK=yes
+[11:46] SkillLog armed=yes live=no detours=on
+[11:46] SkillLog casterHook=E90CFD5F09 procHead=9C60
+[11:46] SkillLog meleeHook=E952FE5F09 procHead=9C60
+[11:46] SkillLog hits total=0 caster=0 melee=0
+[11:46] SkillLog probe=off armed=0
+[11:46] SkillLog responders → Caster=RuptEX Melee=RuptEX (detours kept)
+[11:46] SkillLog live=yes hits C/M=0/0
+[11:46] SkillLog live=yes detours=on
+[11:46] SkillLog live ON → OnSpell / OnMelee (hits=0)
+[11:46] SkillLog live=no detours=on
+[11:46] SkillLog live OFF (detours kept, hits=0)
+[11:50] SkillLog detours disarmed
+[11:50] Exemple_SkillLog_Respond — arms OnSpell/OnMelee; press SkillLog: ON to activate.
+[11:50] Mapping your skill bar
+[11:50] Rupts detected â€” SkillLog responders OnSpell / OnMelee
+[11:50] 0 pressure sprits on your skillbar
+[11:50] Mapping your skill bar - completed
+[11:50] SkillLog detours installed Caster→OnSpell hook=E90CFD5F09 start=0x00D4E3C1
+[11:50] SkillLog detours installed Melee→OnMelee hook=E952FE5F09 start=0x00D4E2C1
+[11:50] SkillLog procs caster=0x0A34E0D2 melee=0x0A34E118
+[11:50] SkillLog live=yes hits C/M=0/0
+[11:50] SkillLog live=no detours=on
+[11:50] SkillLog Respond armed â†’ OnSpell / OnMelee (live off until Fight/bot)
+[11:50] Skill bar cached — rupt slots=2 RuptEvent=yes
+[11:50] SkillLog responders → Caster=SkillLogProbeHit Melee=SkillLogProbeHit (detours kept)
+[11:50] SkillLog live=yes hits C/M=0/0
+[11:50] SkillLog live=yes detours=on
+[11:50] SkillLog live ON → OnSpell / OnMelee (hits=0)
+[11:50] SkillLog CasterSkillLogStart=0x00D4E3C1
+[11:50] SkillLog MeleeSkillLogStart=0x00D4E2C1
+[11:50] SkillLog CasterSkillLogProc=0x0A34E0D2
+[11:50] SkillLog MeleeSkillLogProc=0x0A34E118
+[11:50] SkillLog patterns OK=yes
+[11:50] SkillLog armed=yes live=yes detours=on
+[11:50] SkillLog casterHook=E90CFD5F09 procHead=9C60
+[11:50] SkillLog meleeHook=E952FE5F09 procHead=9C60
+[11:50] SkillLog hits total=0 caster=0 melee=0
+[11:50] SkillLog probe=off armed=0
+[11:50] Watch for 'HIT #' lines when an enemy casts. Dump after a cast: hits must increase.
+[11:50] SkillLog live=no detours=on
+[11:50] SkillLog live OFF (detours kept, hits=0)
+[11:55] SkillLog detours disarmed
+[11:56] Exemple_SkillLog_Respond — same Assembler as RuptBot; OnSpell fires with no extra handler.
+[11:57] Mapping your skill bar
+[11:57] Rupts detected â€” SkillLog responders OnSpell / OnMelee
+[11:57] 0 pressure sprits on your skillbar
+[11:57] Mapping your skill bar - completed
+[11:57] SkillLog detours installed Caster→OnSpell hook=E906FD5509 start=0x00D4E3C1
+[11:57] SkillLog detours installed Melee→OnMelee hook=E94CFE5509 start=0x00D4E2C1
+[11:57] SkillLog procs caster=0x0A2AE0CC melee=0x0A2AE112
+[11:57] SkillLog live=yes hits C/M=0/0
+[11:57] SkillLog live=no detours=on
+[11:57] SkillLog Respond armed â†’ OnSpell / OnMelee (live off until Fight/bot)
+[11:57] SkillLog live=yes detours=on
+[11:57] SkillLog live ON → OnSpell / OnMelee (hits=0)
+[11:57] SkillLog CasterSkillLogStart=0x00D4E3C1
+[11:57] SkillLog MeleeSkillLogStart=0x00D4E2C1
+[11:57] SkillLog CasterSkillLogProc=0x0A2AE0CC
+[11:57] SkillLog MeleeSkillLogProc=0x0A2AE112
+[11:57] SkillLog patterns OK=yes
+[11:57] SkillLog armed=yes live=yes detours=on
+[11:57] SkillLog casterHook=E906FD5509 procHead=9C60
+[11:57] SkillLog meleeHook=E94CFE5509 procHead=9C60
+[11:57] SkillLog hits total=0 caster=0 melee=0
+[11:57] SkillLog probe=off armed=0
+[11:57] SkillLog live=no detours=on
+[11:57] SkillLog live OFF (detours kept, hits=0)
+[12:00] SkillLog detours disarmed
+[12:07] Exemple_SkillLog_Respond — verbose HITs on; expect HIT lines on casts.
+[12:07] Mapping your skill bar
+[12:07] Rupts detected â€” SkillLog responders OnSpell / OnMelee
+[12:07] 0 pressure sprits on your skillbar
+[12:07] Mapping your skill bar - completed
+[12:07] SkillLog detours installed Caster→OnSpell hook=E906FDBF1B start=0x00D4E3C1
+[12:07] SkillLog detours installed Melee→OnMelee hook=E94CFEBF1B start=0x00D4E2C1
+[12:07] SkillLog procs caster=0x1C94E0CC melee=0x1C94E112
+[12:07] SkillLog live=yes hits C/M=0/0
+[12:07] SkillLog live=no detours=on
+[12:07] SkillLog Respond armed â†’ OnSpell / OnMelee (live off until Fight/bot)
+[12:07] ruptSlots=3 RuptEvent=yes ProtEvent=no
+[12:07] SkillLog live=yes detours=on
+[12:07] SkillLog live ON → OnSpell / OnMelee (hits=0)
+[12:07] SkillLog CasterSkillLogStart=0x00D4E3C1
+[12:07] SkillLog MeleeSkillLogStart=0x00D4E2C1
+[12:07] SkillLog CasterSkillLogProc=0x1C94E0CC
+[12:07] SkillLog MeleeSkillLogProc=0x1C94E112
+[12:07] SkillLog patterns OK=yes
+[12:07] SkillLog armed=yes live=yes detours=on
+[12:07] SkillLog casterHook=E906FDBF1B procHead=9C60
+[12:07] SkillLog meleeHook=E94CFEBF1B procHead=9C60
+[12:07] SkillLog hits total=0 caster=0 melee=0
+[12:07] SkillLog probe=off armed=0
+[12:07] Cast anything (you or enemy). You should see HIT #… lines. Dump if silent.
+[12:07] SkillLog live=no detours=on
+[12:07] SkillLog live OFF (detours kept, hits=0)
+[12:08] SkillLog detours disarmed
+[12:14] Exemple_SkillLog_Respond — verbose HITs on; expect HIT lines on casts.
+[12:14] Mapping your skill bar
+[12:14] Rupts detected â€” SkillLog responders OnSpell / OnMelee
+[12:14] 0 pressure sprits on your skillbar
+[12:14] Mapping your skill bar - completed
+[12:14] SkillLog detours installed Caster→OnSpell hook=E906FDE800 start=0x00D4E3C1
+[12:14] SkillLog detours installed Melee→OnMelee hook=E94CFEE800 start=0x00D4E2C1
+[12:14] SkillLog procs caster=0x01BDE0CC melee=0x01BDE112
+[12:14] SkillLog live=yes hits C/M=0/0
+[12:14] SkillLog live=no detours=on
+[12:14] SkillLog Respond armed â†’ OnSpell / OnMelee (live off until Fight/bot)
+[12:14] ruptSlots=3 RuptEvent=yes ProtEvent=no
+[12:14] SkillLog live=yes detours=on
+[12:14] SkillLog live ON → OnSpell / OnMelee (hits=0)
+[12:14] SkillLog CasterSkillLogStart=0x00D4E3C1
+[12:14] SkillLog MeleeSkillLogStart=0x00D4E2C1
+[12:14] SkillLog CasterSkillLogProc=0x01BDE0CC
+[12:14] SkillLog MeleeSkillLogProc=0x01BDE112
+[12:14] SkillLog patterns OK=yes
+[12:14] SkillLog armed=yes live=yes detours=on
+[12:14] SkillLog casterHook=E906FDE800 procHead=9C60
+[12:14] SkillLog meleeHook=E94CFEE800 procHead=9C60
+[12:14] SkillLog hits total=0 caster=0 melee=0
+[12:14] SkillLog probe=off armed=0
+[12:14] Cast anything (you or enemy). You should see HIT #… lines. Dump if silent.
+[12:15] SkillLog detours disarmed
+[12:22] Exemple_SkillLog_Respond — verbose HITs on; expect HIT lines on casts.
+[12:23] Mapping your skill bar
+[12:23] Rupts detected â€” SkillLog responders OnSpell / OnMelee
+[12:23] 0 pressure sprits on your skillbar
+[12:23] Mapping your skill bar - completed
+[12:23] SkillLog detours installed Caster→OnSpell hook=E906FD1519 start=0x00D4E3C1
+[12:23] SkillLog detours installed Melee→OnMelee hook=E94CFE1519 start=0x00D4E2C1
+[12:23] SkillLog procs caster=0x19EAE0CC melee=0x19EAE112
+[12:23] SkillLog live=yes hits C/M=0/0 hwnd=0x00BD0AC0
+[12:23] SkillLog live=no detours=on
+[12:23] SkillLog Respond armed â†’ OnSpell / OnMelee (live off until Fight/bot)
+[12:23] ruptSlots=3 RuptEvent=yes ProtEvent=no
+[12:23] SkillLog live=yes detours=on
+[12:23] SkillLog live ON → OnSpell / OnMelee (hits=0)
+[12:23] SkillLog CasterSkillLogStart=0x00D4E3C1
+[12:23] SkillLog MeleeSkillLogStart=0x00D4E2C1
+[12:23] SkillLog CasterSkillLogProc=0x19EAE0CC
+[12:23] SkillLog MeleeSkillLogProc=0x19EAE112
+[12:23] SkillLog patterns OK=yes
+[12:23] SkillLog armed=yes live=yes detours=on
+[12:23] SkillLog casterHook=E906FD1519 procHead=9C60
+[12:23] SkillLog meleeHook=E94CFE1519 procHead=9C60
+[12:23] SkillLog hits total=0 caster=0 melee=0
+[12:23] SkillLog probe=off armed=0
+[12:23] Cast anything (you or enemy). You should see HIT #… lines. Dump if silent.
+[12:23] HIT #1 [CASTER] Peace and Harmony caster=Master of Healing target=-
+[12:25] Exemple_SkillLog_Respond — verbose HITs on; expect HIT lines on casts.
+[12:26] Mapping your skill bar
+[12:26] Rupts detected â€” SkillLog responders OnSpell / OnMelee
+[12:26] 0 pressure sprits on your skillbar
+[12:26] Mapping your skill bar - completed
+[12:26] SkillLog detours installed Caster→OnSpell hook=E906FDC518 start=0x00D4E3C1
+[12:26] SkillLog detours installed Melee→OnMelee hook=E94CFEC518 start=0x00D4E2C1
+[12:26] SkillLog procs caster=0x199AE0CC melee=0x199AE112
+[12:26] SkillLog live=yes hits C/M=0/0 hwnd=0x000D029A
+[12:26] SkillLog live=no detours=on
+[12:26] SkillLog Respond armed â†’ OnSpell / OnMelee (live off until Fight/bot)
+[12:26] ruptSlots=3 RuptEvent=yes ProtEvent=no
+[12:26] SkillLog live=yes detours=on
+[12:26] SkillLog live ON → OnSpell / OnMelee (hits=0)
+[12:26] SkillLog CasterSkillLogStart=0x00D4E3C1
+[12:26] SkillLog MeleeSkillLogStart=0x00D4E2C1
+[12:26] SkillLog CasterSkillLogProc=0x199AE0CC
+[12:26] SkillLog MeleeSkillLogProc=0x199AE112
+[12:26] SkillLog patterns OK=yes
+[12:26] SkillLog armed=yes live=yes detours=on
+[12:26] SkillLog casterHook=E906FDC518 procHead=9C60
+[12:26] SkillLog meleeHook=E94CFEC518 procHead=9C60
+[12:26] SkillLog hits total=0 caster=0 melee=0
+[12:26] SkillLog probe=off armed=0
+[12:26] Cast anything (you or enemy). You should see HIT #… lines. Dump if silent.
+[12:26] SkillLog live=no detours=on
+[12:26] SkillLog live OFF (detours kept, hits=0)
+[12:27] SkillLog detours disarmed
+[12:32] Exemple_SkillLog_Respond — verbose HITs on; expect HIT lines on casts.
+[12:32] Mapping your skill bar
+[12:32] Rupts detected â€” SkillLog responders OnSpell / OnMelee
+[12:32] 0 pressure sprits on your skillbar
+[12:32] Mapping your skill bar - completed
+[12:32] SkillLog detours installed Caster→OnSpell hook=E906FDC000 start=0x00D4E3C1
+[12:32] SkillLog detours installed Melee→OnMelee hook=E94CFEC000 start=0x00D4E2C1
+[12:32] SkillLog procs caster=0x0195E0CC melee=0x0195E112
+[12:32] SkillLog live=yes hits C/M=0/0 hwnd=0x002A0788
+[12:32] SkillLog live=no detours=on
+[12:32] SkillLog Respond armed â†’ OnSpell / OnMelee (live off until Fight/bot)
+[12:32] ruptSlots=3 RuptEvent=yes ProtEvent=no
+[12:32] SkillLog live=yes detours=on
+[12:32] SkillLog live ON → OnSpell / OnMelee (hits=0)
+[12:32] SkillLog CasterSkillLogStart=0x00D4E3C1
+[12:32] SkillLog MeleeSkillLogStart=0x00D4E2C1
+[12:32] SkillLog CasterSkillLogProc=0x0195E0CC
+[12:32] SkillLog MeleeSkillLogProc=0x0195E112
+[12:32] SkillLog patterns OK=yes
+[12:32] SkillLog armed=yes live=yes detours=on
+[12:32] SkillLog casterHook=E906FDC000 procHead=9C60
+[12:32] SkillLog meleeHook=E94CFEC000 procHead=9C60
+[12:32] SkillLog hits total=0 caster=0 melee=0
+[12:32] SkillLog probe=off armed=0
+[12:32] Cast anything (you or enemy). You should see HIT #… lines. Dump if silent.
+[12:32] HIT #1 [CASTER] Elemental Attunement caster=Master of Lightning target=-
+[12:32] HIT #2 [CASTER] Air Attunement caster=Master of Lightning target=-
+[12:32] HIT #3 [CASTER] Aura of Restoration caster=Master of Lightning target=-
+[12:32] HIT #4 [CASTER] Life Transfer caster=Master of Hexes target=Vision Of Triumph
+[12:32] I am using Power Spike on Master of Hexes (success in 52ms)
+[12:32] HIT #5 [CASTER] Power Spike caster=Vision Of Triumph target=Master of Hexes
+[12:32] HIT #6 [CASTER] Parasitic Bond caster=Master of Hexes target=Vision Of Triumph
+[12:32] I am using Cry of Frustration on Master of Hexes (success in 49ms)
+[12:32] HIT #7 [CASTER] Cry of Frustration caster=Vision Of Triumph target=Master of Hexes
+[12:32] HIT #8 [CASTER] Ignorance caster=Master of Hexes target=Vision Of Triumph
+[12:32] HIT #9 [CASTER] Shatter Hex caster=Vision Of Triumph target=-
+[12:32] HIT #10 [CASTER] Backfire caster=Master of Hexes target=Vision Of Triumph
+[12:32] 92 Hurt me Shatter Hex
+[12:32] HIT #11 [CASTER] Overload caster=Vision Of Triumph target=Master of Hexes
+[12:32] HIT #12 [CASTER] Parasitic Bond caster=Master of Hexes target=Vision Of Triumph
+[12:32] HIT #13 [CASTER] Faintheartedness caster=Master of Hexes target=Vision Of Triumph
+[12:32] I am using Power Spike on Master of Hexes (success in 27ms)
+[12:32] HIT #14 [CASTER] Overload caster=Vision Of Triumph target=Master of Hexes
+[12:32] HIT #15 [CASTER] Faintheartedness caster=Master of Hexes target=Vision Of Triumph
+[12:32] I am using Power Spike on Master of Hexes (success in 13ms)
+[12:32] HIT #16 [CASTER] Power Spike caster=Vision Of Triumph target=Master of Hexes
+[12:33] HIT #17 [CASTER] Windborne Speed caster=Master of Winds target=Vision Of Triumph
+[12:33] HIT #18 [CASTER] Protective Spirit caster=Master of Enchantment target=-
+[12:33] I am using Power Spike on Master of Enchantment (success in 36ms)
+[12:33] HIT #19 [CASTER] Power Spike caster=Vision Of Triumph target=Master of Enchantment
+[12:33] HIT #20 [CASTER] Shielding Hands caster=Master of Enchantment target=-
+[12:33] I am using Cry of Frustration on Master of Enchantment (success in 20ms)
+[12:33] HIT #21 [CASTER] Cry of Frustration caster=Vision Of Triumph target=Master of Enchantment
+[12:33] HIT #22 [CASTER] Shatter Enchantment caster=Vision Of Triumph target=Master of Enchantment
+[12:33] HIT #23 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:33] HIT #24 [CASTER] Overload caster=Vision Of Triumph target=Master of Enchantment
+[12:33] HIT #25 [CASTER] Healing Breeze caster=Master of Enchantment target=-
+[12:33] HIT #26 [CASTER] Symbol of Wrath caster=Vision Of Triumph target=Master of Enchantment
+[12:33] HIT #27 [CASTER] Peace and Harmony caster=Master of Enchantment target=-
+[12:33] HIT #28 [CASTER] Ray of Judgment caster=Vision Of Triumph target=Master of Enchantment
+[12:33] HIT #29 [CASTER] Protective Spirit caster=Master of Enchantment target=-
+[12:33] HIT #30 [CASTER] Overload caster=Vision Of Triumph target=Master of Enchantment
+[12:33] HIT #31 [CASTER] Guardian caster=Master of Enchantment target=-
+[12:33] HIT #32 [CASTER] Unnatural Signet caster=Vision Of Triumph target=Master of Enchantment
+[12:33] HIT #33 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:33] HIT #34 [CASTER] Shielding Hands caster=Master of Enchantment target=-
+[12:33] I am using Power Spike on Master of Enchantment (success in 17ms)
+[12:33] HIT #35 [CASTER] Power Spike caster=Vision Of Triumph target=Master of Enchantment
+[12:33] HIT #36 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:33] HIT #37 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:33] I am using Cry of Frustration on Master of Enchantment (success in 12ms)
+[12:34] HIT #38 [CASTER] Shielding Hands caster=Master of Enchantment target=-
+[12:34] I am using Power Spike on Master of Enchantment (success in 21ms)
+[12:34] HIT #39 [CASTER] Power Spike caster=Vision Of Triumph target=Master of Enchantment
+[12:34] HIT #40 [CASTER] Watchful Spirit caster=Master of Enchantment target=-
+[12:34] I am using Cry of Frustration on Master of Enchantment (success in 11ms)
+[12:34] HIT #41 [CASTER] Cry of Frustration caster=Vision Of Triumph target=Master of Enchantment
+[12:34] HIT #42 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:34] HIT #43 [CASTER] Overload caster=Vision Of Triumph target=Master of Enchantment
+[12:34] HIT #44 [CASTER] Unnatural Signet caster=Vision Of Triumph target=Master of Enchantment
+[12:34] HIT #45 [CASTER] Symbol of Wrath caster=Vision Of Triumph target=Master of Enchantment
+[12:34] HIT #46 [CASTER] Peace and Harmony caster=Master of Enchantment target=-
+[12:34] HIT #47 [CASTER] Guardian caster=Master of Enchantment target=-
+[12:34] I am using Power Spike on Master of Enchantment (success in 19ms)
+[12:34] HIT #48 [CASTER] Power Spike caster=Vision Of Triumph target=Master of Enchantment
+[12:34] HIT #49 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:34] HIT #50 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:34] HIT #51 [CASTER] Overload caster=Vision Of Triumph target=Master of Enchantment
+[12:34] HIT #52 [CASTER] Unnatural Signet caster=Vision Of Triumph target=Master of Enchantment
+[12:34] HIT #53 [CASTER] Shielding Hands caster=Master of Enchantment target=-
+[12:34] I am using Overload on Master of Enchantment (success in 38ms)
+[12:34] HIT #54 [CASTER] Overload caster=Vision Of Triumph target=Master of Enchantment
+[12:34] HIT #55 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:34] I am using Power Spike on Master of Enchantment (success in 15ms)
+[12:34] HIT #56 [CASTER] Power Spike caster=Vision Of Triumph target=Master of Enchantment
+[12:34] HIT #57 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:34] HIT #58 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:34] I am using Power Spike on Master of Enchantment (success in 8ms)
+[12:34] HIT #59 [CASTER] Power Spike caster=Vision Of Triumph target=Master of Enchantment
+[12:34] HIT #60 [CASTER] Overload caster=Vision Of Triumph target=Master of Enchantment
+[12:34] HIT #61 [CASTER] Unnatural Signet caster=Vision Of Triumph target=Master of Enchantment
+[12:34] HIT #62 [CASTER] Peace and Harmony caster=Master of Enchantment target=-
+[12:34] HIT #63 [CASTER] Symbol of Wrath caster=Vision Of Triumph target=Master of Enchantment
+[12:34] HIT #64 [CASTER] Guardian caster=Master of Enchantment target=-
+[12:34] HIT #65 [CASTER] Shielding Hands caster=Master of Enchantment target=-
+[12:34] I am using Power Spike on Master of Enchantment (success in 15ms)
+[12:34] HIT #66 [CASTER] Power Spike caster=Vision Of Triumph target=Master of Enchantment
+[12:34] HIT #67 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:34] HIT #68 [CASTER] Unnatural Signet caster=Vision Of Triumph target=Master of Enchantment
+[12:34] HIT #69 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:34] HIT #70 [CASTER] Ray of Judgment caster=Vision Of Triumph target=Master of Enchantment
+[12:34] HIT #71 [CASTER] Protective Spirit caster=Master of Enchantment target=-
+[12:34] I am using Power Spike on Master of Enchantment (success in 37ms)
+[12:34] HIT #72 [CASTER] Power Spike caster=Vision Of Triumph target=Master of Enchantment
+[12:34] HIT #73 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:34] HIT #74 [CASTER] Peace and Harmony caster=Master of Enchantment target=-
+[12:34] HIT #75 [CASTER] Shatter Enchantment caster=Vision Of Triumph target=Master of Enchantment
+[12:35] HIT #76 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:35] HIT #77 [CASTER] Unnatural Signet caster=Vision Of Triumph target=Master of Enchantment
+[12:35] HIT #78 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:35] I am using Power Spike on Master of Enchantment (success in 12ms)
+[12:35] HIT #79 [CASTER] Power Spike caster=Vision Of Triumph target=Master of Enchantment
+[12:35] HIT #80 [CASTER] Overload caster=Vision Of Triumph target=Master of Enchantment
+[12:35] HIT #81 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:35] HIT #82 [CASTER] Shielding Hands caster=Master of Enchantment target=-
+[12:35] HIT #83 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:35] I am using Power Spike on Master of Enchantment (success in 27ms)
+[12:35] HIT #84 [CASTER] Power Spike caster=Vision Of Triumph target=Master of Enchantment
+[12:35] HIT #85 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:35] HIT #86 [CASTER] Shatter Enchantment caster=Vision Of Triumph target=Master of Enchantment
+[12:35] HIT #87 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:35] HIT #88 [CASTER] Unnatural Signet caster=Vision Of Triumph target=Master of Enchantment
+[12:35] HIT #89 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:35] I am using Power Spike on Master of Enchantment (success in 13ms)
+[12:35] HIT #90 [CASTER] Power Spike caster=Vision Of Triumph target=Master of Enchantment
+[12:35] HIT #91 [CASTER] Guardian caster=Master of Enchantment target=-
+[12:35] HIT #92 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:35] HIT #93 [CASTER] Shatter Enchantment caster=Vision Of Triumph target=Master of Enchantment
+[12:35] HIT #94 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:35] HIT #95 [CASTER] Unnatural Signet caster=Vision Of Triumph target=Master of Enchantment
+[12:35] HIT #96 [CASTER] Shielding Hands caster=Master of Enchantment target=-
+[12:35] I am using Power Spike on Master of Enchantment (success in 20ms)
+[12:35] HIT #97 [CASTER] Power Spike caster=Vision Of Triumph target=Master of Enchantment
+[12:35] HIT #98 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:35] HIT #99 [CASTER] Symbol of Wrath caster=Vision Of Triumph target=Master of Enchantment
+[12:35] HIT #100 [CASTER] Guardian caster=Master of Enchantment target=-
+[12:35] HIT #101 [CASTER] Unnatural Signet caster=Vision Of Triumph target=Master of Enchantment
+[12:35] HIT #102 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:35] HIT #103 [CASTER] Protective Spirit caster=Master of Enchantment target=-
+[12:35] I am using Power Spike on Master of Enchantment (success in 42ms)
+[12:35] HIT #104 [CASTER] Power Spike caster=Vision Of Triumph target=Master of Enchantment
+[12:35] HIT #105 [CASTER] Ray of Judgment caster=Vision Of Triumph target=Master of Enchantment
+[12:35] HIT #106 [CASTER] Shielding Hands caster=Master of Enchantment target=-
+[12:35] HIT #107 [CASTER] Overload caster=Vision Of Triumph target=Master of Enchantment
+[12:35] HIT #108 [CASTER] Unnatural Signet caster=Vision Of Triumph target=Master of Enchantment
+[12:35] HIT #109 [CASTER] Peace and Harmony caster=Master of Enchantment target=-
+[12:35] HIT #110 [CASTER] Guardian caster=Master of Enchantment target=-
+[12:35] I am using Power Spike on Master of Enchantment (success in 14ms)
+[12:35] HIT #111 [CASTER] Power Spike caster=Vision Of Triumph target=Master of Enchantment
+[12:36] HIT #112 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:36] HIT #113 [CASTER] Symbol of Wrath caster=Vision Of Triumph target=Master of Enchantment
+[12:36] HIT #114 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:36] HIT #115 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:36] I am using Power Spike on Master of Enchantment (success in 9ms)
+[12:36] HIT #116 [CASTER] Power Spike caster=Vision Of Triumph target=Master of Enchantment
+[12:36] HIT #117 [CASTER] Unnatural Signet caster=Vision Of Triumph target=Master of Enchantment
+[12:36] HIT #118 [CASTER] Overload caster=Vision Of Triumph target=Master of Enchantment
+[12:36] HIT #119 [CASTER] Peace and Harmony caster=Master of Enchantment target=-
+[12:36] HIT #120 [CASTER] Shielding Hands caster=Master of Enchantment target=-
+[12:36] HIT #121 [CASTER] Ray of Judgment caster=Vision Of Triumph target=Master of Enchantment
+[12:36] HIT #122 [CASTER] Guardian caster=Master of Enchantment target=-
+[12:36] I am using Power Spike on Master of Enchantment (success in 19ms)
+[12:36] HIT #123 [CASTER] Power Spike caster=Vision Of Triumph target=Master of Enchantment
+[12:36] HIT #124 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:36] HIT #125 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:36] I am using Power Spike on Master of Enchantment (success in 12ms)
+[12:36] HIT #126 [CASTER] Power Spike caster=Vision Of Triumph target=Master of Enchantment
+[12:36] HIT #127 [CASTER] Unnatural Signet caster=Vision Of Triumph target=Master of Enchantment
+[12:36] HIT #128 [CASTER] Reversal of Fortune caster=Master of Enchantment target=-
+[12:36] HIT #129 [CASTER] Shielding Hands caster=Master of Enchantment target=-
+[12:36] I am using Power Spike on Master of Enchantment (success in 15ms)
+[12:36] HIT #130 [CASTER] Power Spike caster=Vision Of Triumph target=Master of Enchantment

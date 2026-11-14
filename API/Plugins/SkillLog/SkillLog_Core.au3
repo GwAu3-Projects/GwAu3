@@ -12,6 +12,8 @@ Global $g_i_SkillLogHits = 0
 ; Detours stay installed; $g_b_SkillLogLive gates callbacks (Fight on/off without re-patch).
 Global $g_b_SkillLogLive = False
 Global $g_b_SkillLogDetoursOn = False
+; Example / debug: Out every valid HIT (RuptBot keeps this False — interrupt log is enough).
+Global $g_b_SkillLogVerboseHits = False
 
 Global $g_d_SkillLogStruct = DllStructCreate("dword;dword;dword;float")
 Global $g_p_SkillLogStruct = DllStructGetPtr($g_d_SkillLogStruct)
@@ -313,14 +315,24 @@ EndFunc   ;==>SkillLog_Scanner
 Func SkillLog_InitializeResult()
 	$g_h_SkillLogGUI = GUICreate("GwAu3SkillLog")
 	GUIRegisterMsg($GC_I_SKILLLOG_WM, "SkillLog_EventCallback")
+	SkillLog_EnsureCallbackHwnd()
+	Log_Info("SkillLog GUI=" & $g_h_SkillLogGUI & " handleSlot=" & Memory_GetValue("SkillLogCallbackHandle"), "SkillLog_InitializeResult", $g_h_EditText)
+EndFunc   ;==>SkillLog_InitializeResult
+
+; PostMessage target must stay valid after Cmd realloc (local Assembler always reallocs).
+Func SkillLog_EnsureCallbackHwnd()
+	If $g_h_SkillLogGUI = 0 Or $g_h_SkillLogGUI = "" Then
+		$g_h_SkillLogGUI = GUICreate("GwAu3SkillLog")
+		GUIRegisterMsg($GC_I_SKILLLOG_WM, "SkillLog_EventCallback")
+	EndIf
 	Local $pHandle = Memory_GetValue("SkillLogCallbackHandle")
 	If $pHandle = -1 Or $pHandle = 0 Then
-		Log_Info("SkillLogCallbackHandle missing — ASM data not present", "SkillLog_InitializeResult", $g_h_EditText)
-		Return
+		Out("SkillLogCallbackHandle missing — ASM data not present")
+		Return False
 	EndIf
 	Memory_Write($pHandle, $g_h_SkillLogGUI)
-	Log_Info("SkillLog GUI=" & $g_h_SkillLogGUI & " handleSlot=" & $pHandle, "SkillLog_InitializeResult", $g_h_EditText)
-EndFunc   ;==>SkillLog_InitializeResult
+	Return True
+EndFunc   ;==>SkillLog_EnsureCallbackHwnd
 
 Func Assembler_CreateSkillLogData()
 	_("SkillLogCallbackHandle/4")
@@ -516,8 +528,9 @@ Func SkillLog_Respond($a_s_OnSpell = "", $a_s_OnMelee = "")
 		Out("SkillLog responders → Caster=" & $a_s_OnSpell & " Melee=" & $a_s_OnMelee & " (detours kept)")
 	EndIf
 
+	SkillLog_EnsureCallbackHwnd()
 	$g_b_SkillLogLive = True
-	Out("SkillLog live=yes hits C/M=" & $g_i_SkillLogHitsCaster & "/" & $g_i_SkillLogHitsMelee)
+	Out("SkillLog live=yes hits C/M=" & $g_i_SkillLogHitsCaster & "/" & $g_i_SkillLogHitsMelee & " hwnd=" & $g_h_SkillLogGUI)
 	Return True
 EndFunc   ;==>SkillLog_Respond
 
@@ -751,15 +764,21 @@ Func SkillLog_EventCallback($hWnd, $msg, $wparam, $lparam)
 			Else
 				$g_i_SkillLogHitsCaster += 1
 			EndIf
-			; Probe-only chatter; normal live hits stay quiet (interrupt logs live in the callback).
-			If $g_b_SkillLogProbe Then
+			; Probe always logs; verbose flag for Exemple / debug (RuptBot leaves it off).
+			If $g_b_SkillLogProbe Or $g_b_SkillLogVerboseHits Then
 				Out("HIT #" & $g_i_SkillLogHits & " [" & $sSrc & "] " & $sSkill & " caster=" & $sCaster & " target=" & $sTarget)
-				SkillLog_ProbeLock()
+				If $g_b_SkillLogVerboseHits And $g_i_SkillLogHits = 1 Then Beep(750, 120)
 			EndIf
+			If $g_b_SkillLogProbe Then SkillLog_ProbeLock()
 
 			Local $sCb = $bMelee ? $g_s_SkillMeleeActivate : $g_s_SkillActivate
 			If $sCb = "" Then $sCb = $bMelee ? $g_s_SkillActivate : $g_s_SkillMeleeActivate
-			If $sCb <> "" Then Call($sCb, $iCaster, $iTarget, $iSkill, $fAct)
+			If $sCb <> "" Then
+				Call($sCb, $iCaster, $iTarget, $iSkill, $fAct)
+				If @error And $g_b_SkillLogVerboseHits Then Out("SkillLog Call(" & $sCb & ") failed @error=" & @error)
+			ElseIf $g_b_SkillLogVerboseHits Then
+				Out("SkillLog HIT with no responder bound")
+			EndIf
 	EndSwitch
 	Return 0
 EndFunc   ;==>SkillLog_EventCallback

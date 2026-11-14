@@ -26,9 +26,13 @@ Global $aSkillRange
 Global $Summon_Spirits
 Global $PressureSpiritSkills = 0
 ; Our cast clock: slot + start time. Durations from $SkillBarCache (FC on activation only).
+; OnSpell / RuptEX both use these — must live here (bots must not rely on declaring them).
 Global $MySkillSlot = 0			; bar slot of the skill we last started (0 = none)
 Global $MyTargetID = 0			; target at cast start (cancel / context)
-Global $AftercastTimer = 501	; TimerInit() when that cast started
+Global $MySkillID = 0			; skill ID we last started
+Global $MyActivation = 0		; our activation ms (aftercast gate in OnSpell)
+Global $MyAftercast = 0			; our aftercast ms
+Global $AftercastTimer = 501	; TimerInit() when that cast started (501 = never)
 Global $MysticHealingArray[1][3]
 Global $HeroHeals[0][3]
 Global $HeroHexRemoval[0][3]
@@ -898,19 +902,21 @@ Func ESW_RuptWouldLandOnRow($aSkillSlot, $iRow)
 	Local $iAct = $EnemySkillWatch[$iRow][$ESW_ACTIVATION]
 	If $iAct <= 0 Then Return False
 	Local $iCaster = $EnemySkillWatch[$iRow][$ESW_AGENT]
-	If $iCaster = 0 Or Not ESW_IsCastPose($iCaster) Then Return False
+	If $iCaster = 0 Then Return False
 
 	Local $iElapsed = TimerDiff($EnemySkillWatch[$iRow][$ESW_START])
 	If $iElapsed >= $iAct Then Return False
 
 	Local $iLand = GetAdjustedActivation($aSkillSlot, $iCaster)
-	; Enemy cast shorter/equal to our land time (typical 1/4s spells): interrupt immediately.
+	; SkillLog fires at cast start — pose often not up yet. Short casts: no pose required.
 	If $iAct <= 500 Or $iAct <= $iLand + $ESW_POLL_SLACK_MS Then Return True
+
+	; Longer casts: wait for pose + land window (late-hit).
+	If Not ESW_IsCastPose($iCaster) Then Return False
 
 	Local $iRemain = $iAct - $iElapsed - $ESW_POLL_SLACK_MS
 	If $iRemain <= $iLand Then Return False
 
-	; Long casts only: delay until our hit falls in the last TAIL ms.
 	If $iAct > $ESW_ZERO_WAIT_ACT Then
 		If $iElapsed + $iLand < $iAct - $ESW_RUPT_TAIL_MS Then Return False
 	EndIf
@@ -1438,34 +1444,63 @@ EndFunc
 ; Cast detect = SkillLog. Immediate landable rupt here; late-hit / strip after land = Listen drain in Fight.
 ; $aCastStart = TimerInit() from when we first saw this cast (for remaining-time math).
 Func OnSpell($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart = 0, $aAggroRange = 1320)
+	#forceref $aActivation
 	$RuptTimer = TimerInit()
 	If $aCastStart = 0 Then $aCastStart = $RuptTimer
-	If Map_GetInstanceInfo("Type") <> $Map_Explorable Or Agent_GetAgentInfo(-2, "IsDead") Or Agent_GetAgentInfo(-2, "IsKnocked") Then Return 0
+	If Map_GetInstanceInfo("Type") <> $GC_I_MAP_TYPE_EXPLORABLE Or Agent_GetAgentInfo(-2, "IsDead") Or Agent_GetAgentInfo(-2, "IsKnocked") Then Return 0
 
-	; Feed ESW pool (rupt + Shame/Guilt staging) from SkillLog â€” real target when present.
-	If Agent_GetAgentInfo($aCasterID, "Allegiance") = 3 Then
-		EnemySkillWatch_Note($aCasterID, $aSkillID, $aTargetID)
-		; Â¼s / already-landable: fire now (GetBestRupt). Long casts wait for Fight/UseSkills Listen drain.
-		If OurActivationBusyMs() <= 0 And Not Agent_GetAgentInfo(-2, "IsCasting") Then
-			Local $iRupt = Listen_TryRupt($aAggroRange)
-			If $iRupt > 0 Then Return 1
-		EndIf
-	EndIf
+	Local $iMyID = Agent_GetMyID()
 
-	; Cancel our cast if a hard rupt is coming at us and we still have time.
-	If IsHardRuptSkill($aSkillID) And $aTargetID = Agent_GetMyID() Then
-		Out($aCasterID & " is interrupting my " & Skill_NameFromID(OurSkillID()))
-		Local $lTimeToRupt = TimeToRupt($aSkillID, $aCasterID, $aTargetID)
-		If $lTimeToRupt > TimerDiff($AftercastTimer) Then Return 0
-		If OurSkillActivationMs() > 250 Then CancelAction()
+	; Self cast — arm aftercast clock (classic SpellActivation / RuptEX Case 1).
+	If Number($aCasterID) = Number($iMyID) Then
+		$MyActivation = Skill_GetMyActivationTime($aSkillID, $aTargetID)
+		$MyAftercast = Skill_GetSkillInfo($aSkillID, "Aftercast") * 750
+		$MySkillID = $aSkillID
+		$MyTargetID = $aTargetID
 		$AftercastTimer = TimerInit()
 		Return 0
 	EndIf
 
-	; Activation busy only (same as CanCast) so aftercast does not block strip/hex react.
-	If OurActivationBusyMs() > 0 Or Agent_GetAgentInfo(-2, "IsCasting") Then Return 0
+	; Cancel our cast if a hard rupt is coming at us (before busy gate).
+	If IsHardRuptSkill($aSkillID) And Number($aTargetID) = Number($iMyID) Then
+		Out($aCasterID & " is interrupting my " & Skill_NameFromID(OurSkillID()))
+		Local $lEnemyRuptMs = Number(Skill_GetSkillInfo($aSkillID, "Activation")) * 1000
+		If $lEnemyRuptMs <= 0 Then $lEnemyRuptMs = 500
+		If $lEnemyRuptMs > TimerDiff($AftercastTimer) Then Return 0
+		If $MyActivation > 250 Or OurSkillActivationMs() > 250 Then CancelAction()
+		$AftercastTimer = TimerInit()
+		Return 0
+	EndIf
 
-	;~ 	Enchant removal Ã¢â‚¬â€ only when we see an enchantment being cast
+	; Feed ESW for strip / Shame-Guilt (Listen drains those). Interrupt fires here.
+	If Agent_GetAgentInfo($aCasterID, "Allegiance") = 3 Then
+		EnemySkillWatch_Note($aCasterID, $aSkillID, $aTargetID)
+	EndIf
+
+	If Agent_GetAgentInfo(-2, "IsCasting") Or OurActivationBusyMs() > 0 Then Return 0
+
+	; Classic Logic: handler interrupts immediately (no short-only / Listen dependency).
+	If $RuptEventSystem And Agent_GetAgentInfo($aCasterID, "Allegiance") = 3 Then
+		; Skip aftercast gate until we have actually started a cast (501 = never).
+		If $AftercastTimer <> 501 And $MyActivation > 0 And TimerDiff($AftercastTimer) < $MyActivation Then Return 0
+		Local $iRuptSlot = GetBestRupt($aSkillID, $aCasterID, $aAggroRange)
+		If $iRuptSlot > 0 And Agent_GetDistance($aCasterID) < 1200 And CanCast($iRuptSlot) Then
+			Local $bOk = Skill_UseSkill($iRuptSlot, $aCasterID)
+			LogMyInterrupt($iRuptSlot, $aCasterID, $bOk, TimerDiff($aCastStart))
+			If $bOk Then
+				If $SkillBarCache[$iRuptSlot][$all] = $GC_I_SKILL_ID_POWER_LEECH Then
+					Local $iEther = $SkillbarSlot[$GC_I_SKILL_ID_ETHER_PHANTOM]
+					If $iEther > 0 And Skill_GetSkillbarInfo($iEther, "IsRecharged") Then
+						Sleep(50)
+						Skill_UseSkill($iEther, $aCasterID)
+					EndIf
+				EndIf
+				Return 1
+			EndIf
+		EndIf
+	EndIf
+
+	; Enchant removal — only when we see an enchantment being cast
 	If IsEnchantmentSkill($aSkillID) Or Skill_GetSkillInfo($aSkillID, "SkillType") = $Enchantment Then
 		For $i = 1 To 8
 			If $SkillBarCache[$i][$enchantremove] = "" Then ContinueLoop
@@ -1683,13 +1718,21 @@ EndFunc   ;==>OnSpell
 Func OnMelee($aCasterID, $aTargetID, $aSkillID, $lActivation, $aCastStart = 0, $aAggroRange = 1320)
 	$RuptTimer = TimerInit()
 	If $aCastStart = 0 Then $aCastStart = $RuptTimer
-	If Map_GetInstanceInfo("Type") <> $Map_Explorable Or Agent_GetAgentInfo(-2, "IsDead") Or Agent_GetAgentInfo(-2, "IsKnocked") Then Return 0
+	If Map_GetInstanceInfo("Type") <> $GC_I_MAP_TYPE_EXPLORABLE Or Agent_GetAgentInfo(-2, "IsDead") Or Agent_GetAgentInfo(-2, "IsKnocked") Then Return 0
 
 	If Agent_GetAgentInfo($aCasterID, "Allegiance") = 3 Then
 		EnemySkillWatch_Note($aCasterID, $aSkillID, $aTargetID)
 		If OurActivationBusyMs() <= 0 And Not Agent_GetAgentInfo(-2, "IsCasting") Then
-			Local $iRupt = Listen_TryRupt($aAggroRange)
-			If $iRupt > 0 Then Return 1
+			Local $iRuptSlot = GetBestRupt($aSkillID, $aCasterID, $aAggroRange)
+			If $iRuptSlot > 0 Then
+				Local $iEnemyAct = Number(Skill_GetSkillInfo($aSkillID, "Activation")) * 1000
+				Local $iLand = GetAdjustedActivation($iRuptSlot, $aCasterID)
+				If $iEnemyAct <= 250 Or $iEnemyAct <= $iLand + 50 Then
+					Local $bOk = Skill_TryUseSkill($iRuptSlot, $aCasterID, False, 0)
+					LogMyInterrupt($iRuptSlot, $aCasterID, $bOk, TimerDiff($aCastStart))
+					If $bOk Then Return 1
+				EndIf
+			EndIf
 		EndIf
 	EndIf
 
