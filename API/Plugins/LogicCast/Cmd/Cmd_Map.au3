@@ -3,7 +3,9 @@
 
 Func WaitMapLoading($aMapID = -1, $aTimeout = 30000, $aWaitAgents = True)
 	If $aMapID = 0 Then $aMapID = -1
-	Return Map_WaitMapLoading($aMapID, -1, $aTimeout)
+	Local $bOk = Map_WaitMapLoading($aMapID, -1, $aTimeout)
+	If $bOk Then EnsureSkillBarCache()
+	Return $bOk
 EndFunc   ;==>WaitMapLoading
 
 Func GetInstanceUpTime()

@@ -16,6 +16,7 @@ Global Const $ESW_STRIP_NONE = 0
 Global Const $ESW_STRIP_ENCHANT = 1
 Global Const $ESW_STRIP_HEX = 2
 Global $SkillBarCache[9][26]
+Global $SkillBarCacheMapID = -1
 Global $Skillbar[8] = [1, 2, 3, 4, 5, 6, 7, 8]
 Global $RuptSlots[9]
 Global $ProtSlots[9]
@@ -178,9 +179,47 @@ Func CacheSkillBar()
 	; _ArrayDisplay($SkillBarCache)
 	; _ArrayDisplay($RuptSlots)
 
+	$SkillBarCacheMapID = Map_GetMapID()
 	Return True
 EndFunc   ;==>CacheSkillBar
 
+; True if map is flagged PvP (Arenas, AB, GvG, HA, etc.).
+Func Map_IsPvPMap($aMapID = -1)
+	If $aMapID < 0 Then $aMapID = Map_GetMapID()
+	If $aMapID <= 0 Then Return False
+	If Map_GetAreaInfo($aMapID, "IsPvP") Then Return True
+	; Fallback: current area region types that are PvP when area flags are missing
+	If $aMapID = Map_GetMapID() Then
+		Switch Map_GetCurrentAreaInfo("RegionType")
+			Case $GC_I_MAP_REGIONTYPE_AllianceBattle, $GC_I_MAP_REGIONTYPE_Arena, _
+				$GC_I_MAP_REGIONTYPE_GuildBattleArea, $GC_I_MAP_REGIONTYPE_CompetitiveMission, _
+				$GC_I_MAP_REGIONTYPE_ZaishenBattle, $GC_I_MAP_REGIONTYPE_HeroesAscent, _
+				$GC_I_MAP_REGIONTYPE_HeroBattleOutpost, $GC_I_MAP_REGIONTYPE_HeroBattleArea
+				Return True
+		EndSwitch
+	EndIf
+	Return False
+EndFunc
+
+; Recache on PvP map when map changed or bar skill IDs no longer match cache.
+Func EnsureSkillBarCache()
+	If Map_GetInstanceInfo("Type") = $GC_I_MAP_TYPE_LOADING Then Return False
+	If Not Map_IsPvPMap() Then Return False
+	Local $lMapID = Map_GetMapID()
+	Local $bStale = ($SkillBarCacheMapID <> $lMapID)
+	If Not $bStale Then
+		For $i = 1 To 8
+			If Number($SkillBarCache[$i][$all]) <> Number(Skill_GetSkillbarInfo($i, "SkillID")) Then
+				$bStale = True
+				ExitLoop
+			EndIf
+		Next
+	EndIf
+	If Not $bStale Then Return False
+	Out("PvP map detected / skill bar changed — refreshing CacheSkillBar (map " & $lMapID & ")")
+	CacheSkillBar()
+	Return True
+EndFunc
 
 ; Enemy skill watch. No cast event: allegiance 3 + cast pose + Skill.
 ; The skill target is not stored.
@@ -258,6 +297,7 @@ EndFunc   ;==>Fight
 ;~ $skilltype filters the non-counter bar pass ($all skips columns owned by Listen).
 ; $aMaxDistanceToXY = 5000 (default) disables the leash; any other value is checked once after a full bar pass.
 Func UseSkills($x, $y, $aAggroRange = 1320, $skilltype = $all, $aMaxDistanceToXY = 5000, $aAgent = 0)
+	EnsureSkillBarCache()
 	If Map_GetInstanceInfo("Type") = $GC_I_MAP_TYPE_EXPLORABLE Then EnemySkillWatch_Poll($aAggroRange + 200)
 	If Agent_GetAgentInfo(-2, "IsDead") Or Map_GetInstanceInfo("Type") == 2 Then Return False
 	If $BestTarget <> 0 And Agent_GetAgentInfo($BestTarget, "Allegiance") = 3 And Agent_GetAgentInfo($BestTarget, "IsDead") Then $BestTarget = 0
@@ -303,6 +343,7 @@ Func ListenToSkillsAndCounter($aAggroRange = 1320)
 	SetExtended(0)
 	If Map_GetInstanceInfo("Type") <> $GC_I_MAP_TYPE_EXPLORABLE Then Return False
 	If Agent_GetAgentInfo(-2, "IsDead") Or Agent_GetAgentInfo(-2, "IsKnocked") Then Return False
+	EnsureSkillBarCache()
 
 	EnemySkillWatch_Poll($aAggroRange + 200)
 	ESW_RefreshRuptLandTargets($aAggroRange)
