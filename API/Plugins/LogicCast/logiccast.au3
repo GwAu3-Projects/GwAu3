@@ -431,7 +431,7 @@ Func ListenToSkillsAndCounter($aAggroRange = 1320)
 		Return True
 	EndIf
 
-	If ESW_AnyStagedRuptWaiting() Then Return True
+	If ESW_AnyStagedRuptWaiting($aAggroRange) Then Return True
 	Return False
 EndFunc   ;==>ListenToSkillsAndCounter
 
@@ -456,11 +456,16 @@ Func ESW_AnyStagedRuptLandable()
 	Return False
 EndFunc
 
-Func ESW_AnyStagedRuptWaiting()
-	Local $r
+Func ESW_AnyStagedRuptWaiting($aAggroRange = 1320)
+	Local $r, $iCaster
 	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
 		If Not $EnemySkillWatch[$r][$ESW_CASTING] Then ContinueLoop
-		If Number($EnemySkillWatch[$r][$ESW_RUPT_SLOT]) > 0 And Number($EnemySkillWatch[$r][$ESW_RUPT_TARGET]) = 0 Then Return True
+		If Number($EnemySkillWatch[$r][$ESW_RUPT_SLOT]) <= 0 Then ContinueLoop
+		If Number($EnemySkillWatch[$r][$ESW_RUPT_TARGET]) <> 0 Then ContinueLoop
+		; Waiting for land window only — out-of-range must not keep Fight's Listen loop alive.
+		$iCaster = Number($EnemySkillWatch[$r][$ESW_AGENT])
+		If $iCaster = 0 Or Agent_GetDistance($iCaster) > $aAggroRange Then ContinueLoop
+		Return True
 	Next
 	Return False
 EndFunc
@@ -769,7 +774,7 @@ Func EnemySkillWatch_Reset()
 	$ESW_LastPoll = 0
 EndFunc
 
-Func EnemySkillWatch_Note($aCasterID, $aSkillID)
+Func EnemySkillWatch_Note($aCasterID, $aSkillID, $aAggroRange = 1320)
 	$aCasterID = Number($aCasterID)
 	$aSkillID = Number($aSkillID)
 	If $aCasterID <= 0 Or $aSkillID <= 0 Then Return
@@ -814,7 +819,7 @@ Func EnemySkillWatch_Note($aCasterID, $aSkillID)
 		$EnemySkillWatch[$iRow][$ESW_LANDED] = 0
 	EndIf
 	; Stage counters as soon as the skill is logged (order = arrival order).
-	ESW_StageRow($iRow, 1320)
+	ESW_StageRow($iRow, $aAggroRange)
 EndFunc
 
 ; Clear staged counter fields for one pool row.
@@ -872,13 +877,14 @@ EndFunc
 
 ; True if this rupt slot should fire on the row's caster right now.
 ; 250ms (and any cast shorter than our land time): fire on sight — remain>land is impossible.
-Func ESW_RuptWouldLandOnRow($aSkillSlot, $iRow)
+Func ESW_RuptWouldLandOnRow($aSkillSlot, $iRow, $aAggroRange = 1320)
 	If $aSkillSlot < 1 Or $iRow < 1 Then Return False
 	If Not $EnemySkillWatch[$iRow][$ESW_CASTING] Then Return False
 	Local $iAct = $EnemySkillWatch[$iRow][$ESW_ACTIVATION]
 	If $iAct <= 0 Then Return False
 	Local $iCaster = $EnemySkillWatch[$iRow][$ESW_AGENT]
-	If $iCaster = 0 Or Not ESW_IsCastPose($iCaster) Then Return False
+	If $iCaster = 0 Or Agent_GetDistance($iCaster) > $aAggroRange Then Return False
+	If Not ESW_IsCastPose($iCaster) Then Return False
 
 	Local $iElapsed = TimerDiff($EnemySkillWatch[$iRow][$ESW_START])
 	If $iElapsed >= $iAct Then Return False
@@ -905,10 +911,12 @@ Func ESW_RefreshRuptLandTargets($aAggroRange = 1320)
 		If $iSlot < 1 Then ContinueLoop
 		$iCaster = Number($EnemySkillWatch[$r][$ESW_AGENT])
 		If $iCaster = 0 Or Agent_GetDistance($iCaster) > $aAggroRange Then
+			; Drop the staged rupt queue entry entirely when caster is gone / out of range.
+			$EnemySkillWatch[$r][$ESW_RUPT_SLOT] = 0
 			$EnemySkillWatch[$r][$ESW_RUPT_TARGET] = 0
 			ContinueLoop
 		EndIf
-		If ESW_RuptWouldLandOnRow($iSlot, $r) Then
+		If ESW_RuptWouldLandOnRow($iSlot, $r, $aAggroRange) Then
 			$EnemySkillWatch[$r][$ESW_RUPT_TARGET] = $iCaster
 		Else
 			$EnemySkillWatch[$r][$ESW_RUPT_TARGET] = 0
@@ -933,7 +941,7 @@ Func ESW_StageRow($iRow, $aAggroRange = 1320)
 		Local $iRuptSlot = GetBestRupt($iSkill, $iCaster, $aAggroRange)
 		If $iRuptSlot > 0 Then
 			$EnemySkillWatch[$iRow][$ESW_RUPT_SLOT] = $iRuptSlot
-			If ESW_RuptWouldLandOnRow($iRuptSlot, $iRow) Then
+			If ESW_RuptWouldLandOnRow($iRuptSlot, $iRow, $aAggroRange) Then
 				$EnemySkillWatch[$iRow][$ESW_RUPT_TARGET] = $iCaster
 			Else
 				$EnemySkillWatch[$iRow][$ESW_RUPT_TARGET] = 0
@@ -1153,7 +1161,7 @@ Func EnemySkillWatch_Poll($aRange = 1320)
 		$iSkill = Number(Agent_GetAgentInfo($iAgent, "Skill"))
 		If $iSkill = 0 Then ContinueLoop
 		$sSeen &= $iAgent & ","
-		EnemySkillWatch_Note($iAgent, $iSkill)
+		EnemySkillWatch_Note($iAgent, $iSkill, $aRange)
 	Next
 
 	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
