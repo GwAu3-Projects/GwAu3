@@ -780,6 +780,7 @@ Func Agent_GetFilteredAgentArray($aMode = 0, $aType = 0xDB, $aAllegiance = 3, $a
 				If Not $lTemp Then ContinueLoop
 				If Agent_GetAgentInfo($lTemp, "Type") <> $aType Then ContinueLoop
 				If Agent_GetAgentInfo($lTemp, "Allegiance") <> $aAllegiance Then ContinueLoop
+				If $aAllegiance = 3 And (Agent_GetNpcInfoByAgentID($lTemp, "IsMinion") Or Agent_GetNpcInfoByAgentID($lTemp, "IsSpirit")) Then ContinueLoop
 				$lAgentArray[0] += 1
 				$lAgentArray[$lAgentArray[0]] = $lTemp
 			Next
@@ -789,7 +790,7 @@ Func Agent_GetFilteredAgentArray($aMode = 0, $aType = 0xDB, $aAllegiance = 3, $a
 				If Not $lTemp Then ContinueLoop
 				If Agent_GetAgentInfo($lTemp, "Type") <> $aType Then ContinueLoop
 				If Agent_GetAgentInfo($lTemp, "Allegiance") <> $aAllegiance Then ContinueLoop
-				If $aAllegiance = 3 And (Agent_GetAgentInfo($lTemp, "IsMinion") Or Agent_GetAgentInfo($lTemp, "IsSpirit")) Then ContinueLoop
+				If $aAllegiance = 3 And (Agent_GetNpcInfoByAgentID($lTemp, "IsMinion") Or Agent_GetNpcInfoByAgentID($lTemp, "IsSpirit")) Then ContinueLoop
 				If Agent_GetAgentInfo($lTemp, "IsDead") Then ContinueLoop
 				If Agent_GetDistanceToXY($x, $y, $lTemp) > $aRange Then ContinueLoop
 
@@ -804,7 +805,7 @@ Func Agent_GetFilteredAgentArray($aMode = 0, $aType = 0xDB, $aAllegiance = 3, $a
 				If Agent_GetAgentInfo($lTemp, "Allegiance") <> $aAllegiance Then ContinueLoop
 				If $aEffect <> 0x0010 And Agent_GetAgentInfo($lTemp, "IsDead") Then ContinueLoop
 				If $aEffect <> 0 And Not BitAND(Agent_GetAgentInfo($lTemp, "AttributeFlag"), $aEffect) Then ContinueLoop
-				If $aAllegiance = 3 And (Agent_GetAgentInfo($lTemp, "IsMinion") Or Agent_GetAgentInfo($lTemp, "IsSpirit")) Then ContinueLoop
+				If $aAllegiance = 3 And (Agent_GetNpcInfoByAgentID($lTemp, "IsMinion") Or Agent_GetNpcInfoByAgentID($lTemp, "IsSpirit")) Then ContinueLoop
 				If Agent_GetDistanceToXY($x, $y, $lTemp) > $aRange Then ContinueLoop
 
 				$lAgentArray[0] += 1
@@ -819,7 +820,7 @@ Func Agent_GetFilteredAgentArray($aMode = 0, $aType = 0xDB, $aAllegiance = 3, $a
 				If Agent_GetAgentInfo($lTemp, "Allegiance") = $aAllegiance Then ContinueLoop
 				If $aEffect <> 0x0010 And Agent_GetAgentInfo($lTemp, "IsDead") Then ContinueLoop
 				If $aEffect <> 0 And Not BitAND(Agent_GetAgentInfo($lTemp, "AttributeFlag"), $aEffect) Then ContinueLoop
-				If $aAllegiance = 3 And (Agent_GetAgentInfo($lTemp, "IsMinion") Or Agent_GetAgentInfo($lTemp, "IsSpirit")) Then ContinueLoop
+				If $aAllegiance = 3 And (Agent_GetNpcInfoByAgentID($lTemp, "IsMinion") Or Agent_GetNpcInfoByAgentID($lTemp, "IsSpirit")) Then ContinueLoop
 				If Agent_GetDistanceToXY($x, $y, $lTemp) > $aRange Then ContinueLoop
 
 				$lAgentArray[0] += 1
@@ -1288,7 +1289,7 @@ Func Agent_GetBestTarget($a_i_Range = 1320, $a_b_CastingOnly = False, $a_b_NoHex
 		If Agent_GetAgentInfo($l_p_AgentPtr, "IsDead") Then ContinueLoop
 		If Agent_GetAgentInfo($l_p_AgentPtr, "Allegiance") <> 3 Then ContinueLoop
 		If Agent_GetDistanceToXY($l_f_X, $l_f_Y, $l_p_AgentPtr) > $a_i_Range Then ContinueLoop
-		If Agent_GetNpcInfo(Agent_GetAgentInfo($l_p_AgentPtr, "PlayerNumber"), "IsSpirit") Then ContinueLoop
+		If Agent_GetNpcInfoByAgentID($l_p_AgentPtr, "IsMinion") Or Agent_GetNpcInfoByAgentID($l_p_AgentPtr, "IsSpirit") Then ContinueLoop
 
 		If $a_b_EnchantedOnly And Not Agent_GetAgentInfo($l_p_AgentPtr, "IsEnchanted") Then ContinueLoop
 		If $a_b_NoHexOnly And Agent_GetAgentInfo($l_p_AgentPtr, "IsHexed") Then ContinueLoop
@@ -1306,6 +1307,7 @@ Func Agent_GetBestTarget($a_i_Range = 1320, $a_b_CastingOnly = False, $a_b_NoHex
 			If $l_ai_AgentArray[$j] = $l_p_AgentPtr Then ContinueLoop
 			If Agent_GetAgentInfo($l_ai_AgentArray[$j], "Allegiance") <> 3 Then ContinueLoop
 			If Agent_GetAgentInfo($l_ai_AgentArray[$j], "IsDead") Then ContinueLoop
+			If Agent_GetNpcInfoByAgentID($l_ai_AgentArray[$j], "IsMinion") Or Agent_GetNpcInfoByAgentID($l_ai_AgentArray[$j], "IsSpirit") Then ContinueLoop
 			$l_f_Distance = Agent_GetDistance($l_p_AgentPtr, $l_ai_AgentArray[$j])
 			$l_f_SumDistances += $l_f_Distance
 		Next
