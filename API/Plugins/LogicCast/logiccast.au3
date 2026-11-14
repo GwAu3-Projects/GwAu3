@@ -332,13 +332,14 @@ EndFunc   ;==>UseSkills
 
 ; One counter attempt from EnemySkillWatch.
 ; True  = fired a counter, or a critical opportunity is still pending (keep polling).
-; False = nothing left to counter right now — UseSkills may advance the bar (Shame etc.).
+; False = nothing left to counter right now — UseSkills may advance the bar.
 ; @Extended = skillslot used when a counter was fired (else 0).
 ;
-; Order: landable rupt first; after a rupt, next free pass prefers enchant/hex strip then
-; releases the While once so non-counter bar skills can fire between interrupts.
-; Poll pool, then CanUse($slot, $column) → TryUseSkill. Targeting for Shame/Diversion/BF/Guilt
-; lives in CanUse / GetBestTargetBySkillSlot (IsAnnoyingSkill logic) — do not bypass it.
+; Order: landable rupt first; while activation-busy, hold for landable rupt / strip-ready /
+; staged Shame-Guilt follow, and try Listen_TryShameGuiltFollowUp (CanCastFollowUp — aftercast
+; does not block). After a rupt: enchantremove → hexremove → Shame/Guilt follow-up → $hexes,
+; then clear PreferStripAfterRupt. Normal path: rupt → enchantremove → hexremove →
+; Shame/Guilt follow-up → $hexes. Generic $hexes still covers Diversion/BF via CanUse.
 Func ListenToSkillsAndCounter($aAggroRange = 1320)
 	SetExtended(0)
 	If Map_GetInstanceInfo("Type") <> $GC_I_MAP_TYPE_EXPLORABLE Then Return False
@@ -348,15 +349,22 @@ Func ListenToSkillsAndCounter($aAggroRange = 1320)
 	EnemySkillWatch_Poll($aAggroRange + 200)
 	ESW_RefreshRuptLandTargets($aAggroRange)
 
+	Local $iSlot
+
 	If OurActivationBusyMs() > 0 Then
 		If ESW_AnyStagedRuptLandable() Then Return True
 		If $ESW_PreferStripAfterRupt And ESW_AnyStagedStripReady() Then Return True
+		; CanCastFollowUp ignores aftercast/IsCasting; still blocked while activation runs.
+		$iSlot = Listen_TryShameGuiltFollowUp($aAggroRange)
+		If $iSlot > 0 Then
+			SetExtended($iSlot)
+			Return True
+		EndIf
+		If ESW_AnyStagedFollow() Then Return True
 		Return False
 	EndIf
 
-	Local $iSlot
-
-	; After a rupt: strip / hexremove / annoying hexes via CanUse (same as bar).
+	; After a rupt: strip / hexremove / Shame-Guilt / annoying hexes via CanUse (same as bar).
 	If $ESW_PreferStripAfterRupt Then
 		$iSlot = Listen_TryCanUseColumn($aAggroRange, $enchantremove)
 		If $iSlot > 0 Then
@@ -365,6 +373,12 @@ Func ListenToSkillsAndCounter($aAggroRange = 1320)
 			Return True
 		EndIf
 		$iSlot = Listen_TryCanUseColumn($aAggroRange, $hexremove)
+		If $iSlot > 0 Then
+			$ESW_PreferStripAfterRupt = False
+			SetExtended($iSlot)
+			Return True
+		EndIf
+		$iSlot = Listen_TryShameGuiltFollowUp($aAggroRange)
 		If $iSlot > 0 Then
 			$ESW_PreferStripAfterRupt = False
 			SetExtended($iSlot)
@@ -402,6 +416,11 @@ Func ListenToSkillsAndCounter($aAggroRange = 1320)
 		Return True
 	EndIf
 	$iSlot = Listen_TryCanUseColumn($aAggroRange, $hexremove)
+	If $iSlot > 0 Then
+		SetExtended($iSlot)
+		Return True
+	EndIf
+	$iSlot = Listen_TryShameGuiltFollowUp($aAggroRange)
 	If $iSlot > 0 Then
 		SetExtended($iSlot)
 		Return True
