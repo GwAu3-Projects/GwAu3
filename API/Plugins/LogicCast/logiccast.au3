@@ -150,7 +150,9 @@ Func CacheSkillBar()
 		If $i = 8 Then
 			ReDim $RuptSlots[$RuptSlots[0]+1]
 			If $RuptSlots[0] > 0 Then
-				Out("Rupts detected, activating Event System")
+				; Do NOT call SetEvent / register Skilllog_respond here — bots must arm
+				; Skilllog_respond above their main loop (e.g. SetEvent("Skilllog_respond", "", "", "", "")).
+				Out("Rupts detected (" & $RuptSlots[0] & ") — arm Skilllog_respond above your main loop")
 				$RuptEventSystem = True
 			EndIf
 		EndIf
@@ -167,7 +169,8 @@ Func CacheSkillBar()
 		If $i = 8 Then
 			ReDim $ProtSlots[$ProtSlots[0]+1]
 			If $ProtSlots[0] > 0 Then
-				Out("Prot detected, activating Event System")
+				; Do NOT SetEvent here — bots arm Skilllog_respond / SpellActivation themselves.
+				Out("Prot detected (" & $ProtSlots[0] & ") — arm Skilllog_respond above your main loop")
 				$ProtEventSystem = True
 			EndIf
 		EndIf
@@ -242,7 +245,10 @@ Func Fight($x = Agent_X(-2), $y = Agent_Y(-2), $aAggroRange = 1320, $careful = F
 	Out("Fighting enemies")
 	Local $TimerToGetOut = TimerInit()
 	Local $lPass = 0
-	; SetEvent("SpellActivation", "AttackActivation", "", "", "", "") ; only active during fight to avoid crashes
+	; Bots using GWA2/Logic SetEvent should arm Skilllog_respond above their main loop:
+	;   SetEvent("Skilllog_respond", "", "", "", "")
+	; Do not SetEvent inside Fight / CacheSkillBar — SkillBarCache + ESW Poll handle the poll path.
+	; SetEvent("SpellActivation", "AttackActivation", "", "", "", "") ; legacy; leave commented
 	Do
 		$lPass += 1
 		If Agent_NoEnemiesAround($aAggroRange) Then
@@ -1395,6 +1401,11 @@ Func GetRuptSlot($aSkillID, $aCasterID, $aAggroRange = 1320)
 	Return GetBestRupt($aSkillID, $aCasterID, $aAggroRange)
 EndFunc   ;==>GetRuptSlot
 
+; Skilllog / older Logic name — same as GetBestRupt / GetRuptSlot.
+Func GetRupt($aSkillID, $aCasterID, $aAggroRange = 1320)
+	Return GetBestRupt($aSkillID, $aCasterID, $aAggroRange)
+EndFunc   ;==>GetRupt
+
 Func TryUseSkill($aSkillSlot, $aTarget = -2, $aCallTarget = False, $aTimeout = 0)
 	Return Skill_TryUseSkill($aSkillSlot, $aTarget, $aCallTarget, $aTimeout)
 EndFunc   ;==>TryUseSkill
@@ -1448,6 +1459,50 @@ Func ESW_Prune()
 EndFunc
 
 
+
+; Immediate interrupt attempt for one enemy cast.
+; Return: 0 = ignore / too late / no slot, 1 = rupt fired, 2 = defer (too early — wait for land window).
+Func TryDispatchRupt($aCasterID, $aTargetID, $aSkillID, $aCastStart = 0, $aAggroRange = 1320)
+	If Agent_GetAgentInfo($aCasterID, "Allegiance") <> 3 Then Return 0
+	If Agent_GetAgentInfo($aCasterID, "IsDead") Then Return 0
+	Local $iDist = Agent_GetDistance($aCasterID)
+	If $iDist > $aAggroRange Or $iDist = 0 Then Return 0
+
+	Local $iSlot = GetRupt($aSkillID, $aCasterID, $aAggroRange)
+	If $iSlot < 1 Then Return 0
+
+	If $aCastStart = 0 Then $aCastStart = TimerInit()
+	Local $iAct = Number(Skill_GetSkillInfo($aSkillID, "Activation")) * 1000
+	If Number(Skill_GetSkillInfo($aSkillID, "SkillType")) = $Attack Then $iAct *= 0.5
+	If $iAct <= 0 Then Return 0
+
+	Local $iElapsed = TimerDiff($aCastStart)
+	If $iElapsed >= $iAct Then
+		Out("RUPT too late " & Skill_NameFromID($aSkillID) & " slot=" & $iSlot)
+		Return 0
+	EndIf
+
+	Local $iLand = GetAdjustedActivation($iSlot, $aCasterID)
+	; Short / equal-to-land casts: fire on sight (same gate as ESW_RuptWouldLandOnRow).
+	If Not ($iAct <= 500 Or $iAct <= $iLand + $ESW_POLL_SLACK_MS) Then
+		Local $iRemain = $iAct - $iElapsed - $ESW_POLL_SLACK_MS
+		If $iRemain <= $iLand Then
+			Out("RUPT too late remain=" & Floor($iRemain) & " land=" & Floor($iLand) & " " & Skill_NameFromID($aSkillID))
+			Return 0
+		EndIf
+		; Long casts only: wait until hit falls in the last TAIL ms.
+		If $iAct > $ESW_ZERO_WAIT_ACT Then
+			If $iElapsed + $iLand < $iAct - $ESW_RUPT_TAIL_MS Then
+				Out("RUPT defer " & Skill_NameFromID($aSkillID) & " remain=" & Floor($iAct - $iElapsed) & "ms")
+				Return 2
+			EndIf
+		EndIf
+	EndIf
+
+	Out("RUPT fire " & Skill_NameFromID($SkillBarCache[$iSlot][$all]) & " on " & Skill_NameFromID($aSkillID) & " → " & Agent_ConvertID($aCasterID))
+	If TryUseSkill($iSlot, $aCasterID, False, 0) Then Return 1
+	Return 0
+EndFunc   ;==>TryDispatchRupt
 
 ; Return: 0 = ignore/handled (safe to log), 1 = rupt used, 2 = deferred (do not log yet)
 ; $aCastStart = TimerInit() from when we first saw this cast (for remaining-time math).
@@ -1821,6 +1876,30 @@ EndFunc   ;==>DispatchEnemyAttackSkill
 Func AttackActivation($aCasterID, $aTargetID, $aSkillID, $lActivation, $aCastStart = 0, $aAggroRange = 1320)
 	Return DispatchEnemyAttackSkill($aCasterID, $aTargetID, $aSkillID, $lActivation, $aCastStart, $aAggroRange)
 EndFunc   ;==>AttackActivation
+
+; Thin wrapper — Fight's legacy SetEvent("SpellActivation", …) and Skilllog path expect this name.
+Func SpellActivation($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart = 0, $aAggroRange = 1320)
+	Return DispatchEnemySpellCast($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart, $aAggroRange)
+EndFunc   ;==>SpellActivation
+
+; GWA2/Logic skill-log callback. Bots arm this themselves above the main loop:
+;   SetEvent("Skilllog_respond", "", "", "", "")
+; Do NOT register SetEvent from CacheSkillBar / Fight. AutoIt treats SkillLog_Respond as the same name.
+Func Skilllog_respond($aCasterID, $aTargetID, $aSkillID, $aActivation)
+	EnsureSkillBarCache()
+	Local $aAggroRange = 1320
+	If $aCasterID = 0 Or $aCasterID = Agent_GetMyID() Then Return 0
+	If Agent_GetAgentInfo($aCasterID, "Allegiance") <> 3 Then Return 0
+	If Agent_GetAgentInfo($aCasterID, "IsDead") Then Return 0
+	Local $iDist = Agent_GetDistance($aCasterID)
+	If $iDist > $aAggroRange Or $iDist = 0 Then Return 0
+
+	Local $aCastStart = TimerInit()
+	If IsAttackSkill($aSkillID) Then
+		Return AttackActivation($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart, $aAggroRange)
+	EndIf
+	Return SpellActivation($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart, $aAggroRange)
+EndFunc   ;==>Skilllog_respond
 
 ; Pick a ready interrupt slot for this enemy cast. Soft rupts (Power Drain etc.) are valid unless
 ; the cast RequiresHardRupt (attack skills). Energy-gain rupts win first when CurrentEnergy < 20.
