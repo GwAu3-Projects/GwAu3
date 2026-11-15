@@ -142,7 +142,10 @@ Func CacheSkillBar()
 		If IsHealSkill($aSkillID) Then $SkillBarCache[$i][$heal] = $aSkillID
 		If IsBondSkill($aSkillID) Then $SkillBarCache[$i][$bond] = $aSkillID
 		If IsCondRemoveSkill($aSkillID) Then $SkillBarCache[$i][$condremove] = $aSkillID
-		If IsHexRemoveSkill($aSkillID) Then $SkillBarCache[$i][$hexremove] = $aSkillID
+		If IsHexRemoveSkill($aSkillID) Then
+			$SkillBarCache[$i][$hexremove] = $aSkillID
+			$RuptEventSystem = True
+		EndIf
 		If IsEnchantRemoveSkill($aSkillID) Then $SkillBarCache[$i][$enchantremove] = $aSkillID
 		If IsRuptSkill($aSkillID) Then
 			$RuptSlots[0] += 1
@@ -808,6 +811,7 @@ Func GetBestRupt($aSkillID, $aCasterID, $aAggroRange = 1320)
 			Or Skill_HasEffect($Mistrust_PvP)
 	Local $lEnergy = Agent_GetAgentInfo(-2, "CurrentEnergy")
 	Local $lReadySlot = 0
+	Local $lOverloadSlot = 0
 
 	For $i = 1 To $RuptSlots[0]
 		Local $aSkillSlot = $RuptSlots[$i]
@@ -815,15 +819,19 @@ Func GetBestRupt($aSkillID, $aCasterID, $aAggroRange = 1320)
 		If $SkillBarCache[$aSkillSlot][$energyreq] > $lEnergy Then ContinueLoop
 		; $hardrupt column = IsRuptSkill(id, True) at CacheSkillBar.
 		If $bNeedsHardRupt And $SkillBarCache[$aSkillSlot][$hardrupt] = "" Then ContinueLoop
-		; Overload only interrupts hexed casters.
-		If $SkillBarCache[$aSkillSlot][$all] = $Overload And Not Agent_GetAgentInfo($aCasterID, "IsHexed") Then ContinueLoop
 		; Ignorance/Rust/VoR/Backfire type gates (CanCast without busy — we may stage while casting).
 		If Not CanCastRuptEffects($aSkillSlot) Then ContinueLoop
+		; Overload is a soft rupt but never preferred over real interrupts.
+		If Number($SkillBarCache[$aSkillSlot][$all]) = Number($Overload) Then
+			$lOverloadSlot = $aSkillSlot
+			ContinueLoop
+		EndIf
 		; Priority: Power Drain / energy-gain rupt when low energy.
 		If IsEnergyGainRuptSkill($SkillBarCache[$aSkillSlot][$all]) And $lEnergy < 20 Then Return $aSkillSlot
 		If $lReadySlot = 0 Then $lReadySlot = $aSkillSlot
 	Next
-	Return $lReadySlot
+	If $lReadySlot > 0 Then Return $lReadySlot
+	Return $lOverloadSlot
 EndFunc   ;==>GetBestRupt
 
 ; CanCast type/hex gates for a rupt slot, ignoring IsCasting / aftercast busy (staging OK while busy).
@@ -1478,10 +1486,6 @@ Func CanUse($aSkillSlot, $aAggroRange = 1320, $aSkillType = $all)
 		Switch $SkillBarCache[$aSkillSlot][$hexes]
 			Case $Panic, $Panic_PvP
 				If Agent_GetAgentInfo($BestTarget, "Knocked") Then Return False
-			Case $Overload
-				; Overload only on already-hexed foes (skip clean targets).
-				If Agent_GetAgentInfo($BestTarget, "Knocked") Then Return False
-				If Not Agent_GetAgentInfo($BestTarget, "IsHexed") Then Return False
 			Case $Diversion, $Visions_of_Regret, $Visions_of_Regret_PvP, $Backfire, $Soul_Leech
 				; IsAnnoyingSkill = 1 â€” need a casting (or recently casting) foe.
 				If Not Agent_GetAgentInfo($BestTarget, "IsCasting") _
@@ -1535,10 +1539,6 @@ Func GetBestTargetBySkillSlot($aSkillSlot, $aAggroRange = 1320)
 	Switch $SkillBarCache[$aSkillSlot][$hexes]
 		Case $Panic, $Panic_PvP, $Wastrels_Worry, $Wastrels_Demise, $Wastrels_Demise_PvP
 			$BestTarget = Agent_GetBestTarget($aAggroRange)
-			Return $BestTarget
-		Case $Overload
-			; HexedOnly = True (4th flag): never pick a clean foe.
-			$BestTarget = Agent_GetBestTarget($aAggroRange, False, False, True)
 			Return $BestTarget
 	EndSwitch
 
@@ -1685,9 +1685,9 @@ Func GetBestTargetBySkillSlot($aSkillSlot, $aAggroRange = 1320)
 				$BestTarget = Agent_GetMostBalledCastingEnemy($aAggroRange)
 			Else
 				Switch $SkillBarCache[$aSkillSlot][$all]
-					Case $Unnatural_Signet
-						; ($range, CastingOnly=False, NoHexOnly=True)
-						$BestTarget = Agent_GetBestTarget($aAggroRange, False, True)
+					Case $Unnatural_Signet, $Unnatural_Signet_PvP
+						; Prefers hexed foes (HexedOnly=True); falls back to any foe.
+						$BestTarget = Agent_GetBestTarget($aAggroRange, False, False, True)
 						If $BestTarget = 0 Then $BestTarget = Agent_GetBestTarget($aAggroRange)
 					Case Else
 						$BestTarget = Agent_GetBestTarget($aAggroRange)
@@ -2075,11 +2075,11 @@ Func IsRuptSkill($aSkill, $hardrupt = False)
 	EndSwitch
 
 	Switch $lSkillID	; interrupt skills that are incorrectly categorized via Effect2 or soft rupts for separation
-		Case $Power_Drain, $Power_Flux, $Power_Leak, $Power_Leech, $Power_Lock, $Power_Return, $Power_Spike, $Leech_Signet    ; soft rupts
+		Case $Power_Drain, $Power_Flux, $Power_Leak, $Power_Leech, $Power_Lock, $Power_Return, $Power_Spike, $Leech_Signet, $Overload    ; soft rupts
 			If Not $hardrupt Then Return True
 		Case $You_Move_Like_a_Dwarf, $Disarm, $Disrupting_Shot, $Disrupting_Throw, $Distracting_Lunge, $Distracting_Strike, $Magebane_Shot, $Concussion_Shot
 			Return True
-		Case $Cry_of_Pain, $Overload, $Psychic_Instability, $Psychic_Instability_PvP, $Simple_Thievery, $Tease    ; overoad/SoC lumped here for convenience
+		Case $Cry_of_Pain, $Psychic_Instability, $Psychic_Instability_PvP, $Simple_Thievery, $Tease
 			Return True
 		Case $Exhausting_Assault, $Temple_Strike, $Lyssas_Assault, $Lyssas_Haste, $Lyssas_Haste_PvP, $Thunderclap
 			Return True

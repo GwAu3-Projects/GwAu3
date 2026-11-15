@@ -1643,8 +1643,8 @@ EndFunc
 
 ; Description: returns whether an Agent is moving away from a waypoint
 Func GetIsMovingAwayFromXY($x, $y, $aAgent)
-	$Distance = GetDistanceToXY($x, $y, $aAgent)
+	Local $Distance = Agent_GetDistanceToXY($x, $y, $aAgent)
 	Sleep(50)
-	If GetDistanceToXY($x, $y, $aAgent) > $Distance Then Return True
+	If Agent_GetDistanceToXY($x, $y, $aAgent) > $Distance Then Return True
 	Return False
 EndFunc   ;==>GetIsMovingAwayFromXY
