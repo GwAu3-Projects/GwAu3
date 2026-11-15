@@ -122,9 +122,10 @@ Func Agent_GetNoHexEnemy($aRange = 1320)
 	Return Agent_GetBestTarget($aRange, False, True)
 EndFunc   ;==>Agent_GetNoHexEnemy
 
+; Enchanted foe in range, preferring the most balled. Isolated monks still qualify (ball count 0).
 Func Agent_GetBalledEnchantedEnemy($aRange = 1320)
     Local $lBestTargetPtr = 0
-    Local $iMaxBalledNumber = 0
+    Local $iMaxBalledNumber = -1
     Local $lAgentPtrArray = Agent_GetAgentArray(0xDB) ; living agents only
 
     For $i = 1 To $lAgentPtrArray[0]
@@ -132,19 +133,21 @@ Func Agent_GetBalledEnchantedEnemy($aRange = 1320)
 
         ; Verify allegiance (3 = enemy) and range
         If Agent_GetAgentInfo($lPtr, "Allegiance") <> 3 Then ContinueLoop
+        If Agent_GetAgentInfo($lPtr, "IsDead") Then ContinueLoop
         If Agent_GetDistance($lPtr) > $aRange Then ContinueLoop
 
         ; Check if enchanted directly via pointer
         If Not Agent_GetAgentInfo($lPtr, "IsEnchanted") Then ContinueLoop
 
-        ; Count nearby enemies for "balled" grouping
+        ; Prefer denser balls; start at -1 so isolated (0 nearby) still wins when alone.
         Local $iBalledNumber = Agent_GetNumberOfEnemiesNearAgent(300, $lPtr)
         If $iBalledNumber > $iMaxBalledNumber Then
             $iMaxBalledNumber = $iBalledNumber
             $lBestTargetPtr = $lPtr
         EndIf
     Next
-    Return $lBestTargetPtr
+    If $lBestTargetPtr <> 0 Then Return $lBestTargetPtr
+    Return Agent_GetMostEnchantedEnemy($aRange)
 EndFunc   ;==>Agent_GetBalledEnchantedEnemy
 
 Func Agent_GetMostBalledCastingEnemy($aRange = 1320)

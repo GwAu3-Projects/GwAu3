@@ -265,7 +265,6 @@ EndFunc   ;==>Fight
 ;~ $skilltype filters the non-counter bar pass ($all skips columns owned by Listen).
 ; $aMaxDistanceToXY = 5000 (default) disables the leash; any other value is checked once after a full bar pass.
 Func UseSkills($x, $y, $aAggroRange = 1320, $skilltype = $all, $aMaxDistanceToXY = 5000, $aAgent = 0)
-	If Map_GetInstanceInfo("Type") = $GC_I_MAP_TYPE_EXPLORABLE Then EnemySkillWatch_Poll($aAggroRange + 200)
 	If Agent_GetAgentInfo(-2, "IsDead") Or Map_GetInstanceInfo("Type") == 2 Then Return False
 	If $BestTarget <> 0 And Agent_GetAgentInfo($BestTarget, "Allegiance") = 3 And Agent_GetAgentInfo($BestTarget, "IsDead") Then $BestTarget = 0
 	If Agent_NoEnemiesAround($aAggroRange) Then Return False
@@ -274,19 +273,19 @@ Func UseSkills($x, $y, $aAggroRange = 1320, $skilltype = $all, $aMaxDistanceToXY
 		If Agent_GetAgentInfo(-2, "IsDead") Or Map_GetInstanceInfo("Type") == 2 Then Return False
 		If Agent_NoEnemiesAround($aAggroRange) Then Return False
 
-		; Keep countering until the pool has nothing left we can (or should wait to) counter.
-		; Short sleep while waiting on a staged rupt land window â€” 40ms was fine; do not add extra delay.
-		ListenToSkillsAndCounter($aAggroRange)
-		If Agent_GetAgentInfo(-2, "IsDead") Then Return False
-		If $BestTarget <> 0 And Agent_GetAgentInfo($BestTarget, "Allegiance") = 3 And Agent_GetAgentInfo($BestTarget, "IsDead") Then $BestTarget = 0
-
-		; Bar progress: Listen already owns $rupt / $enchantremove / $hexremove when $skilltype = $all.
-		If $SkillBarCache[$aSkillSlot][$rupt] <> "" Then ContinueLoop
-		If $SkillBarCache[$aSkillSlot][$enchantremove] <> "" Then ContinueLoop
-		If $SkillBarCache[$aSkillSlot][$hexremove] <> "" Then ContinueLoop
+		; Fight ($all) still drains via Listen. Column passes (RuptEX/Heal $hexremove etc.) do not —
+		; those were hitting deleted EnemySkillWatch_Poll through Listen.
+		If $skilltype = $all Then
+			ListenToSkillsAndCounter($aAggroRange)
+			If Agent_GetAgentInfo(-2, "IsDead") Then Return False
+			If $BestTarget <> 0 And Agent_GetAgentInfo($BestTarget, "Allegiance") = 3 And Agent_GetAgentInfo($BestTarget, "IsDead") Then $BestTarget = 0
+			If $SkillBarCache[$aSkillSlot][$rupt] <> "" Then ContinueLoop
+			If $SkillBarCache[$aSkillSlot][$enchantremove] <> "" Then ContinueLoop
+			If $SkillBarCache[$aSkillSlot][$hexremove] <> "" Then ContinueLoop
+		EndIf
 
 		If CanUse($aSkillSlot, $aAggroRange, $skilltype) Then Skill_TryUseSkill($aSkillSlot, $BestTarget, False, 0)
-		ListenToSkillsAndCounter($aAggroRange)
+		If $skilltype = $all Then ListenToSkillsAndCounter($aAggroRange)
 	Next
 
 	If $aAgent <> 0 Then
@@ -301,63 +300,14 @@ EndFunc   ;==>UseSkills
 ; True  = fired a counter, or a land-window is still pending.
 ; False = nothing to do â€” Fight/UseSkills may advance the bar.
 ; @Extended = skillslot used when a counter was fired (else 0).
+; Fight bar drain for strip/hex/hexes. Rupts come from SkillLog (RuptEX/OnSpell) — ESW Poll/Note removed.
 Func ListenToSkillsAndCounter($aAggroRange = 1320)
 	SetExtended(0)
 	If Map_GetInstanceInfo("Type") <> $GC_I_MAP_TYPE_EXPLORABLE Then Return False
 	If Agent_GetAgentInfo(-2, "IsDead") Or Agent_GetAgentInfo(-2, "IsKnocked") Then Return False
-
-	EnemySkillWatch_Poll($aAggroRange + 200)
-	ESW_RefreshRuptLandTargets($aAggroRange)
-
-	If OurActivationBusyMs() > 0 Then
-		If ESW_AnyStagedRuptLandable() Then Return True
-		If $ESW_PreferStripAfterRupt And ESW_AnyStagedStripReady() Then Return True
-		Return False
-	EndIf
+	If OurActivationBusyMs() > 0 Then Return False
 
 	Local $iSlot
-
-	; After a rupt: strip / hexremove / annoying hexes via CanUse (same as bar).
-	If $ESW_PreferStripAfterRupt Then
-		$iSlot = Listen_TryCanUseColumn($aAggroRange, $enchantremove)
-		If $iSlot > 0 Then
-			$ESW_PreferStripAfterRupt = False
-			SetExtended($iSlot)
-			Return True
-		EndIf
-		$iSlot = Listen_TryCanUseColumn($aAggroRange, $hexremove)
-		If $iSlot > 0 Then
-			$ESW_PreferStripAfterRupt = False
-			SetExtended($iSlot)
-			Return True
-		EndIf
-		$iSlot = Listen_TryCanUseColumn($aAggroRange, $hexes)
-		$ESW_PreferStripAfterRupt = False
-		If $iSlot > 0 Then
-			SetExtended($iSlot)
-			Return True
-		EndIf
-		Return False
-	EndIf
-
-	; GetBestRupt picks the slot per caster/skill â€” not "first recharged on bar".
-	$iSlot = Listen_TryRupt($aAggroRange)
-	If $iSlot > 0 Then
-		$ESW_PreferStripAfterRupt = True
-		If $BestTarget <> 0 Then
-			ESW_MarkCasterHandled(Agent_ConvertID($BestTarget))
-			If $SkillBarCache[$iSlot][$all] = $GC_I_SKILL_ID_POWER_LEECH Then
-				Local $iEther = $SkillbarSlot[$GC_I_SKILL_ID_ETHER_PHANTOM]
-				If $iEther > 0 And Skill_GetSkillbarInfo($iEther, "IsRecharged") Then
-					Sleep(50)
-					Skill_UseSkill($iEther, $BestTarget)
-				EndIf
-			EndIf
-		EndIf
-		SetExtended($iSlot)
-		Return True
-	EndIf
-
 	$iSlot = Listen_TryCanUseColumn($aAggroRange, $enchantremove)
 	If $iSlot > 0 Then
 		SetExtended($iSlot)
@@ -373,8 +323,6 @@ Func ListenToSkillsAndCounter($aAggroRange = 1320)
 		SetExtended($iSlot)
 		Return True
 	EndIf
-
-	If ESW_AnyStagedRuptWaiting() Then Return True
 	Return False
 EndFunc   ;==>ListenToSkillsAndCounter
 
@@ -390,971 +338,36 @@ Func Listen_TryCanUseColumn($aAggroRange, $aColumn)
 	Return 0
 EndFunc   ;==>Listen_TryCanUseColumn
 
-; Interrupt via GetBestRupt(skill, caster) + land window. Target = the casting foe (not bar-order slot walk).
-Func Listen_TryRupt($aAggroRange = 1320)
-	Local $r, $iSlot, $iCaster, $iSkill, $iBestSlot = 0, $iBestCaster = 0, $iBestRemain = 1e12, $hBestStart = 0
-	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
-		If Not $EnemySkillWatch[$r][$ESW_CASTING] Then ContinueLoop
-		$iCaster = Number($EnemySkillWatch[$r][$ESW_AGENT])
-		$iSkill = Number($EnemySkillWatch[$r][$ESW_SKILL])
-		If $iCaster = 0 Or $iSkill = 0 Then ContinueLoop
-		If Agent_GetDistance($iCaster) > $aAggroRange Then ContinueLoop
-
-		$iSlot = Number($EnemySkillWatch[$r][$ESW_RUPT_SLOT])
-		If $iSlot < 1 Then $iSlot = GetBestRupt($iSkill, $iCaster, $aAggroRange)
-		If $iSlot < 1 Then ContinueLoop
-		$EnemySkillWatch[$r][$ESW_RUPT_SLOT] = $iSlot
-		If Not ESW_RuptWouldLandOnRow($iSlot, $r) Then ContinueLoop
-		If Not CanCastFollowUp($iSlot) Then ContinueLoop
-
-		Local $iRemain = Number($EnemySkillWatch[$r][$ESW_ACTIVATION]) - TimerDiff($EnemySkillWatch[$r][$ESW_START])
-		If $iRemain < $iBestRemain Then
-			$iBestRemain = $iRemain
-			$iBestSlot = $iSlot
-			$iBestCaster = $iCaster
-			$hBestStart = $EnemySkillWatch[$r][$ESW_START]
-		EndIf
-	Next
-	If $iBestSlot < 1 Or $iBestCaster = 0 Then Return 0
-	$BestTarget = $iBestCaster
-	Local $hSince = $hBestStart
-	If $hSince = 0 Then $hSince = TimerInit()
-	Local $bOk = Skill_TryUseSkill($iBestSlot, $BestTarget, False, 0)
-	LogMyInterrupt($iBestSlot, $BestTarget, $bOk, TimerDiff($hSince))
-	If Not $bOk Then Return 0
-	Return $iBestSlot
-EndFunc   ;==>Listen_TryRupt
-
-; Quiet interrupt line: "I am using Power Drain on Foo (success in 42ms)"
-Func LogMyInterrupt($aSkillSlot, $aTargetID, $aSuccess, $aElapsedMs)
-	Local $sSkill = Skill_NameFromID($SkillBarCache[$aSkillSlot][$all])
-	Local $sTarget = Agent_GetAgentInfo($aTargetID, "Name")
-	If Not IsString($sTarget) Or $sTarget = "" Then $sTarget = "#" & Agent_ConvertID($aTargetID)
-	Local $sResult = "failed"
-	If $aSuccess Then $sResult = "success"
-	Out("I am using " & $sSkill & " on " & $sTarget & " (" & $sResult & " in " & Floor($aElapsedMs) & "ms)")
+; Quiet interrupt line: "I interrupted Foo's Overload in 42ms"
+Func LogMyInterrupt($aCasterID, $aEnemySkillID, $aSuccess, $aElapsedMs)
+	Local $sName = Agent_GetAgentInfo($aCasterID, "Name")
+	If Not IsString($sName) Or $sName = "" Then $sName = "#" & Agent_ConvertID($aCasterID)
+	Local $sSkill = Skill_NameFromID($aEnemySkillID)
+	If Not IsString($sSkill) Or $sSkill = "" Then $sSkill = "#" & Number($aEnemySkillID)
+	Local $iMs = Floor($aElapsedMs)
+	If $aSuccess Then
+		Out("I interrupted " & $sName & "'s " & $sSkill & " in " & $iMs & "ms")
+	Else
+		Out("I failed to interrupt " & $sName & "'s " & $sSkill & " in " & $iMs & "ms")
+	EndIf
 EndFunc   ;==>LogMyInterrupt
 
-Func ESW_AnyStagedRuptLandable()
-	Local $r
-	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
-		If Number($EnemySkillWatch[$r][$ESW_RUPT_SLOT]) > 0 And Number($EnemySkillWatch[$r][$ESW_RUPT_TARGET]) <> 0 Then Return True
-	Next
-	Return False
-EndFunc
-
-Func ESW_AnyStagedRuptWaiting()
-	Local $r
-	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
-		If Not $EnemySkillWatch[$r][$ESW_CASTING] Then ContinueLoop
-		If Number($EnemySkillWatch[$r][$ESW_RUPT_SLOT]) > 0 And Number($EnemySkillWatch[$r][$ESW_RUPT_TARGET]) = 0 Then Return True
-	Next
-	Return False
-EndFunc
-
-Func ESW_AnyStagedStripReady()
-	Local $r
-	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
-		If $EnemySkillWatch[$r][$ESW_STRIP_READY] And Number($EnemySkillWatch[$r][$ESW_STRIP_SLOT]) > 0 And Number($EnemySkillWatch[$r][$ESW_STRIP_TARGET]) <> 0 Then Return True
-	Next
-	Return False
-EndFunc
-
-Func ESW_AnyStagedFollow()
-	Local $r
-	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
-		If Number($EnemySkillWatch[$r][$ESW_FOLLOW_SLOT]) > 0 And Number($EnemySkillWatch[$r][$ESW_FOLLOW_TARGET]) <> 0 Then Return True
-	Next
-	Return False
-EndFunc
-
-; Walk every SkillBarCache slot marked $enchantremove (Shatter Enchantment, etc.).
-; Target = enchanted foe (pool-fresh enchant preferred, else any enchanted in range).
-; Returns skillslot used, or 0.
-Func Listen_TryEnchantRemove($aAggroRange = 1320)
-	Local $iTarget = ESW_BestEnchantStripTarget($aAggroRange)
-	If $iTarget = 0 Then Return 0
-
-	Local $aSlot
-	For $aSlot In $Skillbar
-		If $SkillBarCache[$aSlot][$enchantremove] = "" Or $SkillBarCache[$aSlot][$enchantremove] = 0 Then ContinueLoop
-		If Not CanCastFollowUp($aSlot) Then ContinueLoop
-		$BestTarget = $iTarget
-		If Not Skill_TryUseSkill($aSlot, $BestTarget, False, 0, True) Then ContinueLoop
-		Return $aSlot
-	Next
-	Return 0
-EndFunc   ;==>Listen_TryEnchantRemove
-
-; Walk every SkillBarCache slot marked $hexremove.
-Func Listen_TryHexRemove($aAggroRange = 1320)
-	Local $iTarget = ESW_BestHexRemoveTarget($aAggroRange)
-	If $iTarget = 0 Then
-		; Standing hexes: still strip even without a fresh pool hex row.
-		$iTarget = Agent_GetMostHexedAlly($aAggroRange)
-	EndIf
-	If $iTarget = 0 Then Return 0
-
-	Local $aSlot
-	For $aSlot In $Skillbar
-		If $SkillBarCache[$aSlot][$hexremove] = "" Or $SkillBarCache[$aSlot][$hexremove] = 0 Then ContinueLoop
-		If Not CanCastFollowUp($aSlot) Then ContinueLoop
-		$BestTarget = $iTarget
-		If Not Skill_TryUseSkill($aSlot, $BestTarget, False, 0, True) Then ContinueLoop
-		Return $aSlot
-	Next
-	Return 0
-EndFunc   ;==>Listen_TryHexRemove
-
-; Drain SkillLog-staged Shame/Guilt (FOLLOW_*), then fall back to BestShame/Guilt scoring.
-; No rupt land-timing. Aftercast / lingering IsCasting do not block (CanCastFollowUp).
-Func Listen_TryShameGuiltFollowUp($aAggroRange = 1320)
-	Local $aSlot, $iCaster, $r
-
-	; Prefer rows staged by SkillLog Note (arrival order).
-	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
-		$aSlot = Number($EnemySkillWatch[$r][$ESW_FOLLOW_SLOT])
-		$iCaster = Number($EnemySkillWatch[$r][$ESW_FOLLOW_TARGET])
-		If $aSlot < 1 Or $iCaster = 0 Then ContinueLoop
-		If Agent_GetDistance($iCaster) > $aAggroRange Then ContinueLoop
-		If Agent_GetAgentInfo($iCaster, "IsDead") Or Agent_GetAgentInfo($iCaster, "IsHexed") Then
-			$EnemySkillWatch[$r][$ESW_FOLLOW_SLOT] = 0
-			$EnemySkillWatch[$r][$ESW_FOLLOW_TARGET] = 0
-			ContinueLoop
-		EndIf
-		If Not CanCastFollowUp($aSlot) Then ContinueLoop
-		$BestTarget = $iCaster
-		If Not Skill_TryUseSkill($aSlot, $BestTarget, False, 0, True) Then ContinueLoop
-		$EnemySkillWatch[$r][$ESW_FOLLOW_SLOT] = 0
-		$EnemySkillWatch[$r][$ESW_FOLLOW_TARGET] = 0
-		Return $aSlot
-	Next
-
-	$iCaster = ESW_BestHealCaster($aAggroRange)
-	If $iCaster = 0 Then $iCaster = ESW_BestShameTarget($aAggroRange)
-	If $iCaster <> 0 Then
-		For $aSlot In $Skillbar
-			Switch $SkillBarCache[$aSlot][$all]
-				Case $Shame, $Mark_of_Subversion
-				Case Else
-					ContinueLoop
-			EndSwitch
-			If Agent_GetAgentInfo($iCaster, "IsHexed") Then ExitLoop
-			If Not CanCastFollowUp($aSlot) Then ContinueLoop
-			$BestTarget = $iCaster
-			If Not Skill_TryUseSkill($aSlot, $BestTarget, False, 0, True) Then ContinueLoop
-			Out("Listen Shame/Mark â†’ " & $BestTarget)
-			Return $aSlot
-		Next
-	EndIf
-
-	$iCaster = ESW_BestGuiltTarget($aAggroRange)
-	If $iCaster <> 0 Then
-		For $aSlot In $Skillbar
-			Switch $SkillBarCache[$aSlot][$all]
-				Case $Guilt, $Mistrust, $Mistrust_PvP
-				Case Else
-					ContinueLoop
-			EndSwitch
-			If Agent_GetAgentInfo($iCaster, "IsHexed") Then ExitLoop
-			If Not CanCastFollowUp($aSlot) Then ContinueLoop
-			$BestTarget = $iCaster
-			If Not Skill_TryUseSkill($aSlot, $BestTarget, False, 0, True) Then ContinueLoop
-			Out("Listen Guilt/Mistrust â†’ " & $BestTarget)
-			Return $aSlot
-		Next
-	EndIf
-	Return 0
-EndFunc   ;==>Listen_TryShameGuiltFollowUp
-
-; Like CanCast, but aftercast / lingering IsCasting do not block â€” only activation busy + resources.
-Func CanCastFollowUp($aSkillSlot = 0)
-	If Map_GetInstanceInfo("Type") == 0 Then Return False
-	If Agent_GetAgentInfo(-2, "IsKnocked") Or Agent_GetAgentInfo(-2, "IsDead") Or Wipe() Then Return False
-	If OurActivationBusyMs() > 0 Then Return False
-
-	If $aSkillSlot <> 0 Then
-		If Not Skill_GetSkillbarInfo($aSkillSlot, "IsRecharged") Then Return False
-		Local $lEnergyReq = $SkillBarCache[$aSkillSlot][$energyreq]
-		If Skill_HasEffect($Quickening_Zephyr) Then $lEnergyReq = $lEnergyReq * 1.3
-		If Agent_GetAgentInfo(-2, "CurrentEnergy") < $lEnergyReq Then Return False
-		If $SkillBarCache[$aSkillSlot][$adrereq] <> 0 And Skill_GetSkillbarInfo($aSkillSlot, "Adrenaline") < $SkillBarCache[$aSkillSlot][$adrereq] Then Return False
-	EndIf
-	Return True
-EndFunc   ;==>CanCastFollowUp
-
-; Caster in the pool who cast / is casting a heal (Shame follow-up target).
-Func ESW_BestHealCaster($aAggroRange = 1320)
-	Local $iBest = 0, $iBestScore = -1
-	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
-		If Not IsHealSkill($EnemySkillWatch[$r][$ESW_SKILL]) Then ContinueLoop
-		Local $bFresh = $EnemySkillWatch[$r][$ESW_CASTING]
-		If Not $bFresh And $EnemySkillWatch[$r][$ESW_LANDED] <> 0 Then
-			$bFresh = TimerDiff($EnemySkillWatch[$r][$ESW_LANDED]) <= 3000
-		EndIf
-		If Not $bFresh And $EnemySkillWatch[$r][$ESW_START] <> 0 Then
-			$bFresh = TimerDiff($EnemySkillWatch[$r][$ESW_START]) <= 3000
-		EndIf
-		If Not $bFresh Then ContinueLoop
-
-		Local $iCaster = $EnemySkillWatch[$r][$ESW_AGENT]
-		If $iCaster = 0 Or Agent_GetAgentInfo($iCaster, "IsDead") Then ContinueLoop
-		If Agent_GetAgentInfo($iCaster, "IsHexed") Then ContinueLoop
-		If Agent_GetDistance($iCaster) > $aAggroRange Then ContinueLoop
-
-		Local $iScore = 100
-		If $EnemySkillWatch[$r][$ESW_CASTING] Then $iScore += 50
-		If Agent_IsSupportCasterProfession($iCaster) Then $iScore += 40
-		If $iScore > $iBestScore Then
-			$iBestScore = $iScore
-			$iBest = $iCaster
-		EndIf
-	Next
-	Return $iBest
-EndFunc   ;==>ESW_BestHealCaster
-
-Func ESW_HasReadyShameSkill()
-	Local $s
-	For $s = 1 To 8
-		Switch $SkillBarCache[$s][$all]
-			Case $Shame, $Mark_of_Subversion
-				If Skill_GetSkillbarInfo($s, "IsRecharged") Then Return True
-		EndSwitch
-	Next
-	Return False
-EndFunc   ;==>ESW_HasReadyShameSkill
-
-Func ESW_HasReadyGuiltSkill()
-	Local $s
-	For $s = 1 To 8
-		Switch $SkillBarCache[$s][$all]
-			Case $Guilt, $Mistrust, $Mistrust_PvP
-				If Skill_GetSkillbarInfo($s, "IsRecharged") Then Return True
-		EndSwitch
-	Next
-	Return False
-EndFunc   ;==>ESW_HasReadyGuiltSkill
-
-; True if GetBestRupt + land window already staged a fireable interrupt.
-Func ESW_RuptLandableNow($aAggroRange = 1320)
-	#forceref $aAggroRange
-	Return ESW_AnyStagedRuptLandable()
-EndFunc   ;==>ESW_RuptLandableNow
-
-Func ESW_HasReadyRuptSkill()
-	Local $s
-	For $s = 1 To 8
-		If $SkillBarCache[$s][$rupt] = "" Then ContinueLoop
-		If Skill_GetSkillbarInfo($s, "IsRecharged") Then Return True
-	Next
-	Return False
-EndFunc   ;==>ESW_HasReadyRuptSkill
-
-Func ESW_HasReadyStripSkill()
-	Local $s
-	For $s = 1 To 8
-		If $SkillBarCache[$s][$enchantremove] = "" And $SkillBarCache[$s][$hexremove] = "" Then ContinueLoop
-		If Skill_GetSkillbarInfo($s, "IsRecharged") Then Return True
-	Next
-	Return False
-EndFunc   ;==>ESW_HasReadyStripSkill
-
-Func ESW_HasRuptableCast($aAggroRange = 1320)
-	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
-		If Not $EnemySkillWatch[$r][$ESW_CASTING] Then ContinueLoop
-		If $EnemySkillWatch[$r][$ESW_ACTIVATION] <= 0 Then ContinueLoop
-		Local $iCaster = $EnemySkillWatch[$r][$ESW_AGENT]
-		If Agent_GetDistance($iCaster) <= $aAggroRange And ESW_IsCastPose($iCaster) Then Return True
-	Next
-	Return False
-EndFunc   ;==>ESW_HasRuptableCast
-
-; Fresh enchant/hex in the pool strip window (for post-rupt prefer / busy hold).
-Func ESW_HasStripOpportunity($aAggroRange = 1320)
-	Local $bEnchantBar = False, $bHexBar = False
-	Local $s
-	For $s = 1 To 8
-		If $SkillBarCache[$s][$enchantremove] <> "" Then $bEnchantBar = True
-		If $SkillBarCache[$s][$hexremove] <> "" Then $bHexBar = True
-	Next
-	If Not $bEnchantBar And Not $bHexBar Then Return False
-
-	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
-		Local $bFresh = $EnemySkillWatch[$r][$ESW_CASTING]
-		If Not $bFresh And $EnemySkillWatch[$r][$ESW_LANDED] <> 0 Then
-			$bFresh = TimerDiff($EnemySkillWatch[$r][$ESW_LANDED]) <= $ESW_STRIP_WINDOW_MS
-		EndIf
-		If Not $bFresh Then ContinueLoop
-		If $bEnchantBar And $EnemySkillWatch[$r][$ESW_TYPE] = $GC_I_SKILL_TYPE_ENCHANTMENT Then Return True
-		If $bHexBar And $EnemySkillWatch[$r][$ESW_TYPE] = $GC_I_SKILL_TYPE_HEX Then Return True
-	Next
-	Return False
-EndFunc   ;==>ESW_HasStripOpportunity
-
-; Any rupt / enchantremove / hexremove slot currently recharged.
-Func ESW_HasReadyCounterSkill()
-	Local $s
-	For $s = 1 To 8
-		If $SkillBarCache[$s][$all] = 0 Then ContinueLoop
-		If $SkillBarCache[$s][$rupt] = "" And $SkillBarCache[$s][$enchantremove] = "" And $SkillBarCache[$s][$hexremove] = "" Then ContinueLoop
-		If Skill_GetSkillbarInfo($s, "IsRecharged") Then Return True
-	Next
-	Return False
-EndFunc   ;==>ESW_HasReadyCounterSkill
-
-; Pool has a ruptable cast in range, or a fresh enchant/hex strip window matching a bar column.
-Func ESW_HasCounterOpportunity($aAggroRange = 1320)
-	Local $bRuptBar = ($RuptSlots[0] > 0)
-	Local $bEnchantBar = False, $bHexBar = False
-	Local $s
-	For $s = 1 To 8
-		If $SkillBarCache[$s][$enchantremove] <> "" Then $bEnchantBar = True
-		If $SkillBarCache[$s][$hexremove] <> "" Then $bHexBar = True
-	Next
-
-	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
-		If $bRuptBar And $EnemySkillWatch[$r][$ESW_CASTING] Then
-			Local $iAct = $EnemySkillWatch[$r][$ESW_ACTIVATION]
-			If $iAct > 0 Then
-				Local $iCaster = $EnemySkillWatch[$r][$ESW_AGENT]
-				If Agent_GetDistance($iCaster) <= $aAggroRange And ESW_IsCastPose($iCaster) Then Return True
-			EndIf
-		EndIf
-
-		Local $bFresh = $EnemySkillWatch[$r][$ESW_CASTING]
-		If Not $bFresh And $EnemySkillWatch[$r][$ESW_LANDED] <> 0 Then
-			$bFresh = TimerDiff($EnemySkillWatch[$r][$ESW_LANDED]) <= $ESW_STRIP_WINDOW_MS
-		EndIf
-		If Not $bFresh Then ContinueLoop
-		If $bEnchantBar And $EnemySkillWatch[$r][$ESW_TYPE] = $GC_I_SKILL_TYPE_ENCHANTMENT Then Return True
-		If $bHexBar And $EnemySkillWatch[$r][$ESW_TYPE] = $GC_I_SKILL_TYPE_HEX Then Return True
-	Next
-	Return False
-EndFunc   ;==>ESW_HasCounterOpportunity
-
 ; $aTimeout <= 0 returns after send (Fight/rupt polls via EnemySkillWatch in UseSkills).
-; $aFollowUp True = Shame/Guilt path: aftercast / lingering IsCasting do not block (CanCastFollowUp).
-Func Skill_TryUseSkill($aSkillSlot, $aTarget = -2, $aCallTarget = False, $aTimeout = 10000, $aFollowUp = False)
+Func Skill_TryUseSkill($aSkillSlot, $aTarget = -2, $aCallTarget = False, $aTimeout = 10000)
 	If $aSkillSlot < 1 Or $aSkillSlot > 8 Then Return False
 	Local $lDeadlock = TimerInit()
 	Local $ExitTimer = 0
 	Local $lAgentID = Agent_ConvertID($aTarget)
 	If $lAgentID = 0 Or Agent_GetAgentInfo(-2, "IsDead") Then Return False
-	If $aFollowUp Then
-		If Not CanCastFollowUp($aSkillSlot) Then Return False
-	Else
-		If Not CanCast($aSkillSlot) Then Return False
-	EndIf
+	If Not CanCast($aSkillSlot) Then Return False
 	If $lAgentID <> Agent_GetMyID() Then Agent_ChangeTarget($lAgentID)
 	If Not Skill_UseSkill($aSkillSlot, $lAgentID, $aCallTarget) Then Return False
 	$MySkillSlot = $aSkillSlot
 	$MyTargetID = $lAgentID
 	$AftercastTimer = TimerInit()
 	If $aTimeout <= 0 Then Return True
-	Do
-		If Agent_GetDistance($lAgentID) < 1320 And $ExitTimer = 0 Then $ExitTimer = TimerInit()
-		If Agent_GetAgentInfo($lAgentID, "IsDead") Then ExitLoop
-		Sleep(50)
-	Until (Not $aFollowUp And Not CanCast($aSkillSlot)) Or ($aFollowUp And Not CanCastFollowUp($aSkillSlot)) _
-		Or TimerDiff($lDeadlock) > $aTimeout _
-		Or (Agent_GetAgentInfo(-2, "IsCasting") = 0 And $ExitTimer <> 0 And TimerDiff($ExitTimer) > 1000) _
-		Or Agent_GetAgentInfo(-2, "IsDead")
-	If Not $aFollowUp Then Sleep($SkillBarCache[$aSkillSlot][$aftercast])
 	Return True
 EndFunc
-
-Func EnemySkillWatch_Reset()
-	ReDim $EnemySkillWatch[1][$ESW_COLS]
-	$EnemySkillWatch[0][$ESW_AGENT] = 0
-	$ESW_LastPoll = 0
-EndFunc
-
-; SkillLog / poll entry: stage rupt + Shame/Guilt follow-ups.
-; $aTargetID from SkillLog (when known) beats skill-table heuristics for ally vs foe mode.
-Func EnemySkillWatch_Note($aCasterID, $aSkillID, $aTargetID = 0)
-	$aCasterID = Number($aCasterID)
-	$aSkillID = Number($aSkillID)
-	$aTargetID = Number($aTargetID)
-	If $aCasterID <= 0 Or $aSkillID <= 0 Then Return
-	If Agent_GetAgentInfo($aCasterID, "Allegiance") <> 3 Then Return
-
-	Local $iRow = 0
-	For $i = 1 To $EnemySkillWatch[0][$ESW_AGENT]
-		If $EnemySkillWatch[$i][$ESW_AGENT] = $aCasterID Then
-			$iRow = $i
-			ExitLoop
-		EndIf
-	Next
-	If $iRow > 0 And $EnemySkillWatch[$iRow][$ESW_SKILL] = $aSkillID And $EnemySkillWatch[$iRow][$ESW_CASTING] Then Return
-	; Just interrupted / marked landed â€” do not re-arm the same skill from lingering cast pose.
-	If $iRow > 0 And $EnemySkillWatch[$iRow][$ESW_SKILL] = $aSkillID And Not $EnemySkillWatch[$iRow][$ESW_CASTING] Then
-		If $EnemySkillWatch[$iRow][$ESW_LANDED] <> 0 And TimerDiff($EnemySkillWatch[$iRow][$ESW_LANDED]) < 750 Then Return
-	EndIf
-
-	If $iRow = 0 Then
-		Local $n = $EnemySkillWatch[0][$ESW_AGENT] + 1
-		If $n > $ESW_MAX_ROWS Then
-			ESW_RemoveRow(1)
-			$n = $EnemySkillWatch[0][$ESW_AGENT] + 1
-		EndIf
-		ReDim $EnemySkillWatch[$n + 1][$ESW_COLS]
-		$EnemySkillWatch[0][$ESW_AGENT] = $n
-		$iRow = $n
-	EndIf
-
-	$EnemySkillWatch[$iRow][$ESW_AGENT] = $aCasterID
-	$EnemySkillWatch[$iRow][$ESW_SKILL] = $aSkillID
-	$EnemySkillWatch[$iRow][$ESW_START] = TimerInit()
-	$EnemySkillWatch[$iRow][$ESW_ACTIVATION] = Number(Skill_GetSkillInfo($aSkillID, "Activation")) * 1000
-	$EnemySkillWatch[$iRow][$ESW_TYPE] = Number(Skill_GetSkillInfo($aSkillID, "SkillType"))
-	$EnemySkillWatch[$iRow][$ESW_JITTER] = 0
-	$EnemySkillWatch[$iRow][$ESW_MODE] = ESW_ModeFromSkillLog($aSkillID, $aTargetID)
-	If $EnemySkillWatch[$iRow][$ESW_ACTIVATION] <= 0 Then
-		$EnemySkillWatch[$iRow][$ESW_CASTING] = 0
-		$EnemySkillWatch[$iRow][$ESW_LANDED] = TimerInit()
-	Else
-		$EnemySkillWatch[$iRow][$ESW_CASTING] = 1
-		$EnemySkillWatch[$iRow][$ESW_LANDED] = 0
-	EndIf
-	ESW_StageRow($iRow, 1320)
-EndFunc   ;==>EnemySkillWatch_Note
-
-; SkillLog target is from OUR view: me/ally hit â†’ Guilt (foe-aimed); enemy hit â†’ Shame (their ally/heal).
-Func ESW_ModeFromSkillLog($aSkillID, $aTargetID = 0)
-	$aTargetID = Number($aTargetID)
-	If $aTargetID > 0 Then
-		Local $iMyID = Agent_GetMyID()
-		Local $iAlleg = Number(Agent_GetAgentInfo($aTargetID, "Allegiance"))
-		Local $iType = Number(Skill_GetSkillInfo($aSkillID, "SkillType"))
-		; Martial junk never stages Shame/Guilt.
-		Switch $iType
-			Case $GC_I_SKILL_TYPE_ATTACK, $GC_I_SKILL_TYPE_PETATTACK, $GC_I_SKILL_TYPE_SHOUT, _
-					$GC_I_SKILL_TYPE_STANCE, $GC_I_SKILL_TYPE_CHANT, $GC_I_SKILL_TYPE_ECHO_REFRAIN, _
-					$GC_I_SKILL_TYPE_PREPARATION
-				Return $ESW_MODE_NONE
-		EndSwitch
-		; Spell on me / my party â†’ Guilt/Mistrust.
-		If $aTargetID = Number($iMyID) Or $iAlleg = 1 Then Return $ESW_MODE_FOE
-		; Spell on another enemy â†’ Shame/Mark (heal/buff their side).
-		If $iAlleg = 3 Then Return $ESW_MODE_ALLY
-	EndIf
-	Return ESW_CastModeFromSkill($aSkillID)
-EndFunc   ;==>ESW_ModeFromSkillLog
-
-; Clear staged counter fields for one pool row.
-Func ESW_ClearRowStaging($iRow)
-	If $iRow < 1 Or $iRow > $EnemySkillWatch[0][$ESW_AGENT] Then Return
-	$EnemySkillWatch[$iRow][$ESW_RUPT_SLOT] = 0
-	$EnemySkillWatch[$iRow][$ESW_RUPT_TARGET] = 0
-	$EnemySkillWatch[$iRow][$ESW_STRIP_SLOT] = 0
-	$EnemySkillWatch[$iRow][$ESW_STRIP_TARGET] = 0
-	$EnemySkillWatch[$iRow][$ESW_STRIP_READY] = 0
-	$EnemySkillWatch[$iRow][$ESW_STRIP_KIND] = $ESW_STRIP_NONE
-	$EnemySkillWatch[$iRow][$ESW_FOLLOW_SLOT] = 0
-	$EnemySkillWatch[$iRow][$ESW_FOLLOW_TARGET] = 0
-EndFunc   ;==>ESW_ClearRowStaging
-
-; Recompute landability / strip targets for every live row (call after Poll).
-Func ESW_RefreshAllStaging($aAggroRange = 1320)
-	Local $r
-	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
-		ESW_StageRow($r, $aAggroRange)
-	Next
-EndFunc   ;==>ESW_RefreshAllStaging
-
-; First recharged SkillBarCache slot with a non-empty column ($enchantremove / $hexremove / â€¦).
-Func ESW_FirstCacheSlot($aColumn)
-	Local $s
-	For $s = 1 To 8
-		If $SkillBarCache[$s][$aColumn] = "" Or $SkillBarCache[$s][$aColumn] = 0 Then ContinueLoop
-		If Skill_GetSkillbarInfo($s, "IsRecharged") Then Return $s
-	Next
-	Return 0
-EndFunc   ;==>ESW_FirstCacheSlot
-
-Func ESW_FirstShameSlot()
-	Local $s
-	For $s = 1 To 8
-		Switch $SkillBarCache[$s][$all]
-			Case $Shame, $Mark_of_Subversion
-				If Skill_GetSkillbarInfo($s, "IsRecharged") Then Return $s
-		EndSwitch
-	Next
-	Return 0
-EndFunc
-
-Func ESW_FirstGuiltSlot()
-	Local $s
-	For $s = 1 To 8
-		Switch $SkillBarCache[$s][$all]
-			Case $Guilt, $Mistrust, $Mistrust_PvP
-				If Skill_GetSkillbarInfo($s, "IsRecharged") Then Return $s
-		EndSwitch
-	Next
-	Return 0
-EndFunc
-
-; True if this rupt slot should fire on the row's caster right now.
-; 250ms (and any cast shorter than our land time): fire on sight â€” remain>land is impossible.
-Func ESW_RuptWouldLandOnRow($aSkillSlot, $iRow)
-	If $aSkillSlot < 1 Or $iRow < 1 Then Return False
-	If Not $EnemySkillWatch[$iRow][$ESW_CASTING] Then Return False
-	Local $iAct = $EnemySkillWatch[$iRow][$ESW_ACTIVATION]
-	If $iAct <= 0 Then Return False
-	Local $iCaster = $EnemySkillWatch[$iRow][$ESW_AGENT]
-	If $iCaster = 0 Then Return False
-
-	Local $iElapsed = TimerDiff($EnemySkillWatch[$iRow][$ESW_START])
-	If $iElapsed >= $iAct Then Return False
-
-	Local $iLand = GetAdjustedActivation($aSkillSlot, $iCaster)
-	; SkillLog fires at cast start — pose often not up yet. Short casts: no pose required.
-	If $iAct <= 500 Or $iAct <= $iLand + $ESW_POLL_SLACK_MS Then Return True
-
-	; Longer casts: wait for pose + land window (late-hit).
-	If Not ESW_IsCastPose($iCaster) Then Return False
-
-	Local $iRemain = $iAct - $iElapsed - $ESW_POLL_SLACK_MS
-	If $iRemain <= $iLand Then Return False
-
-	If $iAct > $ESW_ZERO_WAIT_ACT Then
-		If $iElapsed + $iLand < $iAct - $ESW_RUPT_TAIL_MS Then Return False
-	EndIf
-	Return True
-EndFunc   ;==>ESW_RuptWouldLandOnRow
-
-; Cheap per-tick update: only RUPT_TARGET landability (no strip array scans).
-Func ESW_RefreshRuptLandTargets($aAggroRange = 1320)
-	Local $r, $iSlot, $iCaster
-	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
-		$iSlot = Number($EnemySkillWatch[$r][$ESW_RUPT_SLOT])
-		If $iSlot < 1 Then ContinueLoop
-		$iCaster = Number($EnemySkillWatch[$r][$ESW_AGENT])
-		If $iCaster = 0 Or Agent_GetDistance($iCaster) > $aAggroRange Then
-			$EnemySkillWatch[$r][$ESW_RUPT_TARGET] = 0
-			ContinueLoop
-		EndIf
-		If ESW_RuptWouldLandOnRow($iSlot, $r) Then
-			$EnemySkillWatch[$r][$ESW_RUPT_TARGET] = $iCaster
-		Else
-			$EnemySkillWatch[$r][$ESW_RUPT_TARGET] = 0
-		EndIf
-	Next
-EndFunc   ;==>ESW_RefreshRuptLandTargets
-
-; Populate staged counter columns for one logged skill (arrival-time policy).
-Func ESW_StageRow($iRow, $aAggroRange = 1320)
-	If $iRow < 1 Or $iRow > $EnemySkillWatch[0][$ESW_AGENT] Then Return
-	ESW_ClearRowStaging($iRow)
-
-	Local $iCaster = Number($EnemySkillWatch[$iRow][$ESW_AGENT])
-	Local $iSkill = Number($EnemySkillWatch[$iRow][$ESW_SKILL])
-	Local $iType = Number($EnemySkillWatch[$iRow][$ESW_TYPE])
-	Local $iMode = Number($EnemySkillWatch[$iRow][$ESW_MODE])
-	If $iCaster = 0 Or $iSkill = 0 Then Return
-	If Agent_GetDistance($iCaster) > $aAggroRange Then Return
-
-	; --- Rupt: best slot from cache; target 0 until land window ---
-	If $EnemySkillWatch[$iRow][$ESW_CASTING] And $EnemySkillWatch[$iRow][$ESW_ACTIVATION] > 0 Then
-		Local $iRuptSlot = GetBestRupt($iSkill, $iCaster, $aAggroRange)
-		If $iRuptSlot > 0 Then
-			$EnemySkillWatch[$iRow][$ESW_RUPT_SLOT] = $iRuptSlot
-			If ESW_RuptWouldLandOnRow($iRuptSlot, $iRow) Then
-				$EnemySkillWatch[$iRow][$ESW_RUPT_TARGET] = $iCaster
-			Else
-				$EnemySkillWatch[$iRow][$ESW_RUPT_TARGET] = 0
-			EndIf
-		EndIf
-	EndIf
-
-	; --- Enchant remove: self/ally enchant â†’ always stage the caster (Shatter needs land/IsEnchanted) ---
-	If $iType = $GC_I_SKILL_TYPE_ENCHANTMENT Or IsEnchantmentSkill($iSkill) Then
-		Local $iEnchSlot = ESW_FirstCacheSlot($enchantremove)
-		If $iEnchSlot > 0 Then
-			Local $iEnchTarget = 0
-			; Enemy buffing self/ally: strip the caster (self) â€” do NOT require IsEnchanted at Note time.
-			If SkillTargetsSelfOrAlly($iSkill) Then
-				$iEnchTarget = $iCaster
-			ElseIf Agent_GetAgentInfo($iCaster, "IsEnchanted") Then
-				$iEnchTarget = $iCaster
-			Else
-				$iEnchTarget = ESW_BestEnchantStripTarget($aAggroRange)
-				If $iEnchTarget = 0 Then $iEnchTarget = Agent_GetBalledEnchantedEnemy($aAggroRange)
-			EndIf
-			If $iEnchTarget <> 0 Then
-				$EnemySkillWatch[$iRow][$ESW_STRIP_SLOT] = $iEnchSlot
-				$EnemySkillWatch[$iRow][$ESW_STRIP_TARGET] = $iEnchTarget
-				$EnemySkillWatch[$iRow][$ESW_STRIP_KIND] = $ESW_STRIP_ENCHANT
-				; Shatter needs an enchanted foe: ready when already enchanted, or cast has landed.
-				Local $bStripReady = Agent_GetAgentInfo($iEnchTarget, "IsEnchanted")
-				If Not $bStripReady And Not $EnemySkillWatch[$iRow][$ESW_CASTING] And $EnemySkillWatch[$iRow][$ESW_LANDED] <> 0 Then
-					$bStripReady = True
-				EndIf
-				If $bStripReady Then
-					$EnemySkillWatch[$iRow][$ESW_STRIP_READY] = 1
-				Else
-					$EnemySkillWatch[$iRow][$ESW_STRIP_READY] = 0
-				EndIf
-			EndIf
-		EndIf
-	EndIf
-
-	; --- Hex remove: flag when a target exists ---
-	If $iType = $GC_I_SKILL_TYPE_HEX Or IsHexSpell($iSkill) Then
-		Local $iHexSlot = ESW_FirstCacheSlot($hexremove)
-		If $iHexSlot > 0 Then
-			Local $iHexTarget = ESW_BestHexRemoveTarget($aAggroRange)
-			If $iHexTarget = 0 Then $iHexTarget = Agent_GetMostHexedAlly($aAggroRange)
-			If $iHexTarget <> 0 Then
-				; Prefer hex strip over enchant if both somehow set â€” hex skill row owns hex strip.
-				$EnemySkillWatch[$iRow][$ESW_STRIP_SLOT] = $iHexSlot
-				$EnemySkillWatch[$iRow][$ESW_STRIP_TARGET] = $iHexTarget
-				$EnemySkillWatch[$iRow][$ESW_STRIP_READY] = 1
-				$EnemySkillWatch[$iRow][$ESW_STRIP_KIND] = $ESW_STRIP_HEX
-			EndIf
-		EndIf
-	EndIf
-
-	; --- Follow-up hexes (queued like rupts): ally/heal â†’ Shame/Mark; foe spell â†’ Guilt/Mistrust ---
-	If Not Agent_GetAgentInfo($iCaster, "IsHexed") Then
-		If $iMode = $ESW_MODE_ALLY Or IsHealSkill($iSkill) Then
-			Local $iShame = ESW_FirstShameSlot()
-			If $iShame > 0 Then
-				$EnemySkillWatch[$iRow][$ESW_FOLLOW_SLOT] = $iShame
-				$EnemySkillWatch[$iRow][$ESW_FOLLOW_TARGET] = $iCaster
-			EndIf
-		ElseIf $iMode = $ESW_MODE_FOE Then
-			Local $iGuilt = ESW_FirstGuiltSlot()
-			If $iGuilt > 0 Then
-				$EnemySkillWatch[$iRow][$ESW_FOLLOW_SLOT] = $iGuilt
-				$EnemySkillWatch[$iRow][$ESW_FOLLOW_TARGET] = $iCaster
-			EndIf
-		EndIf
-	EndIf
-
-	; Opportunistic strip: any logged skill can stage Shatter / hex-remove if a target exists.
-	If Not $EnemySkillWatch[$iRow][$ESW_STRIP_READY] Then
-		Local $iOppEnch = ESW_FirstCacheSlot($enchantremove)
-		If $iOppEnch > 0 Then
-			Local $iOppTarget = ESW_BestEnchantStripTarget($aAggroRange)
-			If $iOppTarget <> 0 Then
-				$EnemySkillWatch[$iRow][$ESW_STRIP_SLOT] = $iOppEnch
-				$EnemySkillWatch[$iRow][$ESW_STRIP_TARGET] = $iOppTarget
-				$EnemySkillWatch[$iRow][$ESW_STRIP_READY] = 1
-				$EnemySkillWatch[$iRow][$ESW_STRIP_KIND] = $ESW_STRIP_ENCHANT
-			EndIf
-		EndIf
-	EndIf
-	If Not $EnemySkillWatch[$iRow][$ESW_STRIP_READY] Then
-		Local $iOppHex = ESW_FirstCacheSlot($hexremove)
-		If $iOppHex > 0 Then
-			Local $iOppHexT = ESW_BestHexRemoveTarget($aAggroRange)
-			If $iOppHexT = 0 Then $iOppHexT = Agent_GetMostHexedAlly($aAggroRange)
-			If $iOppHexT <> 0 Then
-				$EnemySkillWatch[$iRow][$ESW_STRIP_SLOT] = $iOppHex
-				$EnemySkillWatch[$iRow][$ESW_STRIP_TARGET] = $iOppHexT
-				$EnemySkillWatch[$iRow][$ESW_STRIP_READY] = 1
-				$EnemySkillWatch[$iRow][$ESW_STRIP_KIND] = $ESW_STRIP_HEX
-			EndIf
-		EndIf
-	EndIf
-EndFunc   ;==>ESW_StageRow
-
-; Classify enemy skill for Shame (ally/heal) vs Guilt/Mistrust (foe-targeted spells).
-; Attacks / shouts / stances are not Guilt fodder even when Target=Enemy (warriors were getting Guilt).
-Func ESW_CastModeFromSkill($aSkillID)
-	$aSkillID = Number($aSkillID)
-	If $aSkillID <= 0 Then Return $ESW_MODE_NONE
-	; Heals are the clearest Shame / Mark of Subversion signal.
-	If IsHealSkill($aSkillID) Then Return $ESW_MODE_ALLY
-	If SkillTargetsSelfOrAlly($aSkillID) Then Return $ESW_MODE_ALLY
-
-	Local $iType = Number(Skill_GetSkillInfo($aSkillID, "SkillType"))
-	Switch $iType
-		Case $GC_I_SKILL_TYPE_ATTACK, $GC_I_SKILL_TYPE_PETATTACK, $GC_I_SKILL_TYPE_SHOUT, _
-				$GC_I_SKILL_TYPE_STANCE, $GC_I_SKILL_TYPE_CHANT, $GC_I_SKILL_TYPE_ECHO_REFRAIN, _
-				$GC_I_SKILL_TYPE_PREPARATION
-			Return $ESW_MODE_NONE
-	EndSwitch
-
-	Local $iTarget = Number(Skill_GetSkillInfo($aSkillID, "Target"))
-	Switch $iTarget
-		Case $GC_I_SKILL_TARGET_ALLY, $GC_I_SKILL_TARGET_OTHER_ALLY, $GC_I_SKILL_TARGET_SELF, $GC_I_SKILL_TARGET_DEAD_ALLY
-			Return $ESW_MODE_ALLY
-		Case $GC_I_SKILL_TARGET_ENEMY
-			; Spell / hex / signet / skill aimed at a foe â†’ Guilt/Mistrust.
-			Return $ESW_MODE_FOE
-	EndSwitch
-	; Enchantments / party heals often use ambiguous Target=1; treat enchant as ally-side.
-	If $iType = $GC_I_SKILL_TYPE_ENCHANTMENT Or $iType = $GC_I_SKILL_TYPE_HEX Then
-		If $iTarget = $GC_I_SKILL_TARGET_ENEMY Then Return $ESW_MODE_FOE
-		If SkillTargetsSelfOrAlly($aSkillID) Then Return $ESW_MODE_ALLY
-	EndIf
-	Return $ESW_MODE_NONE
-EndFunc   ;==>ESW_CastModeFromSkill
-
-; $aMode = "ally" (Shame / Mark of Subversion) or "foe" (Guilt / Mistrust).
-; True if this agent recently cast (or is casting) a matching-mode skill in EnemySkillWatch.
-Func EnemyHasRecentCastMode($aAgent, $aMode = "ally", $aWindowMs = 3000)
-	Local $iAgent = Number(Agent_ConvertID($aAgent))
-	If $iAgent = 0 Then $iAgent = Number($aAgent)
-	If $iAgent = 0 Then Return False
-
-	Local $iWant = $ESW_MODE_NONE
-	Switch StringLower($aMode)
-		Case "ally", "heal", "self"
-			$iWant = $ESW_MODE_ALLY
-		Case "foe", "enemy"
-			$iWant = $ESW_MODE_FOE
-		Case Else
-			Return False
-	EndSwitch
-
-	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
-		If Number($EnemySkillWatch[$r][$ESW_AGENT]) <> $iAgent Then ContinueLoop
-		If Number($EnemySkillWatch[$r][$ESW_MODE]) <> $iWant Then ContinueLoop
-		If $EnemySkillWatch[$r][$ESW_CASTING] Then Return True
-		If $EnemySkillWatch[$r][$ESW_LANDED] <> 0 And TimerDiff($EnemySkillWatch[$r][$ESW_LANDED]) <= $aWindowMs Then Return True
-		If $EnemySkillWatch[$r][$ESW_START] <> 0 And TimerDiff($EnemySkillWatch[$r][$ESW_START]) <= $aWindowMs Then Return True
-	Next
-	Return False
-EndFunc   ;==>EnemyHasRecentCastMode
-
-; Best Shame / Mark of Subversion target from the pool: heal casters first, then ally-mode support.
-Func ESW_BestShameTarget($aAggroRange = 1320)
-	Local $iBest = 0, $iBestScore = -1
-	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
-		If Number($EnemySkillWatch[$r][$ESW_MODE]) <> $ESW_MODE_ALLY Then ContinueLoop
-		Local $bFresh = $EnemySkillWatch[$r][$ESW_CASTING]
-		If Not $bFresh And $EnemySkillWatch[$r][$ESW_LANDED] <> 0 Then
-			$bFresh = TimerDiff($EnemySkillWatch[$r][$ESW_LANDED]) <= 3000
-		EndIf
-		If Not $bFresh And $EnemySkillWatch[$r][$ESW_START] <> 0 Then
-			$bFresh = TimerDiff($EnemySkillWatch[$r][$ESW_START]) <= 3000
-		EndIf
-		If Not $bFresh Then ContinueLoop
-
-		Local $iCaster = $EnemySkillWatch[$r][$ESW_AGENT]
-		If $iCaster = 0 Or Agent_GetAgentInfo($iCaster, "IsDead") Then ContinueLoop
-		If Agent_GetAgentInfo($iCaster, "IsHexed") Then ContinueLoop
-		If Agent_GetDistance($iCaster) > $aAggroRange Then ContinueLoop
-
-		Local $iScore = 10
-		If IsHealSkill($EnemySkillWatch[$r][$ESW_SKILL]) Then $iScore += 200
-		If Agent_IsSupportCasterProfession($iCaster) Then $iScore += 100
-		If $EnemySkillWatch[$r][$ESW_CASTING] Then $iScore += 50
-		$iScore += Agent_GetNumberOfEnemiesNearAgent(300, $iCaster)
-		If $iScore > $iBestScore Then
-			$iBestScore = $iScore
-			$iBest = $iCaster
-		EndIf
-	Next
-	Return $iBest
-EndFunc   ;==>ESW_BestShameTarget
-
-; Best Guilt / Mistrust target: foe-mode *spell* casts (not martial attacks).
-Func ESW_BestGuiltTarget($aAggroRange = 1320)
-	Local $iBest = 0, $iBestScore = -1
-	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
-		If Number($EnemySkillWatch[$r][$ESW_MODE]) <> $ESW_MODE_FOE Then ContinueLoop
-		Local $bFresh = $EnemySkillWatch[$r][$ESW_CASTING]
-		If Not $bFresh And $EnemySkillWatch[$r][$ESW_LANDED] <> 0 Then
-			$bFresh = TimerDiff($EnemySkillWatch[$r][$ESW_LANDED]) <= 3000
-		EndIf
-		If Not $bFresh And $EnemySkillWatch[$r][$ESW_START] <> 0 Then
-			$bFresh = TimerDiff($EnemySkillWatch[$r][$ESW_START]) <= 3000
-		EndIf
-		If Not $bFresh Then ContinueLoop
-
-		Local $iCaster = $EnemySkillWatch[$r][$ESW_AGENT]
-		If $iCaster = 0 Or Agent_GetAgentInfo($iCaster, "IsDead") Then ContinueLoop
-		If Agent_GetAgentInfo($iCaster, "IsHexed") Then ContinueLoop
-		If Agent_GetDistance($iCaster) > $aAggroRange Then ContinueLoop
-
-		Local $iScore = 10
-		If $EnemySkillWatch[$r][$ESW_CASTING] Then $iScore += 50
-		If Agent_IsSupportCasterProfession($iCaster) Then $iScore += 10
-		; Prefer casters over martials when both have a foe-mode spell in the pool.
-		If Not Agent_IsMartial($iCaster) Then $iScore += 40
-		$iScore += Agent_GetNumberOfEnemiesNearAgent(300, $iCaster)
-		If $iScore > $iBestScore Then
-			$iBestScore = $iScore
-			$iBest = $iCaster
-		EndIf
-	Next
-	Return $iBest
-EndFunc   ;==>ESW_BestGuiltTarget
-
-; When SkillLog is live: only land/prune/restage â€” discovery comes from EnemySkillWatch_Note via SetEvent.
-; Fallback poll still discovers casts when detours are off / not live.
-Func EnemySkillWatch_Poll($aRange = 1320)
-	If $ESW_POLL_INTERVAL > 0 And $ESW_LastPoll <> 0 And TimerDiff($ESW_LastPoll) < $ESW_POLL_INTERVAL Then Return
-	$ESW_LastPoll = TimerInit()
-
-	Local $bSkillLogLive = False
-	If IsDeclared("g_b_SkillLogLive") Then $bSkillLogLive = ($g_b_SkillLogLive = True)
-
-	Local $sSeen = ","
-	If Not $bSkillLogLive Then
-		Local $aPtr = Agent_GetFilteredAgentArray(4, $GC_I_AGENT_TYPE_LIVING, $GC_I_ALLEGIANCE_ENEMY, $aRange, Agent_GetAgentPtr(-2), 0)
-		Local $n, $iAgent, $iSkill
-		For $n = 1 To $aPtr[0]
-			$iAgent = Number(Agent_GetAgentInfo($aPtr[$n], "ID"))
-			If $iAgent = 0 Then ContinueLoop
-			If Not ESW_IsCastPose($iAgent) Then ContinueLoop
-			$iSkill = Number(Agent_GetAgentInfo($iAgent, "Skill"))
-			If $iSkill = 0 Then ContinueLoop
-			$sSeen &= $iAgent & ","
-			EnemySkillWatch_Note($iAgent, $iSkill)
-		Next
-	Else
-		; SkillLog-fed rows: mark landed when cast pose ends.
-		Local $rPose
-		For $rPose = 1 To $EnemySkillWatch[0][$ESW_AGENT]
-			If Not $EnemySkillWatch[$rPose][$ESW_CASTING] Then ContinueLoop
-			Local $iC = Number($EnemySkillWatch[$rPose][$ESW_AGENT])
-			If $iC <> 0 And ESW_IsCastPose($iC) Then $sSeen &= $iC & ","
-		Next
-	EndIf
-
-	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
-		If Not $EnemySkillWatch[$r][$ESW_CASTING] Then ContinueLoop
-		If StringInStr($sSeen, "," & $EnemySkillWatch[$r][$ESW_AGENT] & ",") Then ContinueLoop
-		If TimerDiff($EnemySkillWatch[$r][$ESW_START]) < $ESW_POLL_SLACK_MS Then ContinueLoop
-		$EnemySkillWatch[$r][$ESW_CASTING] = 0
-		$EnemySkillWatch[$r][$ESW_LANDED] = TimerInit()
-	Next
-
-	ESW_Prune()
-	If $bSkillLogLive Then ESW_RefreshAllStaging($aRange)
-EndFunc   ;==>EnemySkillWatch_Poll
-
-; Compat: pool is owned by UseSkills. Kept so old call sites do not hard-fail.
-Func ESW_React($aAggroRange)
-	EnemySkillWatch_Poll($aAggroRange + 200)
-	Return False
-EndFunc
-
-; Mark a pool caster as handled after a successful rupt.
-Func ESW_MarkCasterHandled($aCasterID)
-	$aCasterID = Number($aCasterID)
-	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
-		If $EnemySkillWatch[$r][$ESW_AGENT] <> $aCasterID Then ContinueLoop
-		$EnemySkillWatch[$r][$ESW_CASTING] = 0
-		$EnemySkillWatch[$r][$ESW_LANDED] = TimerInit()
-		$EnemySkillWatch[$r][$ESW_RUPT_SLOT] = 0
-		$EnemySkillWatch[$r][$ESW_RUPT_TARGET] = 0
-		Return
-	Next
-EndFunc
-
-; Best enchanted foe for Shatter Enchantment etc.
-; Prefers a foe who just cast/landed a self/ally enchant in the pool; otherwise any enchanted foe in range.
-Func ESW_BestEnchantStripTarget($aAggroRange = 1320)
-	Local $iTarget = 0, $fBest = 1e12, $r, $iAgent, $fDist, $fAge, $fTier, $fScore, $bRow, $iSkill
-
-	; Tier 0: pool â€” self/ally enchant just landed (or caster already enchanted while casting).
-	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
-		If Number($EnemySkillWatch[$r][$ESW_STRIP_KIND]) = $ESW_STRIP_ENCHANT Then
-			$iAgent = Number($EnemySkillWatch[$r][$ESW_STRIP_TARGET])
-			If $iAgent = 0 Then $iAgent = Number($EnemySkillWatch[$r][$ESW_AGENT])
-		Else
-			If $EnemySkillWatch[$r][$ESW_TYPE] <> $GC_I_SKILL_TYPE_ENCHANTMENT And Not IsEnchantmentSkill($EnemySkillWatch[$r][$ESW_SKILL]) Then ContinueLoop
-			$iAgent = Number($EnemySkillWatch[$r][$ESW_AGENT])
-		EndIf
-		If $iAgent = 0 Or Agent_GetDistance($iAgent) > $aAggroRange Then ContinueLoop
-
-		$bRow = False
-		If $EnemySkillWatch[$r][$ESW_CASTING] Then
-			; Mid-cast: only strip if they already carry an enchant (Shatter requirement).
-			$bRow = Agent_GetAgentInfo($iAgent, "IsEnchanted")
-		ElseIf $EnemySkillWatch[$r][$ESW_LANDED] <> 0 And TimerDiff($EnemySkillWatch[$r][$ESW_LANDED]) <= $ESW_STRIP_WINDOW_MS Then
-			$iSkill = Number($EnemySkillWatch[$r][$ESW_SKILL])
-			; Fresh self/ally enchant land â†’ strip even if IsEnchanted bit lags a tick.
-			$bRow = SkillTargetsSelfOrAlly($iSkill) Or Agent_GetAgentInfo($iAgent, "IsEnchanted") Or $EnemySkillWatch[$r][$ESW_STRIP_READY]
-		EndIf
-		If Not $bRow Then ContinueLoop
-
-		$fDist = Agent_GetDistance($iAgent)
-		If $EnemySkillWatch[$r][$ESW_CASTING] Then
-			$fAge = TimerDiff($EnemySkillWatch[$r][$ESW_START])
-		Else
-			$fAge = TimerDiff($EnemySkillWatch[$r][$ESW_LANDED])
-		EndIf
-		$fScore = $fAge + $fDist * 0.05
-		If Agent_GetAgentInfo($iAgent, "IsKnocked") Then $fScore += 400
-		If $fScore < $fBest Then
-			$fBest = $fScore
-			$iTarget = $iAgent
-		EndIf
-	Next
-	If $iTarget <> 0 Then Return $iTarget
-
-	; Tier 1: any currently enchanted foe in range.
-	Local $aPtr = Agent_GetFilteredAgentArray(4, $GC_I_AGENT_TYPE_LIVING, $GC_I_ALLEGIANCE_ENEMY, $aAggroRange, Agent_GetAgentPtr(-2), $ESW_EFFECT_ENCHANTED)
-	For $n = 1 To $aPtr[0]
-		$iAgent = Number(Agent_GetAgentInfo($aPtr[$n], "ID"))
-		If $iAgent = 0 Then ContinueLoop
-		$fDist = Agent_GetDistance($iAgent)
-		$fScore = 100000 + $fDist * 0.05
-		If Agent_GetAgentInfo($iAgent, "IsKnocked") Then $fScore += 400
-		If $fScore < $fBest Then
-			$fBest = $fScore
-			$iTarget = $iAgent
-		EndIf
-	Next
-	If $iTarget = 0 Then $iTarget = Agent_GetBalledEnchantedEnemy($aAggroRange)
-	Return $iTarget
-EndFunc   ;==>ESW_BestEnchantStripTarget
-
-; Best hexed ally (incl. self) for hex removal â€” degen first, then lowest HP.
-Func ESW_BestHexRemoveTarget($aAggroRange = 1320)
-	Local $bFresh = False
-	For $r = 1 To $EnemySkillWatch[0][$ESW_AGENT]
-		Local $bRow = $EnemySkillWatch[$r][$ESW_CASTING]
-		If Not $bRow And $EnemySkillWatch[$r][$ESW_LANDED] <> 0 Then
-			$bRow = TimerDiff($EnemySkillWatch[$r][$ESW_LANDED]) <= $ESW_STRIP_WINDOW_MS
-		EndIf
-		If Not $bRow Then ContinueLoop
-		If $EnemySkillWatch[$r][$ESW_TYPE] = $GC_I_SKILL_TYPE_HEX Then
-			$bFresh = True
-			ExitLoop
-		EndIf
-	Next
-	If Not $bFresh Then Return 0
-
-	Local $iMy = Number(Agent_GetAgentInfo(-2, "ID"))
-	Local $aPtr = Agent_GetFilteredAgentArray(4, $GC_I_AGENT_TYPE_LIVING, $GC_I_ALLEGIANCE_ALLY, $aAggroRange, Agent_GetAgentPtr(-2), BitOR($ESW_EFFECT_HEXED, $ESW_EFFECT_DEGEN_HEXED))
-	Local $aId[1], $nId = 0
-	ReDim $aId[$aPtr[0] + 2]
-	For $n = 1 To $aPtr[0]
-		$nId += 1
-		$aId[$nId] = Number(Agent_GetAgentInfo($aPtr[$n], "ID"))
-	Next
-	Local $bHaveSelf = False
-	For $n = 1 To $nId
-		If $aId[$n] = $iMy Then $bHaveSelf = True
-	Next
-	If Not $bHaveSelf And (Agent_GetAgentInfo(-2, "IsHexed") Or Agent_GetAgentInfo(-2, "IsDegenHexed")) Then
-		$nId += 1
-		$aId[$nId] = $iMy
-	EndIf
-
-	Local $iTarget = 0, $fBest = 1e12
-	For $n = 1 To $nId
-		Local $iAgent = $aId[$n]
-		If $iAgent = 0 Then ContinueLoop
-		Local $bDegen = Agent_GetAgentInfo($iAgent, "IsDegenHexed")
-		Local $fDist = Agent_GetDistance($iAgent)
-		Local $fScore = Number(Agent_GetAgentInfo($iAgent, "HP")) * 10000 + $fDist * 0.05
-		If Not $bDegen Then $fScore += 100000
-		If $fScore < $fBest Then
-			$fBest = $fScore
-			$iTarget = $iAgent
-		EndIf
-	Next
-	Return $iTarget
-EndFunc   ;==>ESW_BestHexRemoveTarget
 
 ; Milliseconds until this slot lands on $aTarget. Thin wrapper â†’ Skill_GetMyActivationTime.
 Func GetAdjustedActivation($aSkillSlot, $aTarget = 0)
@@ -1376,69 +389,10 @@ Func ESW_IsCastPose($aAgent)
 	Return $iState = 0x41 Or $iState = 0x245
 EndFunc
 
-; Lightweight CanUse for ESW_React when the interrupt/strip target is already known.
-Func ESW_CanUse($aSkillSlot, $aAggroRange = 1200, $aKnownTarget = 0)
-	If $aSkillSlot < 1 Or $aSkillSlot > 8 Then Return False
-	If $SkillBarCache[$aSkillSlot][$all] = 0 Then Return False
-	If Not Skill_GetSkillbarInfo($aSkillSlot, "IsRecharged") Then Return False
-
-	If Number($aKnownTarget) = 0 Then
-		If $SkillBarCache[$aSkillSlot][$rupt] Then
-			$BestTarget = 0
-			Return False
-		EndIf
-		$BestTarget = GetBestTargetBySkillSlot($aSkillSlot, $aAggroRange)
-	Else
-		$BestTarget = Number($aKnownTarget)
-	EndIf
-
-	If $BestTarget = 0 Then Return False
-	If Agent_GetDistance($BestTarget) > $aAggroRange Then Return False
-	Return CanCast($aSkillSlot)
-EndFunc   ;==>ESW_CanUse
-
 ; ESW / Logic name aliases
 Func GetRuptSlot($aSkillID, $aCasterID, $aAggroRange = 1320)
 	Return GetBestRupt($aSkillID, $aCasterID, $aAggroRange)
 EndFunc   ;==>GetRuptSlot
-
-Func TryUseSkill($aSkillSlot, $aTarget = -2, $aCallTarget = False, $aTimeout = 0)
-	Return Skill_TryUseSkill($aSkillSlot, $aTarget, $aCallTarget, $aTimeout)
-EndFunc   ;==>TryUseSkill
-
-Func ESW_RemoveRow($iRow)
-	Local $n = $EnemySkillWatch[0][$ESW_AGENT]
-	If $iRow < 1 Or $iRow > $n Then Return
-	For $k = $iRow To $n - 1
-		For $c = 0 To $ESW_COLS - 1
-			$EnemySkillWatch[$k][$c] = $EnemySkillWatch[$k + 1][$c]
-		Next
-	Next
-	$EnemySkillWatch[0][$ESW_AGENT] = $n - 1
-	If $n > 1 Then ReDim $EnemySkillWatch[$n][$ESW_COLS]
-EndFunc
-
-Func ESW_Prune()
-	Local $r = 1
-	While $r <= $EnemySkillWatch[0][$ESW_AGENT]
-		Local $bDrop = False
-		If $EnemySkillWatch[$r][$ESW_CASTING] Then
-			If TimerDiff($EnemySkillWatch[$r][$ESW_START]) > $EnemySkillWatch[$r][$ESW_ACTIVATION] + 400 Then $bDrop = True
-		Else
-			Local $iKeep = 200
-			Switch $EnemySkillWatch[$r][$ESW_TYPE]
-				Case $GC_I_SKILL_TYPE_ENCHANTMENT, $GC_I_SKILL_TYPE_HEX
-					$iKeep = $ESW_STRIP_WINDOW_MS
-			EndSwitch
-			If $EnemySkillWatch[$r][$ESW_LANDED] = 0 Or TimerDiff($EnemySkillWatch[$r][$ESW_LANDED]) > $iKeep Then $bDrop = True
-		EndIf
-		If $bDrop Then
-			ESW_RemoveRow($r)
-		Else
-			$r += 1
-		EndIf
-	WEnd
-EndFunc
 
 ; SkillLog_Respond caster handler. Return: 0 = ignore/handled, 1 = reaction used.
 ; Cast detect = SkillLog. Immediate landable rupt here; late-hit / strip after land = Listen drain in Fight.
@@ -1472,11 +426,6 @@ Func OnSpell($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart = 0, $
 		Return 0
 	EndIf
 
-	; Feed ESW for strip / Shame-Guilt (Listen drains those). Interrupt fires here.
-	If Agent_GetAgentInfo($aCasterID, "Allegiance") = 3 Then
-		EnemySkillWatch_Note($aCasterID, $aSkillID, $aTargetID)
-	EndIf
-
 	If Agent_GetAgentInfo(-2, "IsCasting") Or OurActivationBusyMs() > 0 Then Return 0
 
 	; Classic Logic: handler interrupts immediately (no short-only / Listen dependency).
@@ -1484,64 +433,51 @@ Func OnSpell($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart = 0, $
 		; Skip aftercast gate until we have actually started a cast (501 = never).
 		If $AftercastTimer <> 501 And $MyActivation > 0 And TimerDiff($AftercastTimer) < $MyActivation Then Return 0
 		Local $iRuptSlot = GetBestRupt($aSkillID, $aCasterID, $aAggroRange)
-		If $iRuptSlot > 0 And Agent_GetDistance($aCasterID) < 1200 And CanCast($iRuptSlot) Then
-			Local $bOk = Skill_UseSkill($iRuptSlot, $aCasterID)
-			LogMyInterrupt($iRuptSlot, $aCasterID, $bOk, TimerDiff($aCastStart))
-			If $bOk Then
-				If $SkillBarCache[$iRuptSlot][$all] = $GC_I_SKILL_ID_POWER_LEECH Then
-					Local $iEther = $SkillbarSlot[$GC_I_SKILL_ID_ETHER_PHANTOM]
-					If $iEther > 0 And Skill_GetSkillbarInfo($iEther, "IsRecharged") Then
-						Sleep(50)
-						Skill_UseSkill($iEther, $aCasterID)
-					EndIf
+		If $iRuptSlot > 0 And Agent_GetDistance($aCasterID) < 1200 Then
+			If Skill_TryUseSkill($iRuptSlot, $aCasterID) Then Return 1
+		EndIf
+			; Enchant removal — only when we see an enchantment being cast
+		If IsEnchantmentSkill($aSkillID) Or Skill_GetSkillInfo($aSkillID, "SkillType") = $Enchantment Then
+			For $i = 1 To 8
+				If $SkillBarCache[$i][$enchantremove] = "" Then ContinueLoop
+				If Not Skill_GetSkillbarInfo($i, "IsRecharged") Then ContinueLoop
+				If $SkillBarCache[$i][$energyreq] > Agent_GetAgentInfo(-2, "CurrentEnergy") Then ContinueLoop
+
+				Local $lStripTarget = 0
+				; Self/ally enchants â†’ strip the caster; else caster if already enchanted, else balled.
+				If SkillTargetsSelfOrAlly($aSkillID) and Agent_GetAgentInfo($aCasterID, "IsEnchanted") Then
+					$lStripTarget = $aCasterID
+				Else
+					$lStripTarget = Agent_GetBalledEnchantedEnemy($aAggroRange)
 				EndIf
-				Return 1
-			EndIf
+				If $lStripTarget = 0 Or Agent_GetDistance($lStripTarget) > $aAggroRange Then ContinueLoop
+				; Shatter needs an enchanted target â€” fresh self-enchant at cast start is not ready yet.
+				If Not Agent_GetAgentInfo($lStripTarget, "IsEnchanted") Then ContinueLoop
+				If Skill_TryUseSkill($i, $lStripTarget, False, 0) Then Return 1
+			Next
+		EndIf
+
+		;~ 	Hex removal, only when we see a hex being cast
+		If IsHexSpell($aSkillID) Then
+			For $i = 1 To 8
+				If $SkillBarCache[$i][$hexremove] = "" Then ContinueLoop
+				If Not Skill_GetSkillbarInfo($i, "IsRecharged") Then ContinueLoop
+				If $SkillBarCache[$i][$energyreq] > Agent_GetAgentInfo(-2, "CurrentEnergy") Then ContinueLoop
+
+				Local $lHexTarget = 0
+				; Prefer cast target if it is an ally; else most-hexed ally in range.
+				If $aTargetID <> 0 And Agent_GetAgentInfo($aTargetID, "Allegiance") = 1 And Not Agent_GetAgentInfo($aTargetID, "IsDead") Then
+					$lHexTarget = $aTargetID
+				Else
+					$lHexTarget = Agent_GetMostHexedAlly($aAggroRange)
+				EndIf
+				If $lHexTarget = 0 Then ContinueLoop
+
+				If Skill_TryUseSkill($i, $lHexTarget, False, 0) Then Return 1
+			Next
 		EndIf
 	EndIf
 
-	; Enchant removal — only when we see an enchantment being cast
-	If IsEnchantmentSkill($aSkillID) Or Skill_GetSkillInfo($aSkillID, "SkillType") = $Enchantment Then
-		For $i = 1 To 8
-			If $SkillBarCache[$i][$enchantremove] = "" Then ContinueLoop
-			If Not Skill_GetSkillbarInfo($i, "IsRecharged") Then ContinueLoop
-			If $SkillBarCache[$i][$energyreq] > Agent_GetAgentInfo(-2, "CurrentEnergy") Then ContinueLoop
-
-			Local $lStripTarget = 0
-			; Self/ally enchants â†’ strip the caster; else caster if already enchanted, else balled.
-			If SkillTargetsSelfOrAlly($aSkillID) Then
-				$lStripTarget = $aCasterID
-			ElseIf Agent_GetAgentInfo($aCasterID, "IsEnchanted") Then
-				$lStripTarget = $aCasterID
-			Else
-				$lStripTarget = Agent_GetBalledEnchantedEnemy($aAggroRange)
-			EndIf
-			If $lStripTarget = 0 Or Agent_GetDistance($lStripTarget) > $aAggroRange Then ContinueLoop
-			; Shatter needs an enchanted target â€” fresh self-enchant at cast start is not ready yet.
-			If Not Agent_GetAgentInfo($lStripTarget, "IsEnchanted") Then ContinueLoop
-			If Skill_TryUseSkill($i, $lStripTarget, False, 0) Then Return 1
-		Next
-	EndIf
-
-	;~ 	Hex removal Ã¢â‚¬â€ only when we see a hex being cast
-	If IsHexSpell($aSkillID) Then
-		For $i = 1 To 8
-			If $SkillBarCache[$i][$hexremove] = "" Then ContinueLoop
-			If Not Skill_GetSkillbarInfo($i, "IsRecharged") Then ContinueLoop
-			If $SkillBarCache[$i][$energyreq] > Agent_GetAgentInfo(-2, "CurrentEnergy") Then ContinueLoop
-
-			Local $lHexTarget = 0
-			; Prefer cast target if it is an ally; else most-hexed ally in range.
-			If $aTargetID <> 0 And Agent_GetAgentInfo($aTargetID, "Allegiance") = 1 And Not Agent_GetAgentInfo($aTargetID, "IsDead") Then
-				$lHexTarget = $aTargetID
-			Else
-				$lHexTarget = Agent_GetMostHexedAlly($aAggroRange)
-			EndIf
-			If $lHexTarget = 0 Then ContinueLoop
-
-			If Skill_TryUseSkill($i, $lHexTarget, False, 0) Then Return 1
-		Next
-	EndIf
 
 	;~ 	Prot skills
 	If $ProtSlots[0] > 0 Then
@@ -1721,7 +657,6 @@ Func OnMelee($aCasterID, $aTargetID, $aSkillID, $lActivation, $aCastStart = 0, $
 	If Map_GetInstanceInfo("Type") <> $GC_I_MAP_TYPE_EXPLORABLE Or Agent_GetAgentInfo(-2, "IsDead") Or Agent_GetAgentInfo(-2, "IsKnocked") Then Return 0
 
 	If Agent_GetAgentInfo($aCasterID, "Allegiance") = 3 Then
-		EnemySkillWatch_Note($aCasterID, $aSkillID, $aTargetID)
 		If OurActivationBusyMs() <= 0 And Not Agent_GetAgentInfo(-2, "IsCasting") Then
 			Local $iRuptSlot = GetBestRupt($aSkillID, $aCasterID, $aAggroRange)
 			If $iRuptSlot > 0 Then
@@ -1729,7 +664,7 @@ Func OnMelee($aCasterID, $aTargetID, $aSkillID, $lActivation, $aCastStart = 0, $
 				Local $iLand = GetAdjustedActivation($iRuptSlot, $aCasterID)
 				If $iEnemyAct <= 250 Or $iEnemyAct <= $iLand + 50 Then
 					Local $bOk = Skill_TryUseSkill($iRuptSlot, $aCasterID, False, 0)
-					LogMyInterrupt($iRuptSlot, $aCasterID, $bOk, TimerDiff($aCastStart))
+					LogMyInterrupt($aCasterID, $aSkillID, $bOk, TimerDiff($aCastStart))
 					If $bOk Then Return 1
 				EndIf
 			EndIf
@@ -1859,12 +794,18 @@ Func OnMelee($aCasterID, $aTargetID, $aSkillID, $lActivation, $aCastStart = 0, $
 EndFunc   ;==>OnMelee
 
 ; Pick a ready interrupt slot for this enemy cast. Soft rupts (Power Drain etc.) are valid unless
-; the cast RequiresHardRupt (attack skills). Energy-gain rupts win first when CurrentEnergy < 20.
+; the cast RequiresHardRupt (attack skills) or we are hexed with Backfire/Guilt/Mistrust (spell-punish).
+; Energy-gain rupts win first when CurrentEnergy < 20 (and still allowed).
 Func GetBestRupt($aSkillID, $aCasterID, $aAggroRange = 1320)
 	Local $iDist = Agent_GetDistance($aCasterID)
 	If $iDist > $aAggroRange Or $iDist = 0 Then Return 0
 
-	Local $bNeedsHardRupt = RequiresHardRupt($aSkillID)
+	; Soft spell rupts trigger Backfire / Guilt / Mistrust — only hard rupts then.
+	Local $bNeedsHardRupt = RequiresHardRupt($aSkillID) _
+			Or Skill_HasEffect($Backfire) _
+			Or Skill_HasEffect($Guilt) _
+			Or Skill_HasEffect($Mistrust) _
+			Or Skill_HasEffect($Mistrust_PvP)
 	Local $lEnergy = Agent_GetAgentInfo(-2, "CurrentEnergy")
 	Local $lReadySlot = 0
 
@@ -1872,15 +813,40 @@ Func GetBestRupt($aSkillID, $aCasterID, $aAggroRange = 1320)
 		Local $aSkillSlot = $RuptSlots[$i]
 		If Not Skill_GetSkillbarInfo($aSkillSlot, "IsRecharged") Then ContinueLoop
 		If $SkillBarCache[$aSkillSlot][$energyreq] > $lEnergy Then ContinueLoop
+		; $hardrupt column = IsRuptSkill(id, True) at CacheSkillBar.
 		If $bNeedsHardRupt And $SkillBarCache[$aSkillSlot][$hardrupt] = "" Then ContinueLoop
 		; Overload only interrupts hexed casters.
 		If $SkillBarCache[$aSkillSlot][$all] = $Overload And Not Agent_GetAgentInfo($aCasterID, "IsHexed") Then ContinueLoop
+		; Ignorance/Rust/VoR/Backfire type gates (CanCast without busy — we may stage while casting).
+		If Not CanCastRuptEffects($aSkillSlot) Then ContinueLoop
 		; Priority: Power Drain / energy-gain rupt when low energy.
 		If IsEnergyGainRuptSkill($SkillBarCache[$aSkillSlot][$all]) And $lEnergy < 20 Then Return $aSkillSlot
 		If $lReadySlot = 0 Then $lReadySlot = $aSkillSlot
 	Next
 	Return $lReadySlot
 EndFunc   ;==>GetBestRupt
+
+; CanCast type/hex gates for a rupt slot, ignoring IsCasting / aftercast busy (staging OK while busy).
+Func CanCastRuptEffects($aSkillSlot)
+	If $aSkillSlot < 1 Or $aSkillSlot > 8 Then Return False
+	If Skill_HasEffect($Diversion) Then Return False
+	Switch $SkillBarCache[$aSkillSlot][$type]
+		Case $Hex, $Spell, $Enchantment, $Well, $Ward, $ItemSpell, $WeaponSpell
+			If Skill_HasEffect($Backfire) Or Skill_HasEffect($Soul_Leech) _
+					Or Skill_HasEffect($Visions_of_Regret) Or Skill_HasEffect($Visions_of_Regret_PvP) _
+					Or Skill_HasEffect($Mistrust) Or Skill_HasEffect($Mistrust_PvP) _
+					Or Skill_HasEffect($Guilt) Or Skill_HasEffect($Mark_of_Subversion) _
+					Or Skill_HasEffect($Spiteful_Spirit) Then Return False
+		Case $Signet
+			If Skill_HasEffect($Visions_of_Regret) Or Skill_HasEffect($Visions_of_Regret_PvP) _
+					Or Skill_HasEffect($Spiteful_Spirit) Then Return False
+			If Skill_HasEffect($Ignorance) Or Skill_HasEffect($Rust) Then Return False
+		Case $Ritual, $Glyph, $Shout, $Preparation, $Trap, $Chant, $EchoRefrain, $Disguise
+			If Skill_HasEffect($Visions_of_Regret) Or Skill_HasEffect($Visions_of_Regret_PvP) _
+					Or Skill_HasEffect($Spiteful_Spirit) Then Return False
+	EndSwitch
+	Return True
+EndFunc   ;==>CanCastRuptEffects
 
 ;~ Description: Compatibility wrapper. Prefer Skill_GetSkillbarInfo directly.
 ;~ GetSkillbarInfo($slot[, $hero]) -> SkillID
@@ -2119,6 +1085,8 @@ EndFunc   ;==>CanAttack
 
 ;~ Description: Determines whether we should cast based on recharge/energy/adrenaline and
 ;~ a few hard shut-downs (knocked/dead). Activation busy / IsCasting block; aftercast does not.
+;~ Also blocks skill types that punish hexes (Backfire/Diversion/…) — same idea as old Logic CanCast.
+;~ (OnSpell IsAnnoyingSkill=1/2 only DoubleCancels mid-cast when those hexes are cast AT you.)
 Func CanCast($aSkillSlot = 0)
 ; REVIEW: GwAu3 equivalent is UAI_CanUse() + per-skill CanUse_* handlers. This one uses $SkillBarCache.
 	UAI_CachePlayerEffectsAndBonds()
@@ -2128,6 +1096,9 @@ Func CanCast($aSkillSlot = 0)
 	If Agent_GetAgentInfo(-2, "IsKnocked") Or Agent_GetAgentInfo(-2, "IsDead") Or Wipe() Then Return False
 	If OurActivationBusyMs() > 0 Or Agent_GetAgentInfo(-2, "IsCasting") Then Return False
 
+	; Diversion: next skill (any) takes huge recharge — never start one while hexed.
+	If Skill_HasEffect($Diversion) Then Return False
+
 	If $aSkillSlot <> 0 Then
 		If Not Skill_GetSkillbarInfo($aSkillSlot, "IsRecharged") Then Return False
 		Local $lEnergyReq = $SkillBarCache[$aSkillSlot][$energyreq]
@@ -2136,10 +1107,35 @@ Func CanCast($aSkillSlot = 0)
 		If $SkillBarCache[$aSkillSlot][$adrereq] <> 0 And Skill_GetSkillbarInfo($aSkillSlot, "Adrenaline") < $SkillBarCache[$aSkillSlot][$adrereq] Then Return False
 	EndIf
 
-	; Stance already active -> skip re-cast
-	If $aSkillSlot <> 0 And $SkillBarCache[$aSkillSlot][$type] = $Stance Then
-		If Skill_HasEffect($SkillBarCache[$aSkillSlot][$all]) Then Return False
-	EndIf
+	If $aSkillSlot = 0 Then Return True
+
+	; AutoIt Switch does not fall through — Signet/Shout/Chant need their own Cases (not a shared list + later Case).
+	Switch $SkillBarCache[$aSkillSlot][$type]
+		Case $Hex, $Spell, $Enchantment, $Well, $Ward, $ItemSpell, $WeaponSpell
+			; Spell-punish hexes (IsAnnoyingSkill type 1 + close cousins). Soft rupts are $Spell — blocked here.
+			If Skill_HasEffect($Backfire) Or Skill_HasEffect($Soul_Leech) _
+					Or Skill_HasEffect($Visions_of_Regret) Or Skill_HasEffect($Visions_of_Regret_PvP) _
+					Or Skill_HasEffect($Mistrust) Or Skill_HasEffect($Mistrust_PvP) _
+					Or Skill_HasEffect($Guilt) Or Skill_HasEffect($Mark_of_Subversion) _
+					Or Skill_HasEffect($Spiteful_Spirit) Then Return False
+		Case $Stance
+			If Skill_HasEffect($SkillBarCache[$aSkillSlot][$all]) Then Return False
+		Case $Attack
+			If Skill_HasEffect($Ineptitude) Or Skill_HasEffect($Clumsiness) Or Skill_HasEffect($Spiteful_Spirit) _
+					Or Skill_HasEffect($Wandering_Eye) Or Skill_HasEffect($Wandering_Eye_PvP) Then Return False
+		Case $Signet
+			If Skill_HasEffect($Visions_of_Regret) Or Skill_HasEffect($Visions_of_Regret_PvP) _
+					Or Skill_HasEffect($Spiteful_Spirit) Then Return False
+			If Skill_HasEffect($Ignorance) Or Skill_HasEffect($Rust) Then Return False
+		Case $Shout, $Chant
+			If Skill_HasEffect($Visions_of_Regret) Or Skill_HasEffect($Visions_of_Regret_PvP) _
+					Or Skill_HasEffect($Spiteful_Spirit) Then Return False
+			If Skill_HasEffect($Cacophony) Or Skill_HasEffect($Ulcerous_Lungs) _
+					Or Skill_HasEffect($Vocal_Minority) Or Skill_HasEffect($Well_of_Silence) Then Return False
+		Case $Ritual, $Glyph, $Preparation, $Trap, $EchoRefrain, $Disguise
+			If Skill_HasEffect($Visions_of_Regret) Or Skill_HasEffect($Visions_of_Regret_PvP) _
+					Or Skill_HasEffect($Spiteful_Spirit) Then Return False
+	EndSwitch
 	Return True
 
 EndFunc   ;==>CanCast
@@ -2192,12 +1188,8 @@ Func CanUse($aSkillSlot, $aAggroRange = 1320, $aSkillType = $all)
 ; REVIEW: GwAu3 equivalent is UAI_CanUse(). Keep this while using Logic cache.
 	If $aSkillSlot = "" Then Return
 	; Reactive columns: aftercast must not block; still require energy/recharge via CanCastFollowUp.
-	Switch $aSkillType
-		Case $rupt, $enchantremove, $hexremove, $hexes
-			If Not CanCastFollowUp($aSkillSlot) Then Return False
-		Case Else
-			If Not CanCast($aSkillSlot) Then Return False
-	EndSwitch
+	If Not CanCast($aSkillSlot) Then Return False
+
 	If Skill_HasEffect($Glyph_Of_Sacrifice) And $aSkillSlot <> $SkillbarSlot[$Meteor_Shower] Then Return False
 
 	Switch $aSkillType
@@ -2209,22 +1201,12 @@ Func CanUse($aSkillSlot, $aAggroRange = 1320, $aSkillType = $all)
 
 		Case $enchantremove
 			If $SkillBarCache[$aSkillSlot][$enchantremove] = "" Then Return False
-			$BestTarget = ESW_BestEnchantStripTarget($aAggroRange)
+			$BestTarget = Agent_GetBalledEnchantedEnemy($aAggroRange)
 			If $BestTarget = 0 Or Agent_GetDistance($BestTarget) > $aAggroRange Then
 				$BestTarget = 0
 				Return False
 			EndIf
 			Return True
-
-		Case $hexremove
-			If $SkillBarCache[$aSkillSlot][$hexremove] = "" Then Return False
-			$BestTarget = ESW_BestHexRemoveTarget($aAggroRange)
-			If $BestTarget = 0 Then $BestTarget = Agent_GetMostHexedAlly($aAggroRange)
-			If $BestTarget = 0 Or Agent_GetDistance($BestTarget) > $aAggroRange Then
-				$BestTarget = 0
-				Return False
-			EndIf
-			; Fall through for hexremove-specific skill conditions below.
 
 		Case $hexes
 			If $SkillBarCache[$aSkillSlot][$hexes] = "" Then Return False

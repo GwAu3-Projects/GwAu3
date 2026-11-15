@@ -123,35 +123,29 @@ Func GuiButtonHandler()
 	EndSwitch
 EndFunc   ;==>GuiButtonHandler
 
-Out("Exemple_SkillLog_Respond — verbose HITs on; expect HIT lines on casts.")
+Out("Exemple_SkillLog_Respond — OnSpell/OnMelee; quiet interrupt lines only.")
 Core_AutoStart()
 
 While Not $BotRunning
 	Sleep(100)
 WEnd
 
-; Show every SkillLog activate in the edit box (RuptBot leaves this off).
-$g_b_SkillLogVerboseHits = True
+$g_b_SkillLogVerboseHits = False
 
 CacheSkillBar()
 Out("ruptSlots=" & $RuptSlots[0] & " RuptEvent=" & ($RuptEventSystem ? "yes" : "no") & " ProtEvent=" & ($ProtEventSystem ? "yes" : "no"))
 
-; CacheSkillBar arms OnSpell/OnMelee then SetLive(False). Force live like Fight.
 If $g_s_SkillActivate = "" Then
 	Out("CacheSkillBar did not arm SkillLog — forcing Respond(OnSpell,OnMelee)")
 	SkillLog_Respond("OnSpell", "OnMelee")
 EndIf
 SkillLogUi_SetLive(True)
 SkillLog_DumpScan()
-Out("Cast anything (you or enemy). You should see HIT #… lines. Dump if silent.")
+Out("Live. Expect: I interrupted Name's Skill in Xms")
 
 While True
 	Sleep(5)
 	If $BotPaused Then ContinueLoop
-	If $g_i_SkillLogHits <> $g_i_SkillLogHitsSeen Then
-		$g_i_SkillLogHitsSeen = $g_i_SkillLogHits
-		; HIT Out already printed; this only confirms the counter moved.
-	EndIf
 WEnd
 
 Func _Exit()
