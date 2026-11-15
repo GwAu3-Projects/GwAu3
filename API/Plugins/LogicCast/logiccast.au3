@@ -30,6 +30,9 @@ Global $PressureSpiritSkills = 0
 Global $MySkillSlot = 0			; bar slot of the skill we last started (0 = none)
 Global $MyTargetID = 0			; target at cast start (cancel / context)
 Global $AftercastTimer = 501	; TimerInit() when that cast started
+Global $MyActivation = 0		; Skill_GetMyActivationTime of our last cast (ms)
+Global $MyAftercast = 0			; aftercast of our last cast (ms)
+Global $MySkillID = 0			; skill ID of our last cast
 Global $MysticHealingArray[1][3]
 Global $HeroHeals[0][3]
 Global $HeroHexRemoval[0][3]
@@ -76,9 +79,10 @@ Global $ESW_LastPoll = 0
 ; so the bar can cast follow-ups (Shame / Guilt / etc.).
 Global $ESW_PreferStripAfterRupt = False
 
-; Pending land reactions from OnSpell (hexremove / enchantremove / shame / guilt).
+; Pending land reactions from OnSpell / RuptEX (hexremove / enchantremove / shame / guilt / rupt).
 ; Skilllog path is authoritative for these; ESW Poll staging remains for Listen only.
-Global Enum $LLQ_START, $LLQ_ACTMS, $LLQ_KIND, $LLQ_TARGET, $LLQ_CASTER, $LLQ_COLS
+; $LLQ_SLOT optional: bar slot to fire for "rupt" / specific hexremove (0 = pick via helpers).
+Global Enum $LLQ_START, $LLQ_ACTMS, $LLQ_KIND, $LLQ_TARGET, $LLQ_CASTER, $LLQ_SLOT, $LLQ_COLS
 Global $LogicLandQueue[1][$LLQ_COLS]
 $LogicLandQueue[0][$LLQ_START] = 0
 Global Const $LOGIC_LAND_SLACK_MS = 50
@@ -769,6 +773,9 @@ Func Skill_TryUseSkill($aSkillSlot, $aTarget = -2, $aCallTarget = False, $aTimeo
 	If Not Skill_UseSkill($aSkillSlot, $lAgentID, $aCallTarget) Then Return False
 	$MySkillSlot = $aSkillSlot
 	$MyTargetID = $lAgentID
+	$MySkillID = $SkillBarCache[$aSkillSlot][$all]
+	$MyActivation = Skill_GetMyActivationTime($MySkillID, $lAgentID)
+	$MyAftercast = Number($SkillBarCache[$aSkillSlot][$aftercast])
 	$AftercastTimer = TimerInit()
 	If $aTimeout <= 0 Then Return True
 	Do
@@ -920,11 +927,13 @@ Func Skill_TryUseGuilt($aCaster)
 EndFunc   ;==>Skill_TryUseGuilt
 
 ; Queue a reaction to fire when the enemy cast lands (ActMs after now).
-Func Logic_QueueLandAction($aActMs, $aKind, $aTarget, $aCaster)
+; Optional $aSlot: bar slot for "rupt" / pinned hexremove (0 = helper picks).
+Func Logic_QueueLandAction($aActMs, $aKind, $aTarget, $aCaster, $aSlot = 0)
 	$aActMs = Number($aActMs)
 	If $aActMs < 0 Then $aActMs = 0
 	$aTarget = Number($aTarget)
 	$aCaster = Number($aCaster)
+	$aSlot = Number($aSlot)
 	If $aTarget <= 0 And $aCaster <= 0 Then Return
 	Local $n = Number($LogicLandQueue[0][$LLQ_START]) + 1
 	ReDim $LogicLandQueue[$n + 1][$LLQ_COLS]
@@ -934,9 +943,10 @@ Func Logic_QueueLandAction($aActMs, $aKind, $aTarget, $aCaster)
 	$LogicLandQueue[$n][$LLQ_KIND] = StringLower($aKind)
 	$LogicLandQueue[$n][$LLQ_TARGET] = $aTarget
 	$LogicLandQueue[$n][$LLQ_CASTER] = $aCaster
+	$LogicLandQueue[$n][$LLQ_SLOT] = $aSlot
 EndFunc   ;==>Logic_QueueLandAction
 
-; Fire due land-queue rows (hexremove / enchantremove / shame / guilt). Drop OOR/dead.
+; Fire due land-queue rows (hexremove / enchantremove / shame / guilt / rupt). Drop OOR/dead.
 Func Logic_ProcessLandQueue($aAggroRange = 1320)
 	Local $r = 1
 	While $r <= Number($LogicLandQueue[0][$LLQ_START])
@@ -945,6 +955,7 @@ Func Logic_ProcessLandQueue($aAggroRange = 1320)
 		Local $sKind = $LogicLandQueue[$r][$LLQ_KIND]
 		Local $iTarget = Number($LogicLandQueue[$r][$LLQ_TARGET])
 		Local $iCaster = Number($LogicLandQueue[$r][$LLQ_CASTER])
+		Local $iSlot = Number($LogicLandQueue[$r][$LLQ_SLOT])
 		Local $bDone = False
 
 		; Prefer target; fall back to caster for range/dead checks.
@@ -957,13 +968,27 @@ Func Logic_ProcessLandQueue($aAggroRange = 1320)
 		ElseIf TimerDiff($iStart) + $LOGIC_LAND_SLACK_MS >= $iActMs Then
 			Switch $sKind
 				Case "hexremove"
-					Skill_TryUseHexRemove($iTarget)
+					If $iSlot > 0 Then
+						TryUseSkill($iSlot, $iTarget, False, 0)
+					Else
+						Skill_TryUseHexRemove($iTarget)
+					EndIf
 				Case "enchantremove"
-					Skill_TryUseEnchantRemove($iTarget)
+					If $iSlot > 0 Then
+						TryUseSkill($iSlot, $iTarget, False, 0)
+					Else
+						Skill_TryUseEnchantRemove($iTarget)
+					EndIf
 				Case "shame"
 					Skill_TryUseShame($iCaster)
 				Case "guilt"
 					Skill_TryUseGuilt($iCaster)
+				Case "rupt"
+					Local $iRuptT = $iTarget
+					If $iRuptT <= 0 Then $iRuptT = $iCaster
+					If $iSlot > 0 And $iRuptT > 0 Then
+						TryUseSkill($iSlot, $iRuptT, False, 0)
+					EndIf
 			EndSwitch
 			$bDone = True
 		EndIf
@@ -1596,6 +1621,168 @@ EndFunc
 
 
 
+; Full SkillLog handler: self-arm, distance gate, anti-cancel, interrupt, strip, timed hexremove.
+; GetRuptEX remains the pure interrupt helper (OnMelee). Process land queue first.
+Func RuptEX($aCasterID, $aTargetID, $aSkillID, $aActivation)
+	Local $hR = TimerInit()
+	Logic_ProcessLandQueue(1320)
+	If Map_GetInstanceInfo("Type") <> $Map_Explorable Or Agent_GetAgentInfo(-2, "IsDead") Or Agent_GetAgentInfo(-2, "IsKnocked") Then Return 0
+
+	; Case 1 — self-cast: arm our activation clock (distance gate must NOT run yet).
+	If $aCasterID = Agent_GetMyID() Then
+		$MyActivation = Skill_GetMyActivationTime($aSkillID, $aTargetID)
+		$MyAftercast = Number(Skill_GetSkillInfo($aSkillID, "Aftercast")) * 750
+		$MySkillID = $aSkillID
+		$MyTargetID = $aTargetID
+		$AftercastTimer = TimerInit()
+		If Number($SkillbarSlot[$aSkillID]) > 0 Then $MySkillSlot = $SkillbarSlot[$aSkillID]
+		Return 0
+	EndIf
+
+	; Distance gate HERE — after Case 1 Return, before any enemy work.
+	Local $aAggroRange = 1320
+	Local $iDist = Agent_GetDistance($aCasterID)
+	If $iDist > $aAggroRange Or $iDist = 0 Then Return 0
+
+	; Case 2 — anti-cancel: hard rupt aimed at us.
+	If IsHardRuptSkill($aSkillID) And $aTargetID = Agent_GetMyID() Then
+		Out($aCasterID & " is interrupting my " & Skill_NameFromID($MySkillID))
+		If $MyActivation > 0 Then
+			If TimerDiff($AftercastTimer) > $MyActivation Then Return 0
+			If $MyActivation > 250 Then CancelAction()
+		Else
+			If OurSkillActivationMs() > 250 Then CancelAction()
+		EndIf
+		$AftercastTimer = TimerInit()
+		Return 0
+	EndIf
+
+	If Agent_GetAgentInfo(-2, "IsCasting") Then Return 0
+
+	; Enemy activation ms (SkillLog $aActivation may be seconds or ms).
+	Local $EnemyActivation = Number(Skill_GetSkillInfo($aSkillID, "Activation")) * 1000
+	If $EnemyActivation <= 0 And Number($aActivation) > 0 Then
+		If Number($aActivation) < 30 Then
+			$EnemyActivation = Number($aActivation) * 1000
+		Else
+			$EnemyActivation = Number($aActivation)
+		EndIf
+	EndIf
+
+	; Case 3 — interrupt if rupt system armed and foe casting.
+	If $RuptEventSystem And Agent_GetAgentInfo($aCasterID, "Allegiance") = 3 Then
+		Local $iRuptSlot = GetBestRupt($aSkillID, $aCasterID, $aAggroRange)
+		If $iRuptSlot > 0 Then
+			Local $iOurRuptAct = GetAdjustedActivation($iRuptSlot, $aCasterID)
+			If $iOurRuptAct <= 0 Then $iOurRuptAct = Number($SkillBarCache[$iRuptSlot][$activation])
+			; Short casts: FireNow. Else sleep = enemyAct - ourAct (tail for long casts).
+			If $EnemyActivation <= 500 Or $EnemyActivation <= $iOurRuptAct + $ESW_POLL_SLACK_MS Then
+				If RuptEX_FireNow($aCasterID, $aSkillID, $iRuptSlot, True, $hR) Then Return 1
+			Else
+				Local $iSleep = $EnemyActivation - $iOurRuptAct
+				If $EnemyActivation > $ESW_ZERO_WAIT_ACT Then $iSleep = $EnemyActivation - $iOurRuptAct - $ESW_RUPT_TAIL_MS
+				If $iSleep < 0 Then $iSleep = 0
+				If $iSleep = 0 Then
+					If RuptEX_FireNow($aCasterID, $aSkillID, $iRuptSlot, True, $hR) Then Return 1
+				Else
+					RuptEX_QueueInterrupt($aCasterID, $aSkillID, $iRuptSlot, $iSleep, $hR)
+					Return 2
+				EndIf
+			EndIf
+		EndIf
+	EndIf
+
+	; Case 4 — enchant strip (immediate when free); still re-check strip target ≤1320.
+	If IsEnchantmentSkill($aSkillID) Or Skill_GetSkillInfo($aSkillID, "SkillType") = $Enchantment Then
+		Local $iEnchSlot
+		For $iEnchSlot = 1 To 8
+			If $SkillBarCache[$iEnchSlot][$enchantremove] = "" Then ContinueLoop
+			If Not CanCastFollowUp($iEnchSlot) Then ContinueLoop
+
+			Local $lStripTarget = 0
+			If SkillTargetsSelfOrAlly($aSkillID) Then
+				$lStripTarget = $aCasterID
+			ElseIf Agent_GetAgentInfo($aCasterID, "Enchanted") Or Agent_GetAgentInfo($aCasterID, "IsEnchanted") Then
+				$lStripTarget = $aCasterID
+			Else
+				$lStripTarget = Agent_GetBalledEnchantedEnemy($aAggroRange)
+			EndIf
+			If $lStripTarget = 0 Or Agent_GetDistance($lStripTarget) > $aAggroRange Then ContinueLoop
+
+			Out("RuptEX strip " & Skill_NameFromID($SkillBarCache[$iEnchSlot][$all]) & " on enchant " & Skill_NameFromID($aSkillID) & " → " & Agent_ConvertID($lStripTarget))
+			If TryUseSkill($iEnchSlot, $lStripTarget, False, 0) Then Return 1
+		Next
+		; Shame if enchant targets a party member (land with enemy activation).
+		If Logic_IsPartyMember($aTargetID) Then
+			Local $iShameDelay = $EnemyActivation
+			If $iShameDelay < 0 Then $iShameDelay = 0
+			Out("RuptEX queue Shame on " & Agent_ConvertID($aCasterID) & " for enchant on party in " & Floor($iShameDelay) & "ms")
+			Logic_QueueLandAction($iShameDelay, "shame", $aCasterID, $aCasterID)
+		EndIf
+	EndIf
+
+	; Guilt on ally/heal-style casts (immediate if free, else queue at land).
+	If SkillTargetsSelfOrAlly($aSkillID) And Agent_GetAgentInfo($aCasterID, "Allegiance") = 3 Then
+		If Skill_TryUseGuilt($aCasterID) Then
+			Out("RuptEX Guilt immediate on " & Agent_ConvertID($aCasterID) & " for " & Skill_NameFromID($aSkillID))
+			Return 1
+		EndIf
+		Local $iGuiltDelay = $EnemyActivation
+		If $iGuiltDelay < 0 Then $iGuiltDelay = 0
+		Out("RuptEX queue Guilt on " & Agent_ConvertID($aCasterID) & " for " & Skill_NameFromID($aSkillID) & " in " & Floor($iGuiltDelay) & "ms")
+		Logic_QueueLandAction($iGuiltDelay, "guilt", $aCasterID, $aCasterID)
+	EndIf
+
+	; Case 5 — hex removal: DO NOT fire immediately. Schedule at enemyAct - (ourAct * 0.5).
+	If IsHexSpell($aSkillID) Then
+		Local $lHexTarget = 0
+		If $aTargetID <> 0 And (Logic_IsPartyMember($aTargetID) Or (Agent_GetAgentInfo($aTargetID, "Allegiance") = 1 And Not Agent_GetAgentInfo($aTargetID, "IsDead"))) Then
+			$lHexTarget = $aTargetID
+		Else
+			$lHexTarget = Agent_GetMostHexedAlly($aAggroRange)
+		EndIf
+		If $lHexTarget <> 0 And Agent_GetDistance($lHexTarget) <= $aAggroRange Then
+			Local $iHexSlot = 0
+			Local $s
+			For $s = 1 To 8
+				If $SkillBarCache[$s][$hexremove] = "" Or $SkillBarCache[$s][$hexremove] = 0 Then ContinueLoop
+				If Not CanCastFollowUp($s) Then ContinueLoop
+				$iHexSlot = $s
+				ExitLoop
+			Next
+			If $iHexSlot > 0 Then
+				Local $iOurAct = GetAdjustedActivation($iHexSlot, $lHexTarget)
+				If $iOurAct <= 0 Then $iOurAct = Number($SkillBarCache[$iHexSlot][$activation])
+				Local $iDelay = $EnemyActivation - ($iOurAct * 0.5)
+				If $iDelay < 0 Then $iDelay = 0
+				Out("RuptEX queue hexremove on " & Agent_ConvertID($lHexTarget) & " for " & Skill_NameFromID($aSkillID) & " in " & Floor($iDelay) & "ms (enemyAct=" & Floor($EnemyActivation) & " ourAct*0.5=" & Floor($iOurAct * 0.5) & ")")
+				Logic_QueueLandAction($iDelay, "hexremove", $lHexTarget, $aCasterID, $iHexSlot)
+				Return 1
+			EndIf
+		EndIf
+	EndIf
+
+	Return 0
+EndFunc   ;==>RuptEX
+
+; Optional pose check then TryUseSkill; Out timing via $hR = TimerInit() at RuptEX entry.
+Func RuptEX_FireNow($aCasterID, $aSkillID, $aSlot, $bPoseCheck, $hR)
+	If $aSlot < 1 Or $aSlot > 8 Then Return False
+	If $bPoseCheck And Not ESW_IsCastPose($aCasterID) Then Return False
+	Out("RuptEX fire " & Skill_NameFromID($SkillBarCache[$aSlot][$all]) & " on " & Skill_NameFromID($aSkillID) & " → " & Agent_ConvertID($aCasterID))
+	Local $bOk = TryUseSkill($aSlot, $aCasterID, False, 0)
+	Out("RuptEX_FireNow: " & TimerDiff($hR) & "ms")
+	Return $bOk
+EndFunc   ;==>RuptEX_FireNow
+
+; Queue interrupt via land queue kind "rupt" with slot column.
+Func RuptEX_QueueInterrupt($aCasterID, $aSkillID, $aSlot, $iSleep, $hR)
+	$iSleep = Number($iSleep)
+	If $iSleep < 0 Then $iSleep = 0
+	Out("RuptEX queue interrupt " & Skill_NameFromID($SkillBarCache[$aSlot][$all]) & " on " & Skill_NameFromID($aSkillID) & " in " & Floor($iSleep) & "ms (note+" & TimerDiff($hR) & "ms)")
+	Logic_QueueLandAction($iSleep, "rupt", $aCasterID, $aCasterID, $aSlot)
+EndFunc   ;==>RuptEX_QueueInterrupt
+
 ; Immediate interrupt attempt for one enemy cast.
 ; Return: 0 = ignore / too late / no slot, 1 = rupt fired, 2 = defer (too early — wait for land window).
 Func GetRuptEX($aCasterID, $aTargetID, $aSkillID, $aCastStart = 0, $aAggroRange = 1320)
@@ -1666,11 +1853,16 @@ Func OnSpell($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart = 0, $
 	Local $iRemain = $iActMs - TimerDiff($aCastStart)
 	If $iRemain < 0 Then $iRemain = 0
 
-	; 1) Hex on party member → hexremove at land (target = hexed ally).
+	; 1) Hex on party member → hexremove timed to land with our act × 0.5 fudge.
 	If IsHexSpell($aSkillID) And Logic_IsPartyMember($aTargetID) Then
-		If Logic_FirstCacheSlot($hexremove) > 0 Then
-			Out("OnSpell queue hexremove on " & Agent_ConvertID($aTargetID) & " for " & Skill_NameFromID($aSkillID) & " in " & Floor($iRemain) & "ms")
-			Logic_QueueLandAction($iRemain, "hexremove", $aTargetID, $aCasterID)
+		Local $iHexSlot = Logic_FirstCacheSlot($hexremove)
+		If $iHexSlot > 0 Then
+			Local $iOurHexAct = GetAdjustedActivation($iHexSlot, $aTargetID)
+			If $iOurHexAct <= 0 Then $iOurHexAct = Number($SkillBarCache[$iHexSlot][$activation])
+			Local $iHexDelay = $iRemain - ($iOurHexAct * 0.5)
+			If $iHexDelay < 0 Then $iHexDelay = 0
+			Out("OnSpell queue hexremove on " & Agent_ConvertID($aTargetID) & " for " & Skill_NameFromID($aSkillID) & " in " & Floor($iHexDelay) & "ms (remain=" & Floor($iRemain) & " ourAct*0.5=" & Floor($iOurHexAct * 0.5) & ")")
+			Logic_QueueLandAction($iHexDelay, "hexremove", $aTargetID, $aCasterID, $iHexSlot)
 		EndIf
 	EndIf
 
@@ -2052,26 +2244,31 @@ EndFunc   ;==>SpellActivation
 ; GWA2/Logic skill-log callback. Bots arm this themselves above the main loop:
 ;   SetEvent("Skilllog_respond", "", "", "", "")
 ; Do NOT register SetEvent from CacheSkillBar / Fight. AutoIt treats SkillLog_Respond as the same name.
-; Do NOT feed EnemySkillWatch_Note here — OnSpell / GetRuptEX / OnMelee own strip/Shame/Guilt/rupt.
+; Do NOT feed EnemySkillWatch_Note here — RuptEX / OnMelee own strip/Shame/Guilt/rupt.
+; Self-casts must reach RuptEX Case 1 (do not early-return on self).
 Func Skilllog_respond($aCasterID, $aTargetID, $aSkillID, $aActivation)
 	EnsureSkillBarCache()
 	Local $aAggroRange = 1320
-	If $aCasterID = 0 Or $aCasterID = Agent_GetMyID() Then Return 0
-	If Agent_GetAgentInfo($aCasterID, "Allegiance") <> 3 Then Return 0
-	If Agent_GetAgentInfo($aCasterID, "IsDead") Then Return 0
-	Local $iDist = Agent_GetDistance($aCasterID)
-	If $iDist > $aAggroRange Or $iDist = 0 Then Return 0
+	If $aCasterID = 0 Then Return 0
 
 	Logic_ProcessLandQueue($aAggroRange)
 
-	Local $aCastStart = TimerInit()
+	; Case 1 needs self events; attacks use OnMelee (GetRuptEX); spells use full RuptEX.
+	If $aCasterID = Agent_GetMyID() Then
+		Return RuptEX($aCasterID, $aTargetID, $aSkillID, $aActivation)
+	EndIf
+
+	If Agent_GetAgentInfo($aCasterID, "Allegiance") <> 3 Then Return 0
+	If Agent_GetAgentInfo($aCasterID, "IsDead") Then Return 0
+
 	If IsAttackSkill($aSkillID) Then
+		Local $iDist = Agent_GetDistance($aCasterID)
+		If $iDist > $aAggroRange Or $iDist = 0 Then Return 0
+		Local $aCastStart = TimerInit()
 		Return OnMelee($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart, $aAggroRange)
 	EndIf
 
-	Local $r = GetRuptEX($aCasterID, $aTargetID, $aSkillID, $aCastStart, $aAggroRange)
-	If $r = 1 Or $r = 2 Then Return $r
-	Return OnSpell($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart, $aAggroRange)
+	Return RuptEX($aCasterID, $aTargetID, $aSkillID, $aActivation)
 EndFunc   ;==>Skilllog_respond
 
 ; Pick a ready interrupt slot for this enemy cast. Soft rupts (Power Drain etc.) are valid unless
