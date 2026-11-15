@@ -926,8 +926,24 @@ Func Skill_TryUseGuilt($aCaster)
 	Return False
 EndFunc   ;==>Skill_TryUseGuilt
 
+; Who to shatter after an enemy enchant lands.
+; Self/ally-typed skills → caster (SkillLog target is often 0 on self-casts).
+; Otherwise prefer SkillLog target when the caster is already enchanted; else nearest ball.
+Func Logic_EnchantStripTarget($aCasterID, $aTargetID, $aSkillID, $aAggroRange = 1320)
+	Local $lStripTarget = 0
+	If SkillTargetsSelfOrAlly($aSkillID) Then
+		$lStripTarget = Number($aCasterID)
+	ElseIf Agent_GetAgentInfo($aCasterID, "IsEnchanted") Then
+		$lStripTarget = Number($aTargetID)
+		If $lStripTarget <= 0 Then $lStripTarget = Number($aCasterID)
+	Else
+		$lStripTarget = Agent_GetBalledEnchantedEnemy($aAggroRange)
+	EndIf
+	Return $lStripTarget
+EndFunc   ;==>Logic_EnchantStripTarget
+
 ; Queue a reaction to fire when the enemy cast lands (ActMs after now).
-; Optional $aSlot: bar slot for "rupt" / pinned hexremove (0 = helper picks).
+; Optional $aSlot: bar slot for "rupt" / pinned hexremove / enchantremove (0 = helper picks).
 Func Logic_QueueLandAction($aActMs, $aKind, $aTarget, $aCaster, $aSlot = 0)
 	$aActMs = Number($aActMs)
 	If $aActMs < 0 Then $aActMs = 0
@@ -1690,25 +1706,24 @@ Func RuptEX($aCasterID, $aTargetID, $aSkillID, $aActivation)
 		EndIf
 	EndIf
 
-	; Case 4 — enchant strip (immediate when free); still re-check strip target ≤1320.
-	If IsEnchantmentSkill($aSkillID) Or Skill_GetSkillInfo($aSkillID, "SkillType") = $Enchantment Then
+	; Case 4 — enchant strip AFTER the enchant lands (same land-queue as OnSpell / hexremove).
+	; Delay = full enemy activation so shatter does not start before the buff exists.
+	If IsEnchantmentSkill($aSkillID) Or Skill_GetSkillInfo($aSkillID, "SkillType") = $Enchantment Or Skill_IsEnchantmentType($aSkillID) Then
 		Local $iEnchSlot
+		Local $bQueuedStrip = False
 		For $iEnchSlot = 1 To 8
 			If $SkillBarCache[$iEnchSlot][$enchantremove] = "" Then ContinueLoop
 			If Not CanCastFollowUp($iEnchSlot) Then ContinueLoop
 
-			Local $lStripTarget = 0
-			If SkillTargetsSelfOrAlly($aSkillID) Then
-				$lStripTarget = $aCasterID
-			ElseIf Agent_GetAgentInfo($aCasterID, "Enchanted") Or Agent_GetAgentInfo($aCasterID, "IsEnchanted") Then
-				$lStripTarget = $aCasterID
-			Else
-				$lStripTarget = Agent_GetBalledEnchantedEnemy($aAggroRange)
-			EndIf
+			Local $lStripTarget = Logic_EnchantStripTarget($aCasterID, $aTargetID, $aSkillID, $aAggroRange)
 			If $lStripTarget = 0 Or Agent_GetDistance($lStripTarget) > $aAggroRange Then ContinueLoop
 
-			Out("RuptEX strip " & Skill_NameFromID($SkillBarCache[$iEnchSlot][$all]) & " on enchant " & Skill_NameFromID($aSkillID) & " → " & Agent_ConvertID($lStripTarget))
-			If TryUseSkill($iEnchSlot, $lStripTarget, False, 0) Then Return 1
+			Local $iStripDelay = $EnemyActivation
+			If $iStripDelay < 0 Then $iStripDelay = 0
+			Out("RuptEX queue enchantremove " & Skill_NameFromID($SkillBarCache[$iEnchSlot][$all]) & " on enchant " & Skill_NameFromID($aSkillID) & " → " & Agent_ConvertID($lStripTarget) & " in " & Floor($iStripDelay) & "ms")
+			Logic_QueueLandAction($iStripDelay, "enchantremove", $lStripTarget, $aCasterID, $iEnchSlot)
+			$bQueuedStrip = True
+			ExitLoop
 		Next
 		; Shame if enchant targets a party member (land with enemy activation).
 		If Logic_IsPartyMember($aTargetID) Then
@@ -1717,6 +1732,7 @@ Func RuptEX($aCasterID, $aTargetID, $aSkillID, $aActivation)
 			Out("RuptEX queue Shame on " & Agent_ConvertID($aCasterID) & " for enchant on party in " & Floor($iShameDelay) & "ms")
 			Logic_QueueLandAction($iShameDelay, "shame", $aCasterID, $aCasterID)
 		EndIf
+		If $bQueuedStrip Then Return 1
 	EndIf
 
 	; Guilt on ally/heal-style casts (immediate if free, else queue at land).
@@ -1864,11 +1880,15 @@ Func OnSpell($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart = 0, $
 		EndIf
 	EndIf
 
-	; 2) Enchantment → enchantremove on caster at land; Shame if target is party member.
-	If IsEnchantmentSkill($aSkillID) Or Skill_GetSkillInfo($aSkillID, "SkillType") = $Enchantment Then
-		If Logic_FirstCacheSlot($enchantremove) > 0 Then
-			Out("OnSpell queue enchantremove on " & Agent_ConvertID($aCasterID) & " for " & Skill_NameFromID($aSkillID) & " in " & Floor($iRemain) & "ms")
-			Logic_QueueLandAction($iRemain, "enchantremove", $aCasterID, $aCasterID)
+	; 2) Enchantment → enchantremove after land (full remain; do not early-fudge like hexremove).
+	If IsEnchantmentSkill($aSkillID) Or Skill_GetSkillInfo($aSkillID, "SkillType") = $Enchantment Or Skill_IsEnchantmentType($aSkillID) Then
+		Local $iEnchSlot = Logic_FirstCacheSlot($enchantremove)
+		If $iEnchSlot > 0 Then
+			Local $lStripTarget = Logic_EnchantStripTarget($aCasterID, $aTargetID, $aSkillID, $aAggroRange)
+			If $lStripTarget <> 0 And Agent_GetDistance($lStripTarget) <= $aAggroRange Then
+				Out("OnSpell queue enchantremove on " & Agent_ConvertID($lStripTarget) & " for " & Skill_NameFromID($aSkillID) & " in " & Floor($iRemain) & "ms")
+				Logic_QueueLandAction($iRemain, "enchantremove", $lStripTarget, $aCasterID, $iEnchSlot)
+			EndIf
 		EndIf
 		If Logic_IsPartyMember($aTargetID) Then
 			Out("OnSpell queue Shame on " & Agent_ConvertID($aCasterID) & " for enchant on party in " & Floor($iRemain) & "ms")
