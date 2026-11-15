@@ -951,14 +951,16 @@ EndFunc
 
 ;~ Description: Returns the pointer for the nearest agent to an agent or optional XY.
 ;~ Living 0xDB uses FilteredAgentArray mode 3 (type+allegiance+range); other types use mode 1.
-Func Agent_GetNearestAgent($a_v_Agent = -2, $a_i_Type = 0xDB, $a_i_Allegiance = 2, $a_f_X = Default, $a_f_Y = Default, $a_i_PlayerNumber = 0)
+;~ $a_f_Range defaults to 1320 (Fight / longbow_range); values <= 0 or > 1320 are clamped to 1320.
+Func Agent_GetNearestAgent($a_v_Agent = -2, $a_i_Type = 0xDB, $a_i_Allegiance = 2, $a_f_X = Default, $a_f_Y = Default, $a_i_PlayerNumber = 0, $a_f_Range = 1320)
 	Local $l_p_AgentPtr = Agent_GetAgentPtr($a_v_Agent)
 	If $a_f_X = Default Then $a_f_X = Agent_GetAgentInfo($l_p_AgentPtr, "X")
 	If $a_f_Y = Default Then $a_f_Y = Agent_GetAgentInfo($l_p_AgentPtr, "Y")
+	If $a_f_Range <= 0 Or $a_f_Range > 1320 Then $a_f_Range = 1320
 
 	Local $l_i_Mode = 1
 	If $a_i_Type = 0xDB Then $l_i_Mode = 3
-	Local $l_ai_AgentPtrArray = Agent_GetFilteredAgentArray($l_i_Mode, $a_i_Type, $a_i_Allegiance, 5000, $l_p_AgentPtr, 0, $a_f_X, $a_f_Y)
+	Local $l_ai_AgentPtrArray = Agent_GetFilteredAgentArray($l_i_Mode, $a_i_Type, $a_i_Allegiance, $a_f_Range, $l_p_AgentPtr, 0, $a_f_X, $a_f_Y)
 	If Not IsArray($l_ai_AgentPtrArray) Or $l_ai_AgentPtrArray[0] = 0 Then Return 0
 
 	Local $l_p_NearestAgentPtr = 0, $l_f_NearestDistance = 25000000
@@ -967,6 +969,8 @@ Func Agent_GetNearestAgent($a_v_Agent = -2, $a_i_Type = 0xDB, $a_i_Allegiance = 
 		If $l_p_TargetPtr = $l_p_AgentPtr Then ContinueLoop
 		If $a_i_PlayerNumber <> 0 And Agent_GetAgentInfo($l_p_TargetPtr, "PlayerNumber") <> $a_i_PlayerNumber Then ContinueLoop
 		Local $l_f_Distance = Agent_GetDistanceToXY($a_f_X, $a_f_Y, $l_p_TargetPtr)
+		; Mode 3 already range-filters; still skip out-of-range for mode 1 / safety.
+		If $l_f_Distance > $a_f_Range Then ContinueLoop
 		If $l_f_Distance < $l_f_NearestDistance Then
 			$l_f_NearestDistance = $l_f_Distance
 			$l_p_NearestAgentPtr = $l_p_TargetPtr
@@ -977,6 +981,8 @@ Func Agent_GetNearestAgent($a_v_Agent = -2, $a_i_Type = 0xDB, $a_i_Allegiance = 
 EndFunc   ;==>Agent_GetNearestAgent
 
 ;~ Description: Nearest living agent to XY. Allegiance 0 = any (mode 1 + skip dead); else mode 3.
+;~ Wide ranges (5000 / 50000) are intentional: ToXY is used for NPC / pathfinding travel across the map
+;~ (see Agent_GetNearestNPCtoXY, Cmd_Agent). Combat nearest picks use Agent_GetNearestAgent (max 1320).
 Func Agent_GetNearestAgentToXY($a_f_X, $a_f_Y, $a_i_PlayerNumber = 0, $a_i_Allegiance = 0)
 	Local $l_ai_AgentPtrArray
 	If $a_i_Allegiance = 0 Then
