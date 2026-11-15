@@ -1644,15 +1644,13 @@ Func RuptEX($aCasterID, $aTargetID, $aSkillID, $aActivation)
 	Local $iDist = Agent_GetDistance($aCasterID)
 	If $iDist > $aAggroRange Or $iDist = 0 Then Return 0
 
-	; Case 2 — anti-cancel: hard rupt aimed at us.
-	If IsHardRuptSkill($aSkillID) And $aTargetID = Agent_GetMyID() Then
-		Out($aCasterID & " is interrupting my " & Skill_NameFromID($MySkillID))
-		If $MyActivation > 0 Then
-			If TimerDiff($AftercastTimer) > $MyActivation Then Return 0
-			If $MyActivation > 250 Then CancelAction()
-		Else
-			If OurSkillActivationMs() > 250 Then CancelAction()
-		EndIf
+	; Case 2: Anti-cancel — enemy hard rupt targeting ME.
+	If IsHardRuptSkill($aSkillID) And Number($aTargetID) = Number(Agent_GetMyID()) Then
+		Local $lEnemyRuptMs = Skill_GetSkillInfo($aSkillID, "Activation") * 1000
+		If $lEnemyRuptMs <= 0 Then $lEnemyRuptMs = 500
+		; Wait until their activation has caught up to our cast clock.
+		If $lEnemyRuptMs > TimerDiff($AftercastTimer) Then Return 0
+		If $MyActivation > 250 Or OurSkillActivationMs() > 250 Then CancelAction()
 		$AftercastTimer = TimerInit()
 		Return 0
 	EndIf
