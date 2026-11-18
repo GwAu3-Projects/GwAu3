@@ -40,6 +40,7 @@ EndFunc   ;==>AssertLog_Scanner
 Func AssertLog_InitializeResult()
 	Local Const $l_h_GUI = GUICreate("GwAu3AssertLog")
 	GUIRegisterMsg(0x00000502, "AssertLog_EventCallback")
+	DllCall("user32.dll", "bool", "ChangeWindowMessageFilterEx", "hwnd", $l_h_GUI, "uint", 0x00000502, "dword", 1, "ptr", 0)
 	Memory_Write(Memory_GetValue("AssertLogHandle"), $l_h_GUI)
 
 	$g_p_AssertLogPayload = Memory_GetValue("AssertLogPayload")
