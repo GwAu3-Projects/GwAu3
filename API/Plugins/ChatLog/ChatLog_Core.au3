@@ -28,6 +28,7 @@ EndFunc
 Func ChatLog_InitializeResult()
 	Local $l_h_GUI = GUICreate("GwAu3")
 	GUIRegisterMsg(0x00000501, "ChatLog_EventCallback")
+	DllCall("user32.dll", "bool", "ChangeWindowMessageFilterEx", "hwnd", $l_h_GUI, "uint", 0x00000501, "dword", 1, "ptr", 0)
 	Memory_Write(Memory_GetValue("ChatLogCallbackHandle"), $l_h_GUI)
 	Log_Debug("ChatLogCallbackHandle: " & Memory_GetValue("ChatLogCallbackHandle"), "Initialize", $g_h_EditText)
 
