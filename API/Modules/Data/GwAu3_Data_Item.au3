@@ -957,66 +957,66 @@ EndFunc   ;==>GetHeroEquippedItemPtr
 Func Item_CountRemainingKitUses($a_s_KitType, $a_b_Cheap = False)
 	Local $lItemPtr, $lValue, $lModelID, $lBagPtr, $lKitPtr = 0, $lUses = 0
 
-	For $bag = 1 To 4
+	; Bag field is "Slots". "Size" is not a BagInfo key, so the old loop never ran and uses stayed 0.
+	For $bag = $GC_I_INVENTORY_BACKPACK To $GC_I_INVENTORY_BAG2
 		$lBagPtr = Item_GetBagPtr($bag)
 		If $lBagPtr = 0 Then ContinueLoop
 
-		For $slot = 1 To Item_GetBagInfo($bag, "Size")
+		For $slot = 1 To Item_GetBagInfo($bag, "Slots")
 			$lItemPtr = Item_GetItemBySlot($bag, $slot)
 			If $lItemPtr = 0 Then ContinueLoop
 
-			$lValue = Item_GetItemInfo($lItemPtr, "Value")
-			$lModelID = Item_GetItemInfo($lItemPtr, "ModelID")
+			$lValue = Item_GetItemInfoByPtr($lItemPtr, "Value")
+			$lModelID = Item_GetItemInfoByPtr($lItemPtr, "ModelID")
 
 			Switch $a_s_KitType
 				Case "ID"
 					Switch $lModelID
-						Case 2989 ; Identification Kit (Standard)
-							If $lUses < 101 Then
-								$lUses += $lValue / 2
+						Case $GC_I_MODELID_IDENTIFICATION_KIT ; 2989, uses = value / 2
+							$lUses += $lValue / 2
+							$lKitPtr = $lItemPtr
+						Case $GC_I_MODELID_SUPERIOR_IDENTIFICATION_KIT ; 5899, uses = value / 2.5
+							If Not $a_b_Cheap Then
+								$lUses += $lValue / 2.5
 								$lKitPtr = $lItemPtr
 							EndIf
-						Case 5899 ; Superior Identification Kit (Expensive)
-							If Not $a_b_Cheap Then
-								If $lUses < 101 Then
-									$lUses += $lValue / 2.5
-									$lKitPtr = $lItemPtr
-								EndIf
-							EndIf
+						Case $GC_I_MODELID_INFINITE_IDENTIFICATION_KIT
+							$lUses += 1000
+							$lKitPtr = $lItemPtr
 					EndSwitch
 
 				Case "Salvage"
 					Switch $lModelID
-						Case 2991 ; Expert Salvage Kit (Expensive)
+						Case $GC_I_MODELID_EXPERT_SALVAGE_KIT ; 2991, uses = value / 8
 							If Not $a_b_Cheap Then
-								If $lUses < 101 Then
-									$lUses += $lValue / 8
-									$lKitPtr = $lItemPtr
-								EndIf
-							EndIf
-						Case 2992 ; Salvage Kit (Standard)
-							If $lUses < 101 Then
-								$lUses += $lValue / 2
+								$lUses += $lValue / 8
 								$lKitPtr = $lItemPtr
 							EndIf
-						Case 5900 ; Perfect / Charr Salvage Kit (Expensive)
+						Case $GC_I_MODELID_SALVAGE_KIT ; 2992, uses = value / 2
+							$lUses += $lValue / 2
+							$lKitPtr = $lItemPtr
+						Case $GC_I_MODELID_SUPERIOR_SALVAGE_KIT, $GC_I_MODELID_PERFECT_SALVAGE_KIT ; value / 10
 							If Not $a_b_Cheap Then
-								If $lUses < 101 Then
-									$lUses += $lValue / 10
-									$lKitPtr = $lItemPtr
-								EndIf
+								$lUses += $lValue / 10
+								$lKitPtr = $lItemPtr
 							EndIf
+						Case $GC_I_MODELID_INFINITE_SALVAGE_KIT
+							$lUses += 1000
+							$lKitPtr = $lItemPtr
 					EndSwitch
 
 				Case "CheapSalvage"
 					Switch $lModelID
-						Case 2992 ; Standard Salvage Kit
-							If $lUses < 101 Then
-								$lUses += $lValue / 2
-								$lKitPtr = $lItemPtr
-							EndIf
+						Case $GC_I_MODELID_SALVAGE_KIT
+							$lUses += $lValue / 2
+							$lKitPtr = $lItemPtr
 					EndSwitch
 			EndSwitch
+
+			; A matched kit with value 0 means +0x24 is not the sell value on this client.
+			If $lKitPtr = $lItemPtr And $lValue = 0 And $lModelID <> $GC_I_MODELID_INFINITE_IDENTIFICATION_KIT And $lModelID <> $GC_I_MODELID_INFINITE_SALVAGE_KIT Then
+				Log_Warning("Kit model " & $lModelID & " in bag " & $bag & " slot " & $slot & " has Value 0", "Item", $g_h_EditText)
+			EndIf
 		Next
 	Next
 

@@ -167,6 +167,16 @@ Func Fight($x = X(-2), $y = Y(-2), $aAggroRange = 1320, $careful = False, $aMaxD
 	; CacheSkillBar already SkillLog_Respond(OnSpell/OnMelee). Live on while fighting.
 	If $RuptEventSystem Or $ProtEventSystem Then SkillLog_SetLive(True)
 	Do
+		If Bot_HaltIfStopped() Then ExitLoop
+		; Dead must leave Fight immediately — otherwise CanAttack FAIL + Precast spam while
+		; AggroMoveToEX never exits, and after shrine rez $i stays on incubi/Thorn/Gokir.
+		If Agent_GetAgentInfo(-2, "IsDead") Or Wipe() Then
+			$g_b_DiedOnWaypoint = True
+			Agent_CancelAction()
+			$BestTarget = 0
+			$aCalledTarget = 0
+			ExitLoop
+		EndIf
 		If Agent_NoEnemiesAround($aAggroRange) Then
 			Agent_CancelAction()
 			$BestTarget = 0
@@ -191,12 +201,13 @@ Func Fight($x = X(-2), $y = Y(-2), $aAggroRange = 1320, $careful = False, $aMaxD
 		Precast($aAggroRange, True)
 		If $careful And $BestTarget <> 0 Then
 			CancelAll()
-			Move(X($BestTarget), Y($BestTarget))
+			Map_Move(X($BestTarget), Y($BestTarget))
 			RndSleep(300)
 		EndIf
 		; Bar pass; UseSkills already drains Listen between slots.
 		UseSkills($x, $y, $aAggroRange, $all, $aMaxDistanceToXY, $aAgent)
-	Until Agent_NoEnemiesAround($aAggroRange) Or TimerDiff($TimerToGetOut) > 240000
+	Until Agent_NoEnemiesAround($aAggroRange) Or TimerDiff($TimerToGetOut) > 240000 Or Agent_GetAgentInfo(-2, "IsDead") Or Wipe()
+	If Agent_GetAgentInfo(-2, "IsDead") Or Wipe() Then $g_b_DiedOnWaypoint = True
 	Agent_CancelAction()
 	$BestTarget = 0
 	$aCalledTarget = 0

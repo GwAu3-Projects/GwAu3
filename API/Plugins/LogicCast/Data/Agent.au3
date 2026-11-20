@@ -533,14 +533,18 @@ Func Agent_GetFarthestAlly($a_i_MaxDistance = 5000, $a_h_Agent = -2)
 	Return $iBest
 EndFunc
 
+; Living boss only — Logic GetBoss matches TypeMap 3072/3073 exactly (dead corpses often keep 0xC00 bits and would softlock Boss / Dungeon Key).
 Func Agent_GetBoss($a_i_Range = 5000)
+	If Map_GetInstanceInfo("Type") = 0 Then Return 0
+	If Agent_GetAgentInfo(-2, "IsDead") Then Return 0
 	Local $aAgents = Agent_GetAgentArray(0xDB)
 	For $i = 1 To $aAgents[0]
-		Local $iID = Agent_GetAgentInfo($aAgents[$i], "ID")
-		If Agent_GetAgentInfo($iID, "Allegiance") = 3 And Agent_GetDistance($iID) <= $a_i_Range Then
-			; Simple boss check via type or model; extend as needed
-			If BitAND(Agent_GetAgentInfo($iID, "TypeMap"), 0xC00) Then Return $iID
-		EndIf
+		Local $lAgent = $aAgents[$i]
+		If Agent_GetDistance($lAgent) > $a_i_Range Then ContinueLoop
+		If Agent_GetAgentInfo($lAgent, "IsDead") Then ContinueLoop
+		Local $lTypeMap = Agent_GetAgentInfo($lAgent, "TypeMap")
+		; 3072 = boss glow, 3073 = boss + combat stance (Logic exact match — BitAND 0xC00 also hits dead bosses)
+		If $lTypeMap = 3072 Or $lTypeMap = 3073 Then Return $lAgent
 	Next
 	Return 0
 EndFunc
@@ -617,16 +621,22 @@ Func Agent_GetByPlayerNumber($a_i_PlayerNumber, $a_i_Range = 5000)
 EndFunc
 
 ; Nearest gadget/signpost (Type 0x200) to XY — Logic-main GetNearestSignpostToXY / GetNearestAgentPtr(-2, 0x200, 2, x, y).
-Func Agent_GetNearestSignpostToXY($a_f_X, $a_f_Y)
+; $a_f_MaxDist rejects far gadgets (e.g. Locked Chest across the map when Boss Lock is missing/not yet preferred).
+; $a_b_ExcludeChests: skip ExtraTypes mapped in $aChestID (Boss Lock must not grab loot chests).
+Func Agent_GetNearestSignpostToXY($a_f_X, $a_f_Y, $a_f_MaxDist = 2500, $a_b_ExcludeChests = False)
 	Local $aAgents = Agent_GetAgentArray(0x200)
 	Local $iBest = 0, $iMin = 999999999.0
 	If Not IsArray($aAgents) Or $aAgents[0] < 1 Then Return 0
 	For $i = 1 To $aAgents[0]
 		Local $lAgent = $aAgents[$i]
 		If $lAgent = 0 Then ContinueLoop
-		; Exact Type 512 (already filtered by GetAgentArray); skip living agents if any slip through
 		If Agent_GetAgentInfo($lAgent, "Type") <> 0x200 Then ContinueLoop
+		If $a_b_ExcludeChests Then
+			Local $lExtra = Agent_GetAgentInfo($lAgent, "ExtraType")
+			If IsNumber($lExtra) And $lExtra >= 0 And $lExtra < UBound($aChestID) And $aChestID[$lExtra] <> "" Then ContinueLoop
+		EndIf
 		Local $iD = Agent_GetDistanceToXY($a_f_X, $a_f_Y, $lAgent)
+		If $iD > $a_f_MaxDist Then ContinueLoop
 		If $iD < $iMin Then
 			$iMin = $iD
 			$iBest = $lAgent

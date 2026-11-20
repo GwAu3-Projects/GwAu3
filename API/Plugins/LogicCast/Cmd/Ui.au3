@@ -75,39 +75,40 @@ Func Debug_OutCurrentTargetPlayerNumber($a_s_Label = "CurrentTarget")
 EndFunc   ;==>Debug_OutCurrentTargetPlayerNumber
 
 Func TakeQuest($a_f_X, $a_f_Y, $a_i_QuestID, $a_i_PlayerID = 0)
-	Out("Taking Quest " & $a_i_QuestID & " (NPC=" & $a_i_PlayerID & ", dialog=" & $dialog & ")")
+	Out("Taking Quest " & $a_i_QuestID & " (NPC=" & $a_i_PlayerID & ", dialog=" & $dialog & ") map=" & Map_GetMapID())
 	AggroMoveToEX($a_f_X, $a_f_Y, 1350)
-	Local $l_h_Near = Agent_GetNearestAgentToXY($a_f_X, $a_f_Y)
-	If $l_h_Near <> 0 Then
-		Agent_ChangeTarget($l_h_Near)
-		Other_PingSleep(100)
-		Debug_OutCurrentTargetPlayerNumber("TakeQuest nearest-at-XY")
-		Out("Lookup PlayerNumber " & $a_i_PlayerID & " => ptr=" & Agent_GetAgentByPlayerNumber($a_i_PlayerID))
-	Else
-		Out("TakeQuest: no living agent near XY " & $a_f_X & "," & $a_f_Y)
-		Debug_OutCurrentTargetPlayerNumber("TakeQuest manual-target?")
+	; Wait for the real quest NPC — never fall back to nearest living (that caused AcceptQuest on "Chant Of Triumph").
+	Local $l_h_Npc = 0, $lWait = TimerInit()
+	If $a_i_PlayerID <> 0 Then
+		Do
+			$l_h_Npc = Agent_GetAgentByPlayerNumber($a_i_PlayerID)
+			If $l_h_Npc <> 0 Then ExitLoop
+			Sleep(250)
+		Until TimerDiff($lWait) > 15000
 	EndIf
-	If Not Agent_GoToNPCNearXY($a_f_X, $a_f_Y, $a_i_PlayerID) Then
-		Out("TakeQuest: PlayerNumber miss — interacting with nearest-at-XY / current target")
-		Local $l_h_Npc = Agent_GetCurrentTarget()
-		If $l_h_Npc = 0 Then $l_h_Npc = $l_h_Near
-		If $l_h_Npc <> 0 Then Agent_GoToNPC($l_h_Npc)
+	If $l_h_Npc = 0 Then
+		Out("TakeQuest: PlayerNumber " & $a_i_PlayerID & " not found after wait — abort (no random NPC fallback)")
+		Return False
 	EndIf
+	Out("TakeQuest: using Tekk/NPC ptr=" & $l_h_Npc & " PN=" & Agent_GetAgentInfo($l_h_Npc, "PlayerNumber") & " Name=" & Agent_GetAgentInfo($l_h_Npc, "Name"))
+	Agent_ChangeTarget($l_h_Npc)
+	Other_PingSleep(100)
+	Agent_GoToNPC($l_h_Npc)
 	Out("Quest Status: " & Quest_GetQuestInfo($a_i_QuestID, "LogState") & " HasQuest=" & Quest_GetQuestInfo($a_i_QuestID, "HasQuest"))
 	If CheckQuestStatus($a_i_QuestID) Then GetReward($a_f_X, $a_f_Y, $a_i_QuestID, $a_i_PlayerID)
 	Other_PingSleep(500)
 	AcceptQuest($a_i_QuestID)
 	Out("Follow-up dialog: " & $dialog)
 	If $dialog <> 0 Then
-		Local $l_h_Npc2 = Agent_GetAgentByPlayerNumber($a_i_PlayerID)
-		If $l_h_Npc2 = 0 Then $l_h_Npc2 = Agent_GetCurrentTarget()
-		If $l_h_Npc2 = 0 Then $l_h_Npc2 = Agent_GetNearestAgentToXY($a_f_X, $a_f_Y)
-		If $l_h_Npc2 <> 0 Then Agent_GoNPC($l_h_Npc2)
+		$l_h_Npc = Agent_GetAgentByPlayerNumber($a_i_PlayerID)
+		If $l_h_Npc <> 0 Then Agent_GoNPC($l_h_Npc)
 		Other_PingSleep(200)
 		Dialog($dialog)
 	EndIf
+	Quest_RequestInfos($a_i_QuestID)
+	Other_PingSleep(300)
 	Out("TakeQuest done. HasQuest=" & Quest_GetQuestInfo($a_i_QuestID, "HasQuest") & " LogState=" & Quest_GetQuestInfo($a_i_QuestID, "LogState"))
-	Return True
+	Return Quest_GetQuestInfo($a_i_QuestID, "HasQuest")
 EndFunc   ;==>TakeQuest
 
 Func UpdateQuest($a_f_X, $a_f_Y, $a_i_QuestID, $a_i_PlayerID = 0)
