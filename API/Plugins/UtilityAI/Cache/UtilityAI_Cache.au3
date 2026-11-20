@@ -1,4 +1,6 @@
 #include-once
+#include "UtilityAI_DynamicSkillCache.au3"
+
 Global Enum $GC_UAI_CACHE_MODE_ALL = 0, $GC_UAI_CACHE_MODE_PLAYER
 
 ; Script Start - Add your code below here
