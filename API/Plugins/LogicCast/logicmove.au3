@@ -29,6 +29,8 @@ Global $PickupTorch = False
 Global $droptorch = False
 ; Throttle timer for AggroMoveToEX "slow progress" Out() spam
 Global $g_h_SlowProgressOut = 0
+; Set when we die mid-AggroMoveToEX so MoveAndAggro exits the incubi/current WP and snaps to rez shrine after shrine rez.
+Global $g_b_DiedOnWaypoint = False
 
 Global $TotalSeconds = 0
 Global $CumulatedTime = 0
@@ -51,8 +53,8 @@ Global $LastWaypoint = 0
 
 #Region Movement & Aggro
 Func CheckArea($aX, $aY, $aRadius = 500)
-    $pX = Agent_X()
-	$pY = Agent_Y()
+    $pX = X()
+	$pY = Y()
 
     If ($pX < $aX + $aRadius) And ($pX > $aX - $aRadius) And ($pY < $aY + $aRadius) And ($pY > $aY - $aRadius) Then
         Return True
@@ -77,6 +79,7 @@ Func EnterPortalWaypoint($aX, $aY, $aTargetMap, $aTimeout = 180000)
 	Out("Entering portal → map " & $aTargetMap & " (from " & $lStartMap & ")")
 
 	Do
+		If Bot_HaltIfStopped() Then Return False
 		If Wipe() Then Return False
 
 		; Loading screen started — finish the wait properly once.
@@ -111,35 +114,76 @@ Func MoveAndAggro($aWaypoints, $WipeManagment = True)
 	Local $MyOldMap = Map_GetMapID(), $lMapLoadingOld = Map_GetInstanceInfo("Type")
 
 	For $i = GetNearestWaypointIndex($aWaypoints) To UBound($aWaypoints) - 1 Step 1
+		If Bot_HaltIfStopped() Then Return
 		If Map_GetMapID() <> $MyOldMap Then ExitLoop
 		If Map_GetInstanceInfo("Type") == 2 Then Connection_CheckAndReconnect()
 		If Map_GetInstanceInfo("Type") <> $lMapLoadingOld Then ExitLoop
 		If Not Agent_Exists() Then ExitLoop
 		If Cinematic_DetectSkipCinematics() Then ContinueLoop
-		If Agent_GetAgentInfo(-2, "Dead") Then $i = GetNearestWaypointIndex($aWaypoints)
 
-		; (SoO only) unlit effect intercept - backtracks until lit effect is reapplied and resumes at light torch waypoint
-		If $unlit Then $i = RekindleTorch($aWaypoints, GetNearestWaypointIndex($aWaypoints))
-
-		If $WipeManagment = True Then
-			If Wipe() = 1 Then    ; wipe intercept - wait until rezz and redirect to best waypoint, check for GetIsDead first to avoid checking fo wipe all the time..
+		; Death / shrine rez: wait if needed, then WipeManagement redirects when rez shrine is inconvenient
+		; (SoO, Bogroot, Melandru, …). Do not clamp $i after WipeManagement — that undoes those redirects.
+		; Dead with wipe=False still needs this path (Fight used to hold the thread so $i stayed on Thorn/Gokir).
+		If $g_b_DiedOnWaypoint Or Agent_GetAgentInfo(-2, "IsDead") Then
+			$LastWaypoint = $i
+			CancelAll()
+			If $WipeManagment And Wipe() Then
 				GUI_SetWipes(GUI_GetWipes() + 1)
-				$LastWaypoint = $i
 				Out("We wiped at " & $aWaypoints[$LastWaypoint][3] & ", waiting for rezz")
-				CancelAll()    ; in case we were pulling enemies
 				Local $lDeadlock = TimerInit()
 				Do
 					Sleep(500)
+					If Bot_HaltIfStopped() Then Return
 					If Party_IsDefeated() Then Return ResignAndReturn()
 					If TimerDiff($lDeadlock) > 120000 Then Out("Party health "& Party_GetPartyHealth() & "%!")
+					; Ally rez makes you alive early — still wait for party HP like Logic (don't Or Not IsDead).
 				Until Party_GetPartyHealth() > 0.5
-				$i = WipeManagement($aWaypoints, GetNearestWaypointIndex($aWaypoints), $LastWaypoint)    ; converts nearest waypoint to the desired waypoint based on last or nearest waypoint
+				$i = WipeManagement($aWaypoints, GetNearestWaypointIndex($aWaypoints), $LastWaypoint)
 				Out("Restarting at : " & $aWaypoints[$i][3])
 				Sleep(2000)
-				ChangeWeaponSet(2)    ; in case we were pulling enemies
+				ChangeWeaponSet(2)
+				Sleep(2000)
+			ElseIf Agent_GetAgentInfo(-2, "IsDead") Then
+				; Soft death (wipe=False): wait for ally/shrine rez only, then snap via WipeManagement.
+				Out("Dead at " & $aWaypoints[$LastWaypoint][3] & " — waiting for rez")
+				Local $lDeadlock = TimerInit()
+				Do
+					Sleep(500)
+					If Bot_HaltIfStopped() Then Return
+					If Party_IsDefeated() Then Return ResignAndReturn()
+					If TimerDiff($lDeadlock) > 180000 Then ExitLoop
+				Until Not Agent_GetAgentInfo(-2, "IsDead")
+				If $WipeManagment Then
+					$i = WipeManagement($aWaypoints, GetNearestWaypointIndex($aWaypoints), $LastWaypoint)
+				Else
+					$i = GetNearestWaypointIndex($aWaypoints)
+				EndIf
+				Out("Restarting at : " & $aWaypoints[$i][3])
+				If Agent_GetAgentInfo(-2, "IsDead") Then
+					Sleep(500)
+					$i -= 1
+					ContinueLoop
+				EndIf
+				Sleep(2000)
+				ChangeWeaponSet(2)
+				Sleep(2000)
+			ElseIf $g_b_DiedOnWaypoint Then
+				; Already rezzed (e.g. shrine) while Fight/AggroMove exited — still redirect $i.
+				If $WipeManagment Then
+					$i = WipeManagement($aWaypoints, GetNearestWaypointIndex($aWaypoints), $LastWaypoint)
+				Else
+					$i = GetNearestWaypointIndex($aWaypoints)
+				EndIf
+				Out("Restarting at : " & $aWaypoints[$i][3])
+				Sleep(2000)
+				ChangeWeaponSet(2)
 				Sleep(2000)
 			EndIf
+			$g_b_DiedOnWaypoint = False
 		EndIf
+
+		; (SoO only) unlit effect intercept - backtracks until lit effect is reapplied and resumes at light torch waypoint
+		If $unlit Then $i = RekindleTorch($aWaypoints, GetNearestWaypointIndex($aWaypoints))
 
 		Out("Nearest waypoint - " & $aWaypoints[GetNearestWaypointIndex($aWaypoints)][3])
 		Out("Moving to - " & $aWaypoints[$i][3])
@@ -184,8 +228,14 @@ Func MoveAndAggro($aWaypoints, $WipeManagment = True)
 			Case "Accept Items"
 				AcceptAllItems()
 
-			Case "Boss lock", "Chest", "Signpost"
-				If Wipe() = 0 Then Agent_GoToSignpostNearXY($aWaypoints[$i][0], $aWaypoints[$i][1])
+			Case "Boss lock", "Boss Lock"
+				; Exclude loot chests — log showed "Going to Locked Chest" at 3441 instead of Boss Lock.
+				If Wipe() = 0 Then Agent_GoToSignpostNearXY($aWaypoints[$i][0], $aWaypoints[$i][1], True)
+				Sleep(1000)
+				PickupLootEx(3000)
+
+			Case "Chest", "Signpost"
+				If Wipe() = 0 Then Agent_GoToSignpostNearXY($aWaypoints[$i][0], $aWaypoints[$i][1], False)
 				Sleep(1000)
 				PickupLootEx(3000)
 
@@ -193,7 +243,13 @@ Func MoveAndAggro($aWaypoints, $WipeManagment = True)
 				If Agent_GetNumberOfEnemies(1250) = 0 And GetEndChest <> 0 And Wipe() = 0 Then Endchest($aWaypoints[$i][0], $aWaypoints[$i][1], $aWaypoints[$i][2])
 
 			Case "Chest and Reward"
-				If Agent_GetNumberOfEnemies(1250) = 0 And GetEndChest() <> 0 And Agent_GetAgentInfo(-2, "Dead") = 0 Then Return ChestAndReward($aWaypoints, $aWaypoints[$i][0], $aWaypoints[$i][1], $aWaypoints[$i][2], $questNPC)
+				If Agent_GetNumberOfEnemies(1250) = 0 And Not Agent_GetAgentInfo(-2, "IsDead") Then
+					If GetEndChest() = 0 Then
+						Out("Chest and Reward: end chest not found yet")
+					Else
+						Return ChestAndReward($aWaypoints, $aWaypoints[$i][0], $aWaypoints[$i][1], $aWaypoints[$i][2], $questNPC)
+					EndIf
+				EndIf
 
 			Case "PrecastUpkeep"
 				PrecastUpkeep()
@@ -246,7 +302,7 @@ Func MoveAndAggro($aWaypoints, $WipeManagment = True)
 
 			Case "Talk To NPC by Player Number"
 				; dialog1=wp[1], dialog2 skipped (0), player=wp[0], dialog3=$dialog3
-				TalkToNPC(Agent_X(), Agent_Y(), $aWaypoints[$i][1], 0, $aWaypoints[$i][0], $dialog3)
+				TalkToNPC(X(), Y(), $aWaypoints[$i][1], 0, $aWaypoints[$i][0], $dialog3)
 
 			Case "Talk To NPC"
 				; dialog1=wp[2], dialog2=$dialog (script global), player=$questNPC, dialog3=$dialog3
@@ -262,7 +318,7 @@ Func MoveAndAggro($aWaypoints, $WipeManagment = True)
 
 			Case "Take NPC Quest"
 				CheckForQuest($aWaypoints[$i][1], True)
-				TakeQuest(Agent_X(), Agent_Y(), $aWaypoints[$i][1], $aWaypoints[$i][0])
+				TakeQuest(X(), Y(), $aWaypoints[$i][1], $aWaypoints[$i][0])
 
 			Case "Update Quest"
 				UpdateQuest($aWaypoints[$i][0], $aWaypoints[$i][1], $aWaypoints[$i][2], $questNPC)
@@ -271,7 +327,7 @@ Func MoveAndAggro($aWaypoints, $WipeManagment = True)
 				GetReward($aWaypoints[$i][0], $aWaypoints[$i][1], $aWaypoints[$i][2], $questNPC)
 
 			Case "NPC Reward"
-				GetReward(Agent_X(), Agent_Y(), $aWaypoints[$i][1], $aWaypoints[$i][0])
+				GetReward(X(), Y(), $aWaypoints[$i][1], $aWaypoints[$i][0])
 
 			Case "Asuran Blessing"
 				AggroMoveToEX($aWaypoints[$i][0], $aWaypoints[$i][1], $aWaypoints[$i][2])
@@ -354,7 +410,7 @@ Func MoveAndAggro($aWaypoints, $WipeManagment = True)
 				AggroMoveToEX($aWaypoints[$i][0], $aWaypoints[$i][1], $longbow_Range)
 				While Agent_GetNumberOfEnemies($aWaypoints[$i][2]) > 0
 					Out(Agent_GetNumberOfEnemies($aWaypoints[$i][2]))
-					AggroMoveToEX(Agent_X(Agent_GetNearestAgent(-2, 0xDB, 3)), Agent_Y(Agent_GetNearestAgent(-2, 0xDB, 3)), $aWaypoints[$i][2])
+					AggroMoveToEX(X(Agent_GetNearestAgent(-2, 0xDB, 3)), Y(Agent_GetNearestAgent(-2, 0xDB, 3)), $aWaypoints[$i][2])
 				WEnd
 
 			Case "Kite Enemies"
@@ -391,8 +447,9 @@ Func MoveAndAggro($aWaypoints, $WipeManagment = True)
 			Case "Boss", "Boss / Dungeon Key"
 				AggroMoveToEX($aWaypoints[$i][0], $aWaypoints[$i][1], $longbow_range)
 				While Agent_GetBoss() > 0
+					If Bot_HaltIfStopped() Then Return
 					Agent_MoveToDistanceAway($longbow_range, Agent_GetBoss($aWaypoints[$i][2]))
-					AggroMoveToEX(Agent_X(Agent_GetBoss()), Agent_Y(Agent_GetBoss()), $longbow_range)
+					AggroMoveToEX(X(Agent_GetBoss()), Y(Agent_GetBoss()), $longbow_range)
 				WEnd
 		;~ SKILLS
 			Case "Apply Heroic Refrain"
@@ -407,17 +464,18 @@ EndFunc   ;==>MoveandAggro
 
 Func MoveandAggro_Light($aWaypoints, $WipeManagment = True)
 	For $i = GetNearestWaypointIndex($aWaypoints) To UBound($aWaypoints) - 1 Step 1
+		If Bot_HaltIfStopped() Then Return
 		If Map_GetInstanceInfo("Type") == 2 Then Connection_CheckAndReconnect()
-		If Agent_GetAgentInfo(-2, "IsDead") Then $i = GetNearestWaypointIndex($aWaypoints)
-		If $WipeManagment = True Then
-			If Wipe() = 1 Then
+		If $g_b_DiedOnWaypoint Or Agent_GetAgentInfo(-2, "IsDead") Then
+			$LastWaypoint = $i
+			CancelAll()
+			If $WipeManagment And Wipe() Then
 				GUI_SetWipes(GUI_GetWipes() + 1)
-				$LastWaypoint = $i
 				Out("We wiped at " & $aWaypoints[$LastWaypoint][3] & ", waiting for rezz")
-				CancelAll()
 				Local $lDeadlock = TimerInit()
 				Do
 					Sleep(500)
+					If Bot_HaltIfStopped() Then Return
 					If Party_IsDefeated() Then Return ResignAndReturn($Outpost, $Language)
 					If TimerDiff($lDeadlock) > 120000 Then Out("Party heath "& Party_GetPartyHealth() & "%!")
 				Until Party_GetPartyHealth() > 0.5
@@ -426,7 +484,41 @@ Func MoveandAggro_Light($aWaypoints, $WipeManagment = True)
 				Sleep(2000)
 				ChangeWeaponSet(2)
 				Sleep(2000)
+			ElseIf Agent_GetAgentInfo(-2, "IsDead") Then
+				Out("Dead at " & $aWaypoints[$LastWaypoint][3] & " — waiting for rez")
+				Local $lDeadlock = TimerInit()
+				Do
+					Sleep(500)
+					If Bot_HaltIfStopped() Then Return
+					If Party_IsDefeated() Then Return ResignAndReturn($Outpost, $Language)
+					If TimerDiff($lDeadlock) > 180000 Then ExitLoop
+				Until Not Agent_GetAgentInfo(-2, "IsDead")
+				If $WipeManagment Then
+					$i = WipeManagement($aWaypoints, GetNearestWaypointIndex($aWaypoints), $LastWaypoint)
+				Else
+					$i = GetNearestWaypointIndex($aWaypoints)
+				EndIf
+				Out("Restarting at : " & $aWaypoints[$i][3])
+				If Agent_GetAgentInfo(-2, "IsDead") Then
+					Sleep(500)
+					$i -= 1
+					ContinueLoop
+				EndIf
+				Sleep(2000)
+				ChangeWeaponSet(2)
+				Sleep(2000)
+			ElseIf $g_b_DiedOnWaypoint Then
+				If $WipeManagment Then
+					$i = WipeManagement($aWaypoints, GetNearestWaypointIndex($aWaypoints), $LastWaypoint)
+				Else
+					$i = GetNearestWaypointIndex($aWaypoints)
+				EndIf
+				Out("Restarting at : " & $aWaypoints[$i][3])
+				Sleep(2000)
+				ChangeWeaponSet(2)
+				Sleep(2000)
 			EndIf
+			$g_b_DiedOnWaypoint = False
 		EndIf
 
 		Out("Nearest waypoint - " & $aWaypoints[GetNearestWaypointIndex($aWaypoints)][3])
@@ -447,15 +539,24 @@ Func MoveandAggro_Light($aWaypoints, $WipeManagment = True)
 				TalkToNPC($aWaypoints[$i][0], $aWaypoints[$i][1], $aWaypoints[$i][2], $dialog, $questNPC, $dialog3)
 			Case "Flag Heroes"
 				CommandAll($aWaypoints[$i][0], $aWaypoints[$i][1])
-			Case "Boss lock", "Chest", "Signpost"
-				If Wipe() = 0 Then Agent_GoToSignpostNearXY($aWaypoints[$i][0], $aWaypoints[$i][1])
+			Case "Boss lock", "Boss Lock"
+				If Wipe() = 0 Then Agent_GoToSignpostNearXY($aWaypoints[$i][0], $aWaypoints[$i][1], True)
+				PickupLootEx()
+			Case "Chest", "Signpost"
+				If Wipe() = 0 Then Agent_GoToSignpostNearXY($aWaypoints[$i][0], $aWaypoints[$i][1], False)
 				PickupLootEx()
 			Case "PrecastUpkeep"
 				PrecastUpkeep()
 			Case "Wait"
 				Sleep($aWaypoints[$i][2])
 			Case "Chest and Reward"
-				If Agent_GetNumberOfEnemies(3000) = 0 And GetEndChest() <> 0 And Agent_GetAgentInfo(-2, "Dead") = 0 Then Return ChestAndReward($aWaypoints, $aWaypoints[$i][0], $aWaypoints[$i][1], $aWaypoints[$i][2], $questNPC)
+				If Agent_GetNumberOfEnemies(3000) = 0 And Not Agent_GetAgentInfo(-2, "IsDead") Then
+					If GetEndChest() = 0 Then
+						Out("Chest and Reward: end chest not found yet")
+					Else
+						Return ChestAndReward($aWaypoints, $aWaypoints[$i][0], $aWaypoints[$i][1], $aWaypoints[$i][2], $questNPC)
+					EndIf
+				EndIf
 			Case "Take Quest"
 				CheckForQuest($aWaypoints[$i][2], True)
 				TakeQuest($aWaypoints[$i][0], $aWaypoints[$i][1], $aWaypoints[$i][2], $questNPC)
@@ -473,8 +574,9 @@ Func MoveandAggro_Light($aWaypoints, $WipeManagment = True)
 			Case "Boss", "Boss / Dungeon Key"
 				AggroMoveToEX($aWaypoints[$i][0], $aWaypoints[$i][1], $longbow_range)
 				While Agent_GetBoss() > 0
-					MoveToDistanceAwayfromAgent($longbow_range, Agent_GetBoss($aWaypoints[$i][2]))
-					AggroMoveToEX(Agent_X(Agent_GetBoss()), Agent_Y(Agent_GetBoss()), $longbow_range)
+					If Bot_HaltIfStopped() Then Return
+					Agent_MoveToDistanceAway($longbow_range, Agent_GetBoss($aWaypoints[$i][2]))
+					AggroMoveToEX(X(Agent_GetBoss()), Y(Agent_GetBoss()), $longbow_range)
 				WEnd
 			Case Else
 				If Map_GetInstanceInfo("Type") = 1 Then AggroMoveToEX($aWaypoints[$i][0], $aWaypoints[$i][1], $aWaypoints[$i][2])
@@ -487,6 +589,7 @@ EndFunc   ;==>MoveandAggro_Light
 Func MoveChestrunning($aWaypoints, $UseHoS = False)
 
 	For $i = GetNearestWaypointIndex($aWaypoints) To UBound($aWaypoints) - 1 Step 1
+		If Bot_HaltIfStopped() Then Return
 		If Map_GetInstanceInfo("Type") == 2 Then Connection_CheckAndReconnect()
 
 		If Agent_GetAgentInfo(-2, "IsDead") And $aWaypoints[$i][3] <> "Please Go Die" And $aWaypoints[$i][3] <> "Wait for Rez" Then Return ResignAndReturn($Outpost, $Language)
@@ -549,7 +652,7 @@ Func MoveChestrunning($aWaypoints, $UseHoS = False)
 			Case "Take NPC Quest"
 				If Agent_GetAgentInfo(-2, "Dead") Then Return
 				CheckForQuest($aWaypoints[$i][1], True)
-				TakeQuest(Agent_X(), Agent_Y(), $aWaypoints[$i][1], $aWaypoints[$i][0])
+				TakeQuest(X(), Y(), $aWaypoints[$i][1], $aWaypoints[$i][0])
 
 			Case "Select quest"
 				If Agent_GetAgentInfo(-2, "Dead") Then Return
@@ -691,24 +794,22 @@ Func Agent_GoToSignpostEX($x, $y) ; Open dungeon lock, torch chest
 		RndSleep(250)
 		Local $lNearestAgent, $lNearestDistance = 100000000
 		Local $lDistance
-		Local $lAgentArray = Agent_GetArray(0x200)
+		Local $lAgentArray = Agent_GetAgentArray(0x200)
 
 		For $i = 1 To $lAgentArray[0]
-			$lDistance = ($x - Agent_X($lAgentArray[$i])) ^ 2 + ($y - Agent_Y($lAgentArray[$i])) ^ 2
-
-			If DllStructGetData($lAgentArray[$i], 'type') = 512 And $lDistance < $lNearestDistance Then            ; prevents Shandra from being confused with signpost
+			$lDistance = ($x - X($lAgentArray[$i])) ^ 2 + ($y - Y($lAgentArray[$i])) ^ 2
+			If Agent_GetAgentInfo($lAgentArray[$i], "Type") = 0x200 And $lDistance < $lNearestDistance Then
 				$lNearestAgent = $lAgentArray[$i]
 				$lNearestDistance = $lDistance
 			EndIf
 		Next
-	Until DllStructGetData($lNearestAgent, 'Id') <> 0 Or Wipe() = 1 Or TimerDiff($lDeadlock) > 30000
-	If Wipe() = 0 Then Agent_ChangeTarget($lNearestAgent)
+	Until ($lNearestAgent <> 0 And Agent_GetAgentInfo($lNearestAgent, "ID") <> 0) Or Wipe() = 1 Or TimerDiff($lDeadlock) > 30000
+	If Wipe() = 0 And $lNearestAgent <> 0 Then Agent_ChangeTarget($lNearestAgent)
 	RndSleep(250)
-	;	GoToSignpost($lock)
 	Do
 		RndSleep(500)
 		ActionInteract()
-	Until Agent_GetAgentInfo($lNearestAgent, -2, "Dead") < 150 Or Wipe() = 1
+	Until Agent_GetDistance($lNearestAgent) < 150 Or Wipe() = 1
 	Sleep(500)
 EndFunc   ;==>Agent_GoSignpost
 
@@ -725,10 +826,22 @@ Func ChestAndReward($aWaypoints, $x, $y, $reloadmap = 0, $aPlayerID = 0)
 	GetReward($x, $y, $quest, $aPlayerID)               ;~Accept reward
 
 	If $GUI_GroupSettings_CheckSell = True And Item_CountEmptySlots(InventoryBagList()) < 8 Then Return Trade_ClearInventory()
+	; Dungeon eject → Sparkfly (Froggy). Wait until MapID matches AND we are not mid-load; then settle so Tekk/agents exist.
 	If $reloadmap <> 0 Then
+		Out("ChestAndReward: waiting for map " & $reloadmap & " (now " & Map_GetMapID() & ")")
+		Local $lZoneOk = False
 		Do
+			If Bot_HaltIfStopped() Then Return
 			Sleep(100)
-		Until WaitMapLoading($reloadmap, 180000)
+			$lZoneOk = WaitMapLoading($reloadmap, 180000)
+		Until $lZoneOk Or Map_GetMapID() = $reloadmap
+		; Extra settle: MapID can match before NPCs (Tekk) are spawned — TakeQuest would hit a random nearby agent.
+		Local $lSettle = TimerInit()
+		Do
+			If Bot_HaltIfStopped() Then Return
+			Sleep(250)
+		Until (Map_GetMapID() = $reloadmap And Map_GetInstanceInfo("Type") = 1 And Agent_GetAgentPtr(-2) <> 0) Or TimerDiff($lSettle) > 15000
+		Out("ChestAndReward: zoned — MapID=" & Map_GetMapID() & " Type=" & Map_GetInstanceInfo("Type"))
 	EndIf
 
 EndFunc   ;==>ChestAndReward
@@ -752,15 +865,49 @@ Func Endchest($x, $y, $reloadmap = 0)
 
 EndFunc   ;==>Endchest
 
+; Find dungeon end chest among Type 0x200 gadgets via $aChestID[ExtraType] (Bogroot 8932, SoO 8934, etc.).
+; Prefer EotN dungeon ExtraTypes 8926–8934 (nearest); else nearest any mapped chest.
 Func GetEndChest()
-	Local $lAgentPtrArray = Agent_GetArray(1, 0x200)
+	Local $lAgentPtrArray = Agent_GetAgentArray(0x200) ; type-only — never Allegiance-filter gadgets
+	Local $lBest = 0, $lBestDist = 999999999.0
+	Local $lFallback = 0, $lFallbackDist = 999999999.0
+	Local $lExtraType, $lName, $lDist, $i
+	If Not IsArray($lAgentPtrArray) Or $lAgentPtrArray[0] < 1 Then
+		Out("GetEndChest: no gadgets (Type 0x200)")
+		Return 0
+	EndIf
 	For $i = 1 To $lAgentPtrArray[0]
-		Local $lExtraType = Agent_GetAgentInfo($lAgentPtrArray[$i], "ExtraType")
-		Switch $lExtraType
-			Case 8926 To 8934     ; EotN dungeon chests, may need to expand range for some dungeons
-				Out("End chest found")
-				Return $lAgentPtrArray[$i]
-		EndSwitch
+		$lExtraType = Agent_GetAgentInfo($lAgentPtrArray[$i], "ExtraType")
+		If Not IsNumber($lExtraType) Or $lExtraType < 0 Or $lExtraType >= UBound($aChestID) Then ContinueLoop
+		$lName = $aChestID[$lExtraType]
+		If $lName = "" Then ContinueLoop
+		$lDist = Agent_GetDistance($lAgentPtrArray[$i])
+		If $lExtraType >= 8926 And $lExtraType <= 8934 Then
+			If $lDist < $lBestDist Then
+				$lBestDist = $lDist
+				$lBest = $lAgentPtrArray[$i]
+			EndIf
+		ElseIf $lDist < $lFallbackDist Then
+			$lFallbackDist = $lDist
+			$lFallback = $lAgentPtrArray[$i]
+		EndIf
+	Next
+	If $lBest <> 0 Then
+		$lExtraType = Agent_GetAgentInfo($lBest, "ExtraType")
+		Out("End chest found: " & $aChestID[$lExtraType] & " (ExtraType " & $lExtraType & ")")
+		Return $lBest
+	EndIf
+	If $lFallback <> 0 Then
+		$lExtraType = Agent_GetAgentInfo($lFallback, "ExtraType")
+		Out("End chest fallback: " & $aChestID[$lExtraType] & " (ExtraType " & $lExtraType & ")")
+		Return $lFallback
+	EndIf
+	; Dump gadgets so a new ExtraType can be added to $aChestID
+	Out("GetEndChest: no mapped chest. Gadgets:")
+	For $i = 1 To $lAgentPtrArray[0]
+		Out("  ID=" & Agent_GetAgentInfo($lAgentPtrArray[$i], "ID") & _
+			" ExtraType=" & Agent_GetAgentInfo($lAgentPtrArray[$i], "ExtraType") & _
+			" Dist=" & Floor(Agent_GetDistance($lAgentPtrArray[$i])))
 	Next
 	Return 0
 EndFunc   ;==>GetEndChest
@@ -796,7 +943,7 @@ Func GetReward($x, $y, $aQuestID, $aPlayerID = 0)
 	Out($Quest_ID[$aQuestID] & ", Status: " & Quest_GetQuestInfo($aQuestID, "LogState"))
 	If Quest_GetQuestInfo($aQuestID, "LogState") < 2 Then Return
 	Agent_GoToNPCnearXY($x, $y, $aPlayerID)
-	QuestReward($aQuestID)
+	Quest_QuestReward($aQuestID)
 EndFunc   ;==>GetReward
 
 #Region Chest
@@ -821,6 +968,32 @@ Func GoSignpost($aAgent)
 	Return Agent_GoSignpost($aAgent)
 EndFunc   ;==>GoSignpost
 
+; Logic → GwAu3 party flag aliases
+Func CancelHero($aHeroNumber)
+	Return Party_CancelHero($aHeroNumber)
+EndFunc   ;==>CancelHero
+
+Func CancelAll()
+	Return Party_CancelAll()
+EndFunc   ;==>CancelAll
+
+Func CommandHero($aHeroNumber, $x, $y)
+	Return Party_CommandHero($aHeroNumber, $x, $y)
+EndFunc   ;==>CommandHero
+
+; Logic CommandAll optionally waits until heroes reach the flag.
+Func CommandAll($x, $y, $WaitForDestination = False, $aDistanceToDestination = $area_range)
+	Party_CommandAll($x, $y)
+	If $WaitForDestination Then
+		Local $Timer = TimerInit()
+		Do
+			Sleep(500)
+			Out(Agent_GetNumberOfAlliesNearXY($aDistanceToDestination, $x, $y))
+		Until Agent_GetNumberOfAlliesNearXY($aDistanceToDestination, $x, $y) = GetPartySize() Or Agent_GetNumberOfAllies(5000) < 2 Or Agent_GetAgentInfo(-2, "IsDead") Or TimerDiff($Timer) > 60000
+	EndIf
+	Return True
+EndFunc   ;==>CommandAll
+
 Func ChangeTarget($aAgent)
 	Return Agent_ChangeTarget($aAgent)
 EndFunc   ;==>ChangeTarget
@@ -838,6 +1011,19 @@ EndFunc   ;==>MoveTo
 Func Move_ToCoord($aX, $aY, $aRandom = 50)
 	Return Agent_MoveToXY($aX, $aY, $aRandom)
 EndFunc   ;==>Move_ToCoord
+
+; Logic-main RandomMoveTo — multi-stop path to look less bot-like in outposts (Merchant / traders / Xunlai).
+Func RandomMoveTo($x, $y, $aRandom = 50, $StopsMin = 1, $StopsMax = 5, $Stops = -1)
+	If $Stops = -1 Then $Stops = Random($StopsMin, $StopsMax, 1)
+	If $Stops = 0 Or Agent_GetDistanceToXY($x, $y) < 200 Then Return Move_ToCoord($x, $y, $aRandom)
+
+	Local $m = Random(0, 1)
+	Local $n = $Stops - $m
+	Local $StepX = (($m * $x) + ($n * X(-2))) / ($m + $n)
+	Local $StepY = (($m * $y) + ($n * Y(-2))) / ($m + $n)
+	Move_ToCoord($StepX, $StepY, $aRandom)
+	RandomMoveTo($x, $y, $aRandom, $StopsMin, $StopsMax, $Stops - 1)
+EndFunc   ;==>RandomMoveTo
 
 ; Logic OpenChestNoLockpick / OpenChest → Item_OpenChest(False/True).
 Func OpenChestNoLockpick()
@@ -875,7 +1061,7 @@ Func SurvivePickup($iMaxDist = 5000, $aPickupTorch = False)
 		$lOwner = Agent_GetAgentInfo($lAgentPtr, "Owner")
 		If $lOwner <> 0 And $lOwner <> Agent_GetMyID() Then ContinueLoop
 		If CanPickUpEx($lItemPtr, $aPickupTorch) And Agent_GetDistance($lAgentID) < $iMaxDist Then
-			MoveAndSurvive(Agent_X($lAgentPtr), Agent_Y($lAgentPtr))
+			MoveAndSurvive(X($lAgentPtr), Y($lAgentPtr))
 			$lDeadlock = TimerInit()
 			Do
 				Item_PickUpItem($lAgentID)
@@ -886,11 +1072,13 @@ Func SurvivePickup($iMaxDist = 5000, $aPickupTorch = False)
 	Next
 EndFunc   ;==>SurvivePickup
 
-; Ported from logic-main CheckForChest — finds nearest unopened chest gadget, opens, then loots.
-; Called every AggroMoveToEX tick when chests are enabled — only log when a chest is actually found.
+; Logic-main CheckForChest: nearest mapped gadget chest, interact in place (GoSignpost only — no cross-map walk).
+; Called every AggroMoveToEX tick when chests are enabled.
 Func CheckForChest($chestrun = False)
-	Local $AgentArray, $lAgent, $lExtraType, $lType
+	Local $AgentArray, $lAgent, $lExtraType, $lType, $lDist
 	Local $ChestFound = False
+	; Only open chests already near the party — Logic never pathfinds to a remote chest from here.
+	Local Const $lMaxChestDist = $longbow_range
 	If Agent_GetAgentInfo(-2, "IsDead") Then Return
 	$AgentArray = Agent_GetDistanceSortedArray(0x200) ; 0x200 = static / gadget
 	If Not IsArray($AgentArray) Then Return
@@ -903,19 +1091,24 @@ Func CheckForChest($chestrun = False)
 		If Not IsNumber($lExtraType) Or $lExtraType < 0 Or $lExtraType >= UBound($aChestID) Then ContinueLoop
 		If $aChestID[$lExtraType] = "" Then ContinueLoop
 		If _ArraySearch($OpenedChestAgentIDs, $lAgent) >= 0 Then ContinueLoop
+		$lDist = Agent_GetDistance($lAgent)
+		; Sorted list can still include far gadgets; skip them (do not blacklist — open later when we pass by).
+		If $lDist > $lMaxChestDist Then ContinueLoop
 		If $OpenedChestAgentIDs[0] = "" Then
 			$OpenedChestAgentIDs[0] = $lAgent
 		Else
 			_ArrayAdd($OpenedChestAgentIDs, $lAgent)
 		EndIf
 		$ChestFound = True
-		Out("Find " & $aChestID[$lExtraType])
+		Out("Find " & $aChestID[$lExtraType] & " (dist " & Floor($lDist) & ")")
 		ExitLoop
 	Next
 	If Not $ChestFound Then Return
 	Out("opening " & $aChestID[$lExtraType])
 	Agent_ChangeTarget($lAgent)
-	Agent_GoToSignpost($lAgent)
+	; Logic: GoSignpost only. Short approach if slightly out of interact range; never Agent_GoToSignpost across the map.
+	If Agent_GetDistance($lAgent) > 150 Then Agent_MoveToDistanceAway(60, $lAgent)
+	Agent_GoSignpost($lAgent)
 	OpenChestByExtraType($aChestID[$lExtraType])
 	GUI_SetChestsOpened(GUI_GetChestsOpened() + 1)
 	GUI_SetLockpicks(GetPicksCount())
@@ -942,7 +1135,7 @@ Func ForceOpenChest($x, $y)
 	If $Chest = 0 Then Return
 
 	Out("opening chest")
-	AggroMoveToEX(Agent_X($Chest), Agent_Y($Chest))
+	AggroMoveToEX(X($Chest), Y($Chest))
 	Agent_ChangeTarget($Chest)
 	Sleep(250)
 	Do
@@ -1002,6 +1195,7 @@ Func AggroMoveToLeader($x, $y, $aRange = 1320, $aFollowRange = 200, $aPartyLeade
     If Agent_GetDistance($aPartyLeader) > $aFollowRange Then Agent_MoveToXY($x, $y)
 
     Do
+        If Bot_HaltIfStopped() Then ExitLoop
         ; SpeedBoost() ; Replace with native speed boost skill/item call if available
         If $aPartyLeader <= 0 Then $aPartyLeader = Party_GetLeaderAgentID()
 
@@ -1011,6 +1205,7 @@ Func AggroMoveToLeader($x, $y, $aRange = 1320, $aFollowRange = 200, $aPartyLeade
         If GetAgents(-2, $aRange, 0, 0, "Agent_IsLivingEnemy") > 0 And Agent_GetDistance($aPartyLeader) < $aFollowRange Then
             ; careful=False; leash=follow range (was 0 — treated as distance 0 / always leash-break).
             Fight($x, $y, $aRange, False, $aFollowRange, $aPartyLeader)
+            If Bot_HaltIfStopped() Then ExitLoop
             PickupLootEx()
             Sleep(200)
         EndIf
@@ -1035,10 +1230,17 @@ Func AggroMoveToEX($x, $y, $aFightRange = 1350)
 
 	$TimerAggro = TimerInit()
 	Do
-		$aOldX = Agent_X(-2)
-		$aOldY = Agent_Y(-2)
+		If Bot_HaltIfStopped() Then ExitLoop
+		$aOldX = X(-2)
+		$aOldY = Y(-2)
 		If Map_GetMapID() <> $MyOldMap Or Map_GetInstanceInfo("Type") <> $lMapLoadingOld Then ExitLoop
+		; Must leave current WP on death — otherwise shrine rez keeps this Do targeting incubi coords ("slow progress").
+		If Agent_GetAgentInfo(-2, "IsDead") Then
+			$g_b_DiedOnWaypoint = True
+			ExitLoop
+		EndIf
 		If Agent_IsEnemyNear($aFightRange) Then Fight($x, $y, $aFightRange)
+		If Bot_HaltIfStopped() Then ExitLoop
 		If GUI_IsChestChecked() Then CheckForChest()
 		PickupLootEx(3000)
 
@@ -1046,9 +1248,9 @@ Func AggroMoveToEX($x, $y, $aFightRange = 1350)
 			Map_Move($x, $y, $random)
 			SpeedBoost()
 			Sleep(50)
-			If Agent_X(-2) = $aOldX And Agent_Y(-2) = $aOldY Then
+			If X(-2) = $aOldX And Y(-2) = $aOldY Then
 				$lBlocked += 1
-				Map_Move(Agent_X(-2), Agent_Y(-2), 500)
+				Map_Move(X(-2), Y(-2), 500)
 				Other_PingSleep(350)
 				Map_Move($x, $y, $random)
 			EndIf
@@ -1078,7 +1280,8 @@ Func AggroMoveToEX($x, $y, $aFightRange = 1350)
 			Sleep(5000)
 			$TimerAggro = TimerInit()
 		EndIf
-	Until Agent_GetDistanceToXY($x, $y) < 250 Or $lBlocked > 30 Or TimerDiff($TimerAggro) > 300000 Or CantExplore()
+	Until Agent_GetDistanceToXY($x, $y) < 250 Or $lBlocked > 30 Or TimerDiff($TimerAggro) > 300000 Or CantExplore() Or Agent_GetAgentInfo(-2, "IsDead")
+	If Agent_GetAgentInfo(-2, "IsDead") Then $g_b_DiedOnWaypoint = True
 EndFunc   ;==>AggroMoveToEX
 
 Func AggroMoveToPvP($x, $y, $aFightRange = 1350)
@@ -1092,23 +1295,30 @@ Func AggroMoveToPvP($x, $y, $aFightRange = 1350)
 
 	$TimerAggro = TimerInit()
 	Do
-		$aOldX = Agent_X(-2)
-		$aOldY = Agent_Y(-2)
+		If Bot_HaltIfStopped() Then ExitLoop
+		$aOldX = X(-2)
+		$aOldY = Y(-2)
 		If Map_GetMapID() <> $MyOldMap Or Map_GetInstanceInfo("Type") <> $lMapLoadingOld Then ExitLoop
+		If Agent_GetAgentInfo(-2, "IsDead") Then
+			$g_b_DiedOnWaypoint = True
+			ExitLoop
+		EndIf
 		If Agent_IsEnemyNear($aFightRange) Then Fight($x, $y, $aFightRange)
+		If Bot_HaltIfStopped() Then ExitLoop
 
 		If CanMove($aFightRange) Or TimerDiff($TimerAggro) > 60000 Then
 			Map_Move($x, $y, $random)
 			SpeedBoost()
 			Sleep(50)
-			If Agent_X(-2) = $aOldX And Agent_Y(-2) = $aOldY Then
+			If X(-2) = $aOldX And Y(-2) = $aOldY Then
 				$lBlocked += 1
-				Map_Move(Agent_X(-2), Agent_Y(-2), 500)
+				Map_Move(X(-2), Y(-2), 500)
 				Other_PingSleep(350)
 				Map_Move($x, $y, $random)
 			EndIf
 		EndIf
-	Until Agent_GetDistanceToXY($x, $y) < 250 Or $lBlocked > 30 Or CantExplore()
+	Until Agent_GetDistanceToXY($x, $y) < 250 Or $lBlocked > 30 Or CantExplore() Or Agent_GetAgentInfo(-2, "IsDead")
+	If Agent_GetAgentInfo(-2, "IsDead") Then $g_b_DiedOnWaypoint = True
 EndFunc   ;==>AggroMoveToPvP
 
 Func CantExplore()
@@ -1118,6 +1328,10 @@ Func CantExplore()
 		Connection_CheckAndReconnect()
 	EndIf
 	If Map_GetInstanceInfo("Type") == 0 Then Return True
+	If Agent_GetAgentInfo(-2, "IsDead") Then
+		$g_b_DiedOnWaypoint = True
+		Return True
+	EndIf
 	If Wipe() Then Return True
 	Return False
 EndFunc
@@ -1128,12 +1342,12 @@ Func CarefulAggro($x, $y, $aRange = $spellcasting_range, $hero_increment = 500)
 	If CantExplore() Then Return
 	; Dead is bool — never compare it to a distance (True==1 would always pass).
 	If $nearestenemy <> 0 And Not Agent_GetAgentInfo($nearestenemy, "IsDead") And Agent_GetDistance($nearestenemy) < $aRange + $hero_increment * 2 Then
-		$heroXY = GetClosestXYtoWaypointInRangeofAgent($x, $y, $aRange + $hero_increment, $nearestenemy)
+		$heroXY = Agent_GetClosestXYtoWaypointInRange($x, $y, $aRange + $hero_increment, $nearestenemy)
 		If $heroXY <> 0 Then AggroMoveToEX($heroXY[0], $heroXY[1], $aRange)
 		Out("Flagging heroes " & $aRange + $hero_increment & " from target")
 		FlagHeptagon(300, $heroXY[0], $heroXY[1])
 		Out("Moving within aggro range (" & $aRange & ")")
-		MoveToClosestXYtoWaypointInRangeOfAgent($x, $y, $aRange, $nearestenemy)
+		Agent_MoveToClosestXYtoWaypoint($x, $y, $aRange, $nearestenemy)
 		If Agent_IsEnemyNear($aRange) Then Fight($x, $y, $aRange, True)
 	EndIf
 
@@ -1147,8 +1361,8 @@ EndFunc   ;==>CarefulAggro
 Func FlagHeroesAroundXY($x, $y, $aPlayerID = 0, $aRange = 600)
 	If $aPlayerID <> 0 Then
 		$lPtr = Agent_GetAgentByPlayerNumber($aPlayerID)
-		$x = Agent_X($lPtr)
-		$y = Agent_Y($lPtr)
+		$x = X($lPtr)
+		$y = Y($lPtr)
 	EndIf
 	CommandHero(1, $x + $aRange, $y)
 	CommandHero(2, $x, $y + $aRange)
@@ -1197,9 +1411,10 @@ Func CanMove($aRange = $longbow_Range)
 				EndIf
 			ElseIf $nPartyHP < 0.99 * $OldPartyHP Then
 				Out("Moving out of AoE area")
-				Local $theta = Random(0, 360)
-				Agent_GetHighestAlly()
-				Map_Move(50 * Cos($theta * 0.01745) + Agent_X($HighestAllyPtr), 50 * Sin($theta * 0.01745) + Agent_Y($HighestAllyPtr), 0)
+				Local $lTheta = Random(0, 360)
+				Local $lHighestAlly = Agent_GetHighestAlly()
+				If $lHighestAlly = 0 Then $lHighestAlly = -2
+				Map_Move(50 * Cos($lTheta * 0.01745) + X($lHighestAlly), 50 * Sin($lTheta * 0.01745) + Y($lHighestAlly), 0)
 				Sleep(300)
 			EndIf
 		EndIf
@@ -1209,17 +1424,35 @@ Func CanMove($aRange = $longbow_Range)
 		If $FrozensoilPtr = 0 Then
 			Out("Waiting for dead ally to be rezzed")
 			$NearestDeadAllyPtr = Agent_GetNearestDeadAlly()
-			Agent_MoveToDistanceAway($spellcasting_range, $NearestDeadAllyPtr)
+			If $NearestDeadAllyPtr = 0 Then Return True
+			; One MoveToDistanceAway often stalls (MoveToXY aborts after 14 blocks) when corpse is 3k+ away.
+			; Keep walking toward the corpse until in cast range, then hold for hero/player rez.
 			$RezzTimer = TimerInit()
 			Do
+				$NearestDeadAllyPtr = Agent_GetNearestDeadAlly()
+				If $NearestDeadAllyPtr = 0 Then ExitLoop
+				Local $lRezDist = Agent_GetDistance($NearestDeadAllyPtr)
+				If $lRezDist > $spellcasting_range Then
+					Out("Approaching dead ally " & Agent_GetAgentInfo($NearestDeadAllyPtr, "Name") & " dist=" & Floor($lRezDist))
+					; Direct walk to corpse XY — more reliable than a single circle-point MoveTo across the map
+					Agent_MoveToXY(X($NearestDeadAllyPtr), Y($NearestDeadAllyPtr), 80)
+				Else
+					; In cast range — hold here so heroes can rez (Logic: MoveToDistanceAway + wait)
+					Agent_MoveToDistanceAway($spellcasting_range * 0.6, $NearestDeadAllyPtr)
+					$BestTarget = $NearestDeadAllyPtr
+					For $aSkillSlot In $Skillbar
+						If $SkillBarCache[$aSkillSlot][$rezz] = "" Then ContinueLoop
+						If CanUse($aSkillSlot, $spellcasting_range) Then Skill_TryUseSkill($aSkillSlot, $NearestDeadAllyPtr, False, 0)
+					Next
+				EndIf
+				Out("Party health: " & Party_GetPartyHealth() & ", Dead Ally: " & Agent_ID($NearestDeadAllyPtr) & " dist=" & Floor(Agent_GetDistance($NearestDeadAllyPtr)))
+				If TimerDiff($RezzTimer) > 60000 Then Return Out("Failed to rezz dead ally, continuing...")
 				Sleep(250)
-				Out("Party health: " & Party_GetPartyHealth() & ", Dead Ally Ptr: " & Hex($NearestDeadAllyPtr, 0) & ", ID: " & Agent_ID($NearestDeadAllyPtr))
-				If TimerDiff($RezzTimer) > 5000 Then Return Out("Failed to rezz dead ally, continuing...")
-			Until Not Agent_GetAgentInfo($NearestDeadAllyPtr, "IsDead") Or GetAvailableRezz() = 0
+			Until Not Agent_GetAgentInfo($NearestDeadAllyPtr, "IsDead") Or GetAvailableRezz() = 0 Or Wipe()
 		Else
 			Out("Looking for frozen soil")
-			$heroXY = Agent_GetClosestXY($spellcasting_range, $FrozensoilPtr)
-			If $heroXY <> 0 Then
+			$heroXY = Agent_GetClosestXYinRange($spellcasting_range, $FrozensoilPtr)
+			If IsArray($heroXY) Then
 				Out("Frozen soil is up, dispatching")
 				CommandAll($heroXY[0], $heroXY[1])
 			EndIf
@@ -1274,7 +1507,7 @@ Func MoveAndSurvive($lDestX, $lDestY, $lRandom = 100, $UseHoS = False, $safe_dis
 				Map_Move($lDestX, $lDestY, $lRandom)
 			ElseIf $lBlocked < 10 Then
 				$lAngle += 40
-				Map_Move(Agent_X(-2) + 300 * Sin($lAngle), Agent_Y(-2) + 300 * Cos($lAngle))
+				Map_Move(X(-2) + 300 * Sin($lAngle), Y(-2) + 300 * Cos($lAngle))
 			ElseIf $lBlocked > 9 Then
 				If $lHosCount == 0 And Agent_GetNearestDistance() < 1000 Then
 					Skill_UseSkill($SkillbarSlot[$Heart_of_Shadow], Agent_GetNearestAgent(-2, 0xDB, 3))
@@ -1346,7 +1579,7 @@ Func MoveAndSurvive_($lDestX, $lDestY, $SurviveFunc, $lRandom = 100, $safe_dista
 				Map_Move($lDestX, $lDestY, $lRandom)
 			ElseIf $lBlocked < 10 Then
 				$lAngle += 40
-				Map_Move(Agent_X() + 300 * Sin($lAngle), Agent_Y() + 300 * Cos($lAngle))
+				Map_Move(X() + 300 * Sin($lAngle), Y() + 300 * Cos($lAngle))
 			ElseIf $lBlocked > 9 Then
 				If $lHosCount == 0 And Agent_IsEnemyNear($safe_distance) Then
 					Skill_UseSkill($SkillbarSlot[$Heart_of_Shadow], Agent_GetNearestAgent(-2, 0xDB, 3))
@@ -1383,12 +1616,12 @@ EndFunc   ;==>MoveAndSurvive
 Func GetGoodAngle($lDestX, $lDestY)
     RndSleep(100)
     Local $lBestHosTarget = -1, $lBestHosAngle = 90, $lPI = 3.14159
-    Local $lWantedAngle = _ATan2(($lDestY - Agent_Y()), ($lDestX - Agent_X())) * 180 / $lPI
+    Local $lWantedAngle = _ATan2(($lDestY - Y()), ($lDestX - X())) * 180 / $lPI
     Local $aAgentArray = Agent_GetArray(4, 0xDB, 3, 1150)
-	If ComputeDistance($lDestX, $lDestY, Agent_X(), Agent_Y()) < 200 Then Return -3
+	If ComputeDistance($lDestX, $lDestY, X(), Y()) < 200 Then Return -3
     For $i = 1 to $aAgentArray[0]
 		If Agent_GetAgentInfo(Agent_GetAgentPtr(-2, "Dead"), $aAgentArray[$i]) > 1000 Then ContinueLoop
-        $lTargetAngle = _ATan2((Agent_Y() - Agent_Y($aAgentArray[$i])), (Agent_X() - Agent_X($aAgentArray[$i]))) * 180 / $lPI
+        $lTargetAngle = _ATan2((Y() - Y($aAgentArray[$i])), (X() - X($aAgentArray[$i]))) * 180 / $lPI
         If Abs($lWantedAngle - $lTargetAngle) < $lBestHosAngle Then
             $lBestHosTarget = $aAgentArray[$i]
             $lBestHosAngle = Abs($lWantedAngle - $lTargetAngle)
@@ -1440,7 +1673,7 @@ Func Move55HP($lDestX, $lDestY, $lRandom = 100, $safe_distance = $bowpull_range)
 				Survive($safe_distance)
 			ElseIf $lBlocked < 10 Then
 				$lAngle += 40
-				Map_Move(Agent_X(-2) + 300 * Sin($lAngle), Agent_Y(-2) + 300 * Cos($lAngle))
+				Map_Move(X(-2) + 300 * Sin($lAngle), Y(-2) + 300 * Cos($lAngle))
 				Survive($safe_distance)
 			EndIf
 		Else
@@ -1489,7 +1722,7 @@ Func PullGroup($x, $y, $sCoords, $aRange = $room_range)                         
 EndFunc   ;==>PullGroup
 
 ;Flag Heroes as heptagon, Hero 1 will be always flag northbound and clockwise.
-Func FlagHeptagon($FlagDistance = 300, $x = Agent_X(), $y = Agent_Y())
+Func FlagHeptagon($FlagDistance = 300, $x = X(), $y = Y())
 		If CantExplore() Then Return False
 		Local $Angle = 51.4285714285714286 ;conscript circle
 		;Local $Angle = 64.29 ;inscribed circle
@@ -1611,7 +1844,7 @@ Func PullEnemies($x, $y, $aRange = $bowpull_range, $hero_increment = 500, $targe
 	Out("Pulling ennemies")
 	Move_ToCoord($x, $x, 50)
 	If Agent_IsEnemyNear($aRange) Then
-		$heroXY = GetClosestXYtoWaypointInRangeofAgent($x, $x, $aRange + $hero_increment, $target)
+		$heroXY = Agent_GetClosestXYtoWaypointInRange($x, $x, $aRange + $hero_increment, $target)
 		AggroMoveToEX($heroXY[0], $heroXY[1])
 		Out("Flagging heroes")
 		FlagHeptagon(300, $heroXY[0], $heroXY[1])
@@ -1623,7 +1856,7 @@ Func PullEnemies($x, $y, $aRange = $bowpull_range, $hero_increment = 500, $targe
 		ChangeWeaponSet(4)
 
 		Out("Moving within " & $aRange & "distance of enemies")
-		MoveToClosestXYtoWaypointInRangeOfAgent($x, $x, $aRange, $target)
+		Agent_MoveToClosestXYtoWaypoint($x, $x, $aRange, $target)
 
 		If CanUse($SkillbarSlot[$Ebon_Battle_Standard_Of_Honor]) Then Skill_UseSkill($SkillbarSlot[$Ebon_Battle_Standard_Of_Honor])
 		If CanUse($SkillbarSlot[$Summon_Spirits_Luxon]) Then Skill_UseSkill($SkillbarSlot[$Summon_Spirits_Luxon])
@@ -1639,7 +1872,7 @@ Func PullEnemies($x, $y, $aRange = $bowpull_range, $hero_increment = 500, $targe
 		Until Agent_GetAgentInfo($besttarget, "Moving") = True Or TimerDiff($TimerToPull) > 5000 Or CantExplore()
 		ChangeWeaponSet(2)
 		Out("Deball with heroes")
-		$XY = GetClosestXYtoWaypointInRangeofAgent($x, $x, 500, Agent_GetNearestAlly())
+		$XY = Agent_GetClosestXYtoWaypointInRange($x, $x, 500, Agent_GetNearestAlly())
 		Move_ToCoord($XY[0], $XY[1], 100)
 	EndIf
 
@@ -1849,6 +2082,7 @@ Func PickupLootEx($iMaxDist = 2000, $aPickupTorch = False)
 	Local $lAgentPtr, $lAgentID, $lItemPtr, $lOwner, $lDeadlock
 	Local $lAgentPtrArray = Agent_GetAgentArray(0x400)
 	For $i = 1 To $lAgentPtrArray[0]
+		If Bot_HaltIfStopped() Then Return
 		If Agent_GetAgentInfo(-2, "IsDead") Then Return
 		$lAgentPtr = $lAgentPtrArray[$i]
 		$lAgentID = Agent_ID($lAgentPtr)
@@ -1857,9 +2091,10 @@ Func PickupLootEx($iMaxDist = 2000, $aPickupTorch = False)
 		$lOwner = Agent_GetAgentInfo($lAgentPtr, "Owner")
 		If $lOwner <> 0 And $lOwner <> Agent_GetMyID() Then ContinueLoop ; assigned to another player
 		If CanPickUpEx($lItemPtr, $aPickupTorch) And Agent_GetDistance($lAgentID) < $iMaxDist Then
-			Agent_MoveToXY(Agent_X($lAgentPtr), Agent_Y($lAgentPtr))
+			Agent_MoveToXY(X($lAgentPtr), Y($lAgentPtr))
 			$lDeadlock = TimerInit()
 			Do
+				If Bot_HaltIfStopped() Then Return
 				Item_PickUpItem($lAgentID)
 				Other_PingSleep(250)
 			Until Agent_GetAgentPtr($lAgentID) = 0 Or Agent_GetAgentInfo(-2, "IsDead") Or TimerDiff($lDeadlock) > 6000
@@ -2335,24 +2570,24 @@ Func UseRedRock()
 	UsePcons($Pcons_Red_Rock)
 EndFunc   ;==>UseRedRock
 
+; Logic-main Wipe: player dead AND (no rez left / party mostly dead / HP collapsed).
+; IsDefeated alone misses shrine deaths — MoveAndAggro never ran WipeManagement / rez-waypoint snap.
 Func Wipe()
-	Return Party_GetPartyContextInfo("IsDefeated")
+	If Party_GetPartyContextInfo("IsDefeated") Then Return True
+	If Not Agent_GetAgentInfo(-2, "IsDead") Then Return False
 
-	; If Not Agent_GetAgentInfo(-2, "IsDead") Then Return False
+	Local $l_i_PartySize = Party_GetPartyContextInfo("TotalPartySize")
+	If $l_i_PartySize <= 0 Then $l_i_PartySize = GetPartySize()
+	Local $l_i_DeadPartyMembers = 0
+	Local $i, $l_i_AgentID
+	For $i = 1 To $l_i_PartySize
+		$l_i_AgentID = Party_GetMemberAgentID($i)
+		If $l_i_AgentID = 0 Then ContinueLoop
+		If Agent_GetAgentInfo($l_i_AgentID, "IsDead") Then $l_i_DeadPartyMembers += 1
+	Next
 
-	; Local $l_i_PartySize = Party_GetPartyContextInfo("TotalPartySize")
-	; If $l_i_PartySize <= 0 Then Return False
-
-	; Local $l_i_DeadPartyMembers = 0
-	; For $i = 1 To $l_i_PartySize
-	; 	Local $l_i_AgentID = Party_GetMemberAgentID($i)
-	; 	If $l_i_AgentID = 0 Then ContinueLoop
-	; 	If Agent_GetAgentInfo($l_i_AgentID, "IsDead") Then $l_i_DeadPartyMembers += 1
-	; Next
-
-	; True wipe: no rezz left, almost everyone dead, or average living HP collapsed
-	; If GetAvailableRezz() = 0 Or $l_i_DeadPartyMembers >= $l_i_PartySize - 1 Or Party_GetPartyHealth() < 0.15 Then Return True
-	; Return False
+	If GetAvailableRezz() = 0 Or $l_i_DeadPartyMembers >= $l_i_PartySize - 1 Or Party_GetPartyHealth() < 0.15 Then Return True
+	Return False
 EndFunc   ;==>Wipe
 
 
@@ -2363,7 +2598,7 @@ Func GetAgentNameArraySorted($lAgentName)     ;returns a 2-dimensional array([ag
 	Local $lMe = Agent_GetAgentInfo(-2, "ID")
 	Local $AgentID
 	For $i = 1 To $lAgentArray[0]
-		$lDistance = (Agent_X(-2) - Agent_X($lAgentArray[$i])) ^ 2 + (Agent_Y(-2) - Agent_Y($lAgentArray[$i])) ^ 2
+		$lDistance = (X(-2) - X($lAgentArray[$i])) ^ 2 + (Y(-2) - Y($lAgentArray[$i])) ^ 2
 		$AgentID = DllStructGetData($lAgentArray[$i], 'ID')
 		ReDim $lReturnArray[$i][2]
 		$lReturnArray[$i - 1][0] = $AgentID
@@ -2417,23 +2652,18 @@ Func Item_SalvageSellItems()
         $lBagPtr = Item_GetBagPtr($bag)
         If $lBagPtr = 0 Then ContinueLoop
 
-        For $slot = 1 To Item_GetBagInfo($bag, "Size")
+        For $slot = 1 To Item_GetBagInfo($bag, "Slots")
             $lItemPtr = Item_GetItemBySlot($bag, $slot)
             If $lItemPtr = 0 Then ContinueLoop
             If Not Item_CanSell($lItemPtr) Then ContinueLoop
 
             If Item_HasUsefulMod($lItemPtr) Then
-                $aMod = @Extended
-
-                ; Dynamically verify and obtain a valid kit right before salvaging
-                Local $l_hKit = Merchant_RefillKits (60)
-                If $l_hKit <> 0 Then
-                    Item_SalvageItem($lItemPtr, $l_hKit)
-                    Other_PingSleep(50)
-                    Item_SalvageMod($aMod)
-                EndIf
+                Merchant_RefillKits(60)
+                ; Item_SalvageMod is gone. Expert kit salvages the prefix/insignia slot.
+                Item_SalvageItem($lItemPtr, "Expert", "Prefix")
+                Other_PingSleep(50)
             Else
-                Item_SellItem($lItemPtr)
+                Merchant_SellItem($lItemPtr)
             EndIf
         Next
     Next
@@ -2485,16 +2715,14 @@ Func SellRunes()
 	For $bag = 1 To $UseBags
 		$lBagPtr = Item_GetBagPtr($bag)
 		If $lBagPtr = 0 Then ContinueLoop
-		For $slot = 1 To Item_GetBagInfo($bag, "Size")
+		For $slot = 1 To Item_GetBagInfo($bag, "Slots")
 			$lItemPtr = Item_GetItemBySlot($bag, $slot)
 			If $lItemPtr = 0 Then ContinueLoop
 			$lItemType = Item_GetItemInfoByPtr($lItemPtr, "ItemType")
 			$lItemModelID = Item_GetItemInfoByPtr($lItemPtr, "ModelID")
 			If $lItemType == $TYPE_RUNE_AND_MOD And Item_CanSellRune($lItemModelID) Then
-				If Item_GeldGoldCharacter() >= 50000 Then Item_DepositGold(90000)
-				TraderRequestSell($lItemPtr)
-				Other_PingSleep(250)
-				TraderSell()
+				If Item_GetGoldCharacter() >= 50000 Then Item_DepositGold(90000)
+				Merchant_SellItem($lItemPtr, 0, True)
 			EndIf
 		Next
 	Next
@@ -2505,30 +2733,22 @@ Func SellMaterials()
 	For $bag = 1 To $UseBags
 		$lBagPtr = Item_GetBagPtr($bag)
 		If $lBagPtr = 0 Then ContinueLoop
-		For $slot = 1 To Item_GetBagInfo($bag, "Size")
+		For $slot = 1 To Item_GetBagInfo($bag, "Slots")
 			$lItemPtr = Item_GetItemBySlot($bag, $slot)
 			If $lItemPtr = 0 Then ContinueLoop
 			If Item_GetItemInfoByPtr($lItemPtr, "ItemType") <> 11 Then ContinueLoop
 			Switch MaterialRarity($lItemPtr)
 				Case 2
 					RareMaterialTrader()
-					For $i = 1 To Item_GetItemInfoByPtr($lItemPtr, "Quantity")
-						TraderRequestSell($lItemPtr)
-						Out("Sell rare material in " & $bag & ", " & $slot)
-						Sleep(Other_PingSleep(250))
-						TraderSell()
-					Next
+					Out("Sell rare material in " & $bag & ", " & $slot)
+					Merchant_SellItem($lItemPtr, 0, True)
 				Case 1
 					Out("material detected" & $bag & ", " & $slot)
 					$TotalStacks = Item_GetItemInfoByPtr($lItemPtr, "Quantity") / 10
 					If  $TotalStacks < 1 Then ContinueLoop
-					Agent_GoToNPCnearXY(Agent_X(), Agent_Y(), GetMaterialTrader())
-					For $stack = 1 To Floor($TotalStacks)
-						Out("Sell materials in " & $bag & ", " & $slot)
-						TraderRequestSell($lItemPtr)
-						Sleep(250)
-						TraderSell()
-					Next
+					Agent_GoToNPCnearXY(X(), Y(), GetMaterialTrader())
+					Out("Sell materials in " & $bag & ", " & $slot)
+					Merchant_SellItem($lItemPtr, 0, True)
 			EndSwitch
 		Next
 	Next
@@ -2539,15 +2759,13 @@ Func SellScrolls()
 	For $bag = 1 To 4
 		$lBagPtr = Item_GetBagPtr($bag)
 		If $lBagPtr = 0 Then ContinueLoop
-		For $slot = 1 To Item_GetBagInfo($bag, "Size")
+		For $slot = 1 To Item_GetBagInfo($bag, "Slots")
 			$lItemPtr = Item_GetItemBySlot($bag, $slot)
 			If $lItemPtr = 0 Then ContinueLoop
 			If Item_GetItemInfoByPtr($lItemPtr, "ItemType") <> 31 Then ContinueLoop
 			If Item_GetItemInfoByPtr($lItemPtr, "Rarity") <> 2624 Then ContinueLoop
-			TraderRequestsell($lItemPtr)
-			Other_PingSleep(250)
 			Out("Sell Scroll: " & $bag & ", " & $slot)
-			Tradersell()
+			Merchant_SellItem($lItemPtr, 0, True)
 		Next
 	Next
 EndFunc   ;==>SellScrolls
@@ -2588,7 +2806,7 @@ Func CountTotalSlots($NumOfBags = 4)
 	For $lBag = 1 To $NumOfBags
 		$lBagPtr = Item_GetBagPtr($lBag)
 		If $lBagPtr = 0 Then ContinueLoop
-		$lCount += Item_GetBagInfo($lBag, "Size")
+		$lCount += Item_GetBagInfo($lBag, "Slots")
 	Next
 	Return $lCount
 
@@ -2616,7 +2834,7 @@ Func BestStorageSlotbyModelID($ItemModelID, $FirstBag, $LastBag) ; finds the bes
 	For $bag = $LastBag To $FirstBag Step -1                            ; bags in reverse order so that found empty slot will be in an early bag
 		$lBagPtr = Item_GetBagPtr($bag)
 		If $lBagPtr = 0 Then ContinueLoop
-		For $slot = 1 To Item_GetBagInfo($bag, "Size")
+		For $slot = 1 To Item_GetBagInfo($bag, "Slots")
 			$lItemPtr = Item_GetItemBySlot($bag, $slot)
 			If Item_GetItemInfoByPtr($lItemPtr, "ModelID") = $ItemModelID Then    ; tome stack of exact Model ID found in current bag
 				$StorageIndex[0] = $bag
@@ -2640,7 +2858,7 @@ Func FindEmptySlot($FirstBag, $LastBag) ;Parameter = bag index to start searchin
 	For $bag = $FirstBag To $LastBag
 		$lBagPtr = Item_GetBagPtr($bag)
 		If $lBagPtr = 0 Then ContinueLoop        ; bags in reverse order so that found empty slot will be in an early bag
-		For $slot = 1 To Item_GetBagInfo($bag, "Size")
+		For $slot = 1 To Item_GetBagInfo($bag, "Slots")
 			$lItemPtr = GetItemBySlot($bag, $slot)
 			If $lItemPtr = 0 Then
 				Out($bag & ", " & $slot & "  <-Empty! " & @CRLF)
@@ -2691,7 +2909,7 @@ Func Item_StoreGoldItem($lBag, $numOfSlots)
 		$aModelID = Item_GetItemInfoByPtr($lItemPtr, "ModelID")
 		If $lItemPtr <> 0 And Item_GetItemInfoByPtr($lItemPtr, "Rarity") = $RARITY_Gold Then
 			$StorageIndex = BestStorageSlotbyModelID($aModelID, 8, 12)                                ; looking in bags 8 to 12 (change based on available storage)
-			If $StorageIndex[0] > 0 Then MoveItem($lItemPtr, $StorageIndex[0], $StorageIndex[1])
+			If $StorageIndex[0] > 0 Then Item_MoveItem($lItemPtr, $StorageIndex[0], $StorageIndex[1])
 			Out("Moving gold item to bag " & $StorageIndex[0] & ", slot " & $StorageIndex[1])
 			Sleep(Random(450, 550))
 		EndIf
@@ -2700,28 +2918,28 @@ EndFunc   ;==>StoreGoldItem
 
 Func Item_StoreRare($bag, $numOfSlots)
 	$lBagPtr = Item_GetBagPtr($bag)
-	For $slot = 1 To Item_GetBagInfo($bag, "Size")
+	For $slot = 1 To Item_GetBagInfo($bag, "Slots")
 		;	  Out("Checking items: " & $bagIndex & ", " & $i & @CRLF)
 		$lItemPtr = Item_GetItemBySlot($bag, $slot)
 		$aModelID = Item_GetItemInfoByPtr($lItemPtr, "ModelID")
 		If $lItemPtr <> 0 And Item_GetItemInfoByPtr($lItemPtr, "Rarity") = $RARITY_Gold And Item_GetItemReq($lItemPtr) < 12 And $aRareSkin[$aModelID] <> "" Then
 			Out("Storing " & $aRareSkin[$aModelID])
 			$StorageIndex = BestStorageSlotbyModelID($aModelID, 8, 12)                                ; looking in bags 8 to 12 (change based on available storage)
-			If $StorageIndex[0] > 0 Then MoveItem($lItemPtr, $StorageIndex[0], $StorageIndex[1])
+			If $StorageIndex[0] > 0 Then Item_MoveItem($lItemPtr, $StorageIndex[0], $StorageIndex[1])
 		EndIf
 	Next
 EndFunc   ;==>Item_StoreRare
 
 Func Item_StoreGold($bag, $numOfSlots)
 	$lBagPtr = Item_GetBagPtr($bag)
-	For $slot = 1 To Item_GetBagInfo($bag, "Size")
+	For $slot = 1 To Item_GetBagInfo($bag, "Slots")
 		;	  Out("Checking items: " & $bagIndex & ", " & $i & @CRLF)
 		$lItemPtr = Item_GetItemBySlot($bag, $slot)
 		$aModelID = Item_GetItemInfoByPtr($lItemPtr, "ModelID")
 		If $lItemPtr <> 0 And Item_GetItemInfoByPtr($lItemPtr, "Rarity") = $RARITY_Gold And Item_GetItemReq($lItemPtr) < 13 Then
 			Out("Storing " & $aRareSkin[$aModelID])
 			$StorageIndex = BestStorageSlotbyModelID($aModelID, 8, 12)                                ; looking in bags 8 to 12 (change based on available storage)
-			If $StorageIndex[0] > 0 Then MoveItem($lItemPtr, $StorageIndex[0], $StorageIndex[1])
+			If $StorageIndex[0] > 0 Then Item_MoveItem($lItemPtr, $StorageIndex[0], $StorageIndex[1])
 		EndIf
 	Next
 EndFunc   ;==>StoreGold
@@ -2733,7 +2951,7 @@ Func Item_StoreTome($lBag, $numOfSlots)                                         
 		If _ArrayBinarySearch($Tomes, $lModelID) = -1 Then ContinueLoop               ; continues loop if the Model ID of item does not correspond to a tome
 		Out("The item in bag " & $lBag & ", Slot " & $lSlot & " is a tome")
 		$StorageIndex = BestStorageSlotbyModelID($lModelID, 8, 12)                      ; looking in bags 8 to 12 (change based on available storage)
-		If $StorageIndex[0] > 0 Then MoveItem($lItemPtr, $StorageIndex[0], $StorageIndex[1])
+		If $StorageIndex[0] > 0 Then Item_MoveItem($lItemPtr, $StorageIndex[0], $StorageIndex[1])
 		Out("Moving tome to bag " & $StorageIndex[0] & ", slot " & $StorageIndex[1])
 		Other_PingSleep(200)
 	Next
@@ -2963,9 +3181,18 @@ Func BasicOnStart()
 	AdlibRegister("UpdateStats", 1000)
 EndFunc   ;==>onStart
 
+; Stop only flips $BotRunning. Move/fight loops must poll this or the button looks dead.
+Func Bot_HaltIfStopped()
+	If Not IsDeclared("BotRunning") Then Return False
+	If $BotRunning Then Return False
+	Agent_CancelAction()
+	Return True
+EndFunc   ;==>Bot_HaltIfStopped
+
 Func onStop()
 	$BotRunning = False
-	Out("Stop pressed")
+	Agent_CancelAction()
+	Out("Paused")
 EndFunc   ;==>onStop
 
 Func onResume()
@@ -3059,7 +3286,8 @@ Func Chest()
 		RandomMoveTo($Waypoints_by_XunlaiChest[$i][1], $Waypoints_by_XunlaiChest[$i][2], Random(60, 80, 2))
 	Next
 	Other_PingSleep(500)
-	Agent_GoToNPCnearXY(Agent_X(-2), Agent_Y(-2))
+	; No PlayerNumber — nearest Allegiance-6 NPC (Xunlai); never self.
+	Agent_GoToNPCnearXY(X(-2), Y(-2))
 EndFunc   ;==>Chest
 
 Func Merchant()
@@ -3099,7 +3327,7 @@ Func Merchant()
 		If $Merchant_Waypoints[$i][0] <> Map_GetMapID() Then ContinueLoop
 		RandomMoveTo($Merchant_Waypoints[$i][1], $Merchant_Waypoints[$i][2], Random(60, 80, 2))
 	Next
-	Agent_GoToNPCnearXY(Agent_X(-2), Agent_Y(-2))
+	Agent_GoToNPCnearXY(X(-2), Y(-2), GetMerchant())
 
 EndFunc   ;==>Merchant
 
@@ -3144,7 +3372,7 @@ Func RuneTrader()            ; waypoints need to be updated unless it states "up
 		If $Runetrader_Waypoints[$i][0] <> Map_GetMapID() Then ContinueLoop
 		RandomMoveTo($Runetrader_Waypoints[$i][1], $Runetrader_Waypoints[$i][2], Random(60, 80, 2))
 	Next
-	Agent_GoToNPCnearXY(Agent_X(-2), Agent_Y(-2))
+	Agent_GoToNPCnearXY(X(-2), Y(-2), GetRuneTrader(Map_GetMapID()))
 
 EndFunc   ;==>RuneTrader
 
@@ -3188,7 +3416,7 @@ Func ScrollTrader()        ; waypoints need to be updated unless it states "upda
 		If $ScrollTrader_Waypoints[$i][0] <> Map_GetMapID() Then ContinueLoop
 		RandomMoveTo($ScrollTrader_Waypoints[$i][1], $ScrollTrader_Waypoints[$i][2], Random(60, 80, 2))
 	Next
-	Agent_GoToNPCnearXY(Agent_X(-2), Agent_Y(-2))
+	Agent_GoToNPCnearXY(X(-2), Y(-2), GetScrollTrader(Map_GetMapID()))
 
 EndFunc   ;==>ScrollTrader
 
@@ -3235,7 +3463,7 @@ Func RareMaterialTrader()
 		If $RareMatTrader_Waypoints[$i][0] <> Map_GetMapID() Then ContinueLoop
 		RandomMoveTo($RareMatTrader_Waypoints[$i][1], $RareMatTrader_Waypoints[$i][2], Random(60, 80, 2))
 	Next
-	Agent_GoToNPCnearXY(Agent_X(-2), Agent_Y(-2))
+	Agent_GoToNPCnearXY(X(-2), Y(-2), GetRareMaterialTrader(Map_GetMapID()))
 ;~This section does the buying
 	;TraderRequest($MatID)
 	;Sleep(500 + 3 * GetPing())
@@ -3592,7 +3820,7 @@ Func VigilantSleep($x, $y, $VigilantTime = 0)
 		If Map_GetMapID() <> $MyOldMap Then ExitLoop
 		If Map_GetInstanceInfo("Type") <> $lMapLoadingOld Then ExitLoop
 		If Agent_IsEnemyNear(1250) Then Fight($x, $y, 1250, False, 1400)
-		If Agent_GetDistanceToXY($x, $y) > 1400 Then MoveToClosestXYtoWaypointInRangeOfAgent($x, $y, 1000)
+		If Agent_GetDistanceToXY($x, $y) > 1400 Then Agent_MoveToClosestXYtoWaypoint($x, $y, 1000)
 		If Cinematic_WaitCinematic() Then Return
 	Until TimerDiff($TimerVigilantSleep) > $VigilantTime Or Wipe() Or Map_GetMapID() <> $MyOldMap Or Map_GetInstanceInfo("Type") <> $lMapLoadingOld Or Cinematic_WaitCinematic()
 
@@ -3615,7 +3843,7 @@ Func BraceForEnemies($x, $y, $delay)
 		$lMapLoading = Map_GetInstanceInfo("Type")
 		If $lMapLoading <> $lMapLoadingOld Then ExitLoop
 		Move_ToCoord($x, $y, $lDistance)
-	Until ComputeDistance(Agent_X(-2), Agent_Y(-2), $x, $y) < 250 Or $lBlocked > 14 Or Agent_GetAgentInfo(-2, "Dead")
+	Until ComputeDistance(X(-2), Y(-2), $x, $y) < 250 Or $lBlocked > 14 Or Agent_GetAgentInfo(-2, "Dead")
 	Sleep($delay)
 	Precast($compass_range, True)
 
@@ -3629,7 +3857,7 @@ Func BraceForEnemies($x, $y, $delay)
 EndFunc   ;==>BraceForEnemies
 
 ; Follow an npc by ID
-Func CampNPC($npc = Agent_GetNearestNPCToXY(Agent_X(), Agent_Y()), $Time = 0, $Interval = 500)    ; accepts both struct and ID as NPC
+Func CampNPC($npc = Agent_GetNearestNPCToXY(X(), Y()), $Time = 0, $Interval = 500)    ; accepts both struct and ID as NPC
 	Local $Timer = 0, $tDiff = 0
 	Local $MyOldMap = Map_GetMapID(), $lMapLoadingOld = Map_GetInstanceInfo("Type")
 	Local $lDistance, $lMovingA, $lMovingB
@@ -3642,9 +3870,9 @@ Func CampNPC($npc = Agent_GetNearestNPCToXY(Agent_X(), Agent_Y()), $Time = 0, $I
 		If Map_GetInstanceInfo("Type") <> $lMapLoadingOld Then ExitLoop
 		Cinematic_WaitCinematic()
 		If Agent_GetAgentInfo($npc, "Dead") < 200 Then
-			AggroMoveToEX(Agent_X($npc), Agent_Y($npc), 1350)
+			AggroMoveToEX(X($npc), Y($npc), 1350)
 		Else
-			AggroMoveToEX(Agent_X($npc), Agent_Y($npc), 1350)
+			AggroMoveToEX(X($npc), Y($npc), 1350)
 		EndIf
 		Sleep($Interval)
 		$lMovingA = Agent_GetAgentInfo($npc, "Moving")
@@ -3652,7 +3880,7 @@ Func CampNPC($npc = Agent_GetNearestNPCToXY(Agent_X(), Agent_Y()), $Time = 0, $I
 		$lMovingB = Agent_GetAgentInfo($npc, "Moving")
 		If Not $lMovingA And Not $lMovingB Then
 			$theta = Random(0, 360)
-			AggroMoveToEX(50 * Cos($theta * 0.01745) + Agent_X($npc), 50 * Sin($theta * 0.01745) + Agent_Y($npc), 0)
+			AggroMoveToEX(50 * Cos($theta * 0.01745) + X($npc), 50 * Sin($theta * 0.01745) + Y($npc), 0)
 		EndIf
 		$tDiff = TimerDiff($Timer)
 		If $Time > 0 Then

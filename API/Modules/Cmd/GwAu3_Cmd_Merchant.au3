@@ -480,12 +480,13 @@ EndFunc
 
 ;~ Description: Buys an ID kit.
 Func Merchant_BuyIDKit()
-	Merchant_BuyItem(5, 1, 100)
+	; Third arg is $a_b_Trader, not a price. Model 5/6 are not kits.
+	Return Merchant_BuyItem($GC_I_MODELID_IDENTIFICATION_KIT, 1, False)
 EndFunc   ;==>BuyIDKit
 
 ;~ Description: Buys a superior ID kit.
 Func Merchant_BuySuperiorIDKit()
-	Merchant_BuyItem(6, 1, 500)
+	Return Merchant_BuyItem($GC_I_MODELID_SUPERIOR_IDENTIFICATION_KIT, 1, False)
 EndFunc   ;==>BuySuperiorIDKit
 
 ;~ Description: Checks remaining uses for both ID and Salvage kits simultaneously, purchasing replacements if either falls below the minimum threshold.
@@ -509,7 +510,7 @@ Func Merchant_RefillKits ($a_i_MinUses = 50, $a_b_CheapSalvage = False)
 	; Check and replenish Salvage Kit if low or missing
 	If $l_hSalvageKit = 0 Or $l_iSalvageUses < $a_i_MinUses Then
 		Out("Salvage Kit uses low (" & $l_iSalvageUses & ") or missing. Purchasing new Salvage Kit...")
-		Merchant_BuyItem(4, 1, 2000) ; Adjust item index/model and cost as configured for your merchant
+		Merchant_BuyItem($GC_I_MODELID_SALVAGE_KIT, 1, False)
 		$l_bPurchased = True
 	EndIf
 

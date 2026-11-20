@@ -179,10 +179,10 @@ Func Agent_GoToNPC($npc = Agent_GetNearestNPC(-2), $Interact = True)
 		$lMapLoadingOld = $lMapLoading
 		$lMapLoading = Map_GetInstanceInfo("Type")
 		If $lMapLoading <> $lMapLoadingOld Then ExitLoop
-		$npcXY = Agent_XY($npc)
+		Local $l_f_NpcXY[2] = [Agent_GetAgentInfo($npc, "X"), Agent_GetAgentInfo($npc, "Y")]
 		Cinematic_ConditionalSkipCinematic()
 		Sleep(200)
-	Until Agent_XY($npc)[0] = $npcXY[0] And Agent_XY($npc)[1] = $npcXY[1] ; wait until the NPC has stopped moving
+	Until Agent_GetAgentInfo($npc, "X") = $l_f_NpcXY[0] And Agent_GetAgentInfo($npc, "Y") = $l_f_NpcXY[1] ; wait until the NPC has stopped moving
 	Agent_MoveToDistanceAway(70, $npc)
 	If $Interact Then Agent_GoNPC($npc)
 EndFunc   ;==>GoToNPC
@@ -192,28 +192,33 @@ Func Agent_GoToPlayer($Player = GetNearestAgentPtr(-2), $Interact = True)
 	Local $lBlocked = 0
 	Local $lMapLoading = Map_GetInstanceInfo("Type"), $lMapLoadingOld
 	Do
-		$PlayerXY = Agent_XY($Player)
+		Local $l_f_PlayerXY[2] = [Agent_GetAgentInfo($Player, "X"), Agent_GetAgentInfo($Player, "Y")]
 		Cinematic_ConditionalSkipCinematic()
 		Sleep(200)
-	Until Agent_XY($Player)[0] = $PlayerXY[0] And Agent_XY($Player)[1] = $PlayerXY[1] ; wait until the NPC has stopped moving
+	Until Agent_GetAgentInfo($Player, "X") = $l_f_PlayerXY[0] And Agent_GetAgentInfo($Player, "Y") = $l_f_PlayerXY[1] ; wait until the NPC has stopped moving
 	Agent_MoveToDistanceAway(70, $Player)
 	If $Interact Then GoPlayer($Player)
 EndFunc   ;==>GoToNPC
 
 ; Finds agent nearest given coords (optional PlayerNumber) and talks to them.
-; Logic: PlayerNumber scan is allegiance-agnostic. Fallback is nearest living at XY (any allegiance),
-; not Allegiance=6 only — quest NPCs often flip to ally (1) while the quest is active.
+; Logic GoToNPCNearXY: with PlayerNumber use that agent; else GetNearestNPCToXY (Allegiance 6).
+; Never fall back to "nearest living" first — that was picking the player (Chant Of Triumph) at XY.
 Func Agent_GoToNPCNearXY($a_f_X, $a_f_Y, $a_i_PlayerNumber = 0, $Interact = True)
 	Local $l_p_npc = 0
+	Local $l_p_Me = Agent_GetAgentPtr(-2)
 	If $a_i_PlayerNumber <> 0 Then
 		$l_p_npc = Agent_GetAgentByPlayerNumber($a_i_PlayerNumber)
-		If $l_p_npc = 0 Then
-			Out("GoToNPCNearXY: PlayerNumber " & $a_i_PlayerNumber & " not found, falling back to nearest living at XY")
-			$l_p_npc = Agent_GetNearestAgentToXY($a_f_X, $a_f_Y)
+		If $l_p_npc = 0 Or $l_p_npc = $l_p_Me Then
+			Out("GoToNPCNearXY: PlayerNumber " & $a_i_PlayerNumber & " not found, falling back to nearest NPC at XY")
+			$l_p_npc = Agent_GetNearestNPCtoXY($a_f_X, $a_f_Y)
 		EndIf
 	Else
+		$l_p_npc = Agent_GetNearestNPCtoXY($a_f_X, $a_f_Y)
+	EndIf
+	; Last resort: any living near XY except self (quest NPCs that flipped to ally Allegiance 1).
+	If $l_p_npc = 0 Or $l_p_npc = $l_p_Me Then
 		$l_p_npc = Agent_GetNearestAgentToXY($a_f_X, $a_f_Y)
-		If $l_p_npc = 0 Then $l_p_npc = Agent_GetNearestNPCtoXY($a_f_X, $a_f_Y)
+		If $l_p_npc = $l_p_Me Then $l_p_npc = 0
 	EndIf
 	If $l_p_npc = 0 Then
 		Out("GoToNPCNearXY: agent not found (PlayerNumber=" & $a_i_PlayerNumber & ", XY=" & $a_f_X & "," & $a_f_Y & ")")
@@ -243,19 +248,30 @@ EndFunc   ;==>Agent_MoveToDistanceAway
 
 ;~ Description: Move to signpost until you are within actionable distance and interect with it.
 Func Agent_GoToSignpost($aAgent)
-	Local $lMe, $lCount
-	Local $lBlocked = 0
-	Local $lMapLoading = Map_GetInstanceInfo("Type"), $lMapLoadingOld
+	If $aAgent = 0 Or Agent_GetAgentInfo(-2, "IsDead") Then Return
 	Agent_MoveToDistanceAway(60, $aAgent)
-	Pingsleep(100)
-	GoSignpost($aAgent)
-EndFunc   ;==>GoToSignpost
+	Other_PingSleep(100)
+	Agent_GoSignpost($aAgent)
+EndFunc   ;==>Agent_GoToSignpost
 
-; Finds signpost nearest given coords and PlayerID and talks to him/her
-Func Agent_GoToSignpostNearXY($x, $y) ; $dialog
-	$signpost = Agent_GetNearestSignpostToXY($x, $y)
-	GoToSignpost($signpost)
-EndFunc   ;==>GoToSignpostNearXY
+; Finds signpost nearest given coords and interacts with it (boss lock, chest, etc.).
+; Approach XY first when nothing is close — otherwise a distant Locked Chest can win over a missing/far Boss Lock.
+; $a_b_ExcludeChests: True for Boss Lock (do not path to loot chests).
+Func Agent_GoToSignpostNearXY($x, $y, $a_b_ExcludeChests = False)
+	Local Const $lMaxDist = 2500
+	Local $signpost = Agent_GetNearestSignpostToXY($x, $y, $lMaxDist, $a_b_ExcludeChests)
+	If $signpost = 0 Or Agent_GetDistanceToXY($x, $y) > 800 Then
+		Out("GoToSignpostNearXY: approaching WP (" & Floor($x) & ", " & Floor($y) & ")")
+		Agent_MoveToXY($x, $y, 50)
+		$signpost = Agent_GetNearestSignpostToXY($x, $y, $lMaxDist, $a_b_ExcludeChests)
+	EndIf
+	If $signpost = 0 Then
+		Out("GoToSignpostNearXY: no signpost within " & $lMaxDist & " of WP")
+		Return
+	EndIf
+	Out("GoToSignpostNearXY: " & Agent_GetAgentInfo($signpost, "Name") & " ExtraType=" & Agent_GetAgentInfo($signpost, "ExtraType") & " distToWP=" & Floor(Agent_GetDistanceToXY($x, $y, $signpost)))
+	Agent_GoToSignpost($signpost)
+EndFunc   ;==>Agent_GoToSignpostNearXY
 
 
 ;~ Description: Move to a location and wait until you reach it.
@@ -283,15 +299,15 @@ Func Agent_MoveToXY($aX, $aY, $aRandom = 50)
 	Until Agent_GetDistanceToXY($lDestX, $lDestY) < 25 Or $lBlocked > 14
 EndFunc   ;==>MoveTo
 
-; Move to certain distance away from an agent at a given angle
-Func Agent_MoveToClosestXYtoWaypoint($x, $y, $aDistance, $aAgent = GetAgentPtr(-2))
+; Move to the circle-point around $aAgent that is closest to waypoint ($x,$y).
+Func Agent_MoveToClosestXYtoWaypoint($x, $y, $aDistance, $aAgent = -2)
+	If $aAgent = 0 Or $aAgent = -2 Then $aAgent = Agent_GetAgentPtr(-2)
 	If $aAgent = 0 Then Return
-	Local $ClosestXY = GetClosestXYtoWaypoint($x, $y, $aDistance, $aAgent)
-	; Out("Move to (" & Floor($ClosestXY[0]) & ", " & Floor($ClosestXY[1]) & ")")
-	MoveTo($ClosestXY[0], $ClosestXY[1], 100)
-	Out("New distance to target: " & Floor(GetDistance($aAgent, -2)))
-
-EndFunc   ;==>MoveToClosestXYtoWaypointInRangeOfAgent
+	Local $ClosestXY = Agent_GetClosestXYtoWaypointInRange($x, $y, $aDistance, $aAgent)
+	If Not IsArray($ClosestXY) Then Return
+	Agent_MoveToXY($ClosestXY[0], $ClosestXY[1], 100)
+	Out("New distance to target: " & Floor(Agent_GetDistance($aAgent, -2)))
+EndFunc   ;==>Agent_MoveToClosestXYtoWaypoint
 
 ;~ Description: Attack an agent.
 Func Agent_Attack($a_v_Agent, $a_b_CallTarget = False)

@@ -135,6 +135,10 @@ Func Map_WaitMapLoading($a_i_MapID = -1, $a_i_InstanceType = -1, $a_i_Timeout = 
 
     Do
         Sleep(250)
+        ; Bot Stop/Pause: return so a 30–180s zone wait does not ignore the button.
+        If IsDeclared("BotRunning") Then
+            If Not $BotRunning Then Return False
+        EndIf
         If Game_GetGameInfo("IsCinematic") Then
             Cinematic_SkipCinematic()
             Sleep(1000)

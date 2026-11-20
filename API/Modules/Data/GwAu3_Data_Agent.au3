@@ -191,9 +191,8 @@ Func Agent_GetAgentInfo($a_i_AgentID = -2, $a_s_Info = "")
 
         Case "ItemID"
             Return Memory_Read($l_p_AgentPtr + 0xC8, "dword")
-        Case "ExtraType"
-            Return Memory_Read($l_p_AgentPtr + 0xCC, "dword")
-        Case "GadgetID"
+		; +0xCC is padding. ExtraType/GadgetID for chests/signposts is +208 (0xD0) — Logic MemoryRead(+208).
+        Case "ExtraType", "GadgetID"
             Return Memory_Read($l_p_AgentPtr + 0xD0, "dword")
         Case "h00D4"
             Return Memory_Read($l_p_AgentPtr + 0xD4, "dword[3]")
@@ -952,11 +951,13 @@ EndFunc
 ;~ Description: Returns the pointer for the nearest agent to an agent or optional XY.
 ;~ Living 0xDB uses FilteredAgentArray mode 3 (type+allegiance+range); other types use mode 1.
 ;~ $a_f_Range defaults to 1320 (Fight / longbow_range); values <= 0 or > 1320 are clamped to 1320.
-Func Agent_GetNearestAgent($a_v_Agent = -2, $a_i_Type = 0xDB, $a_i_Allegiance = 2, $a_f_X = Default, $a_f_Y = Default, $a_i_PlayerNumber = 0, $a_f_Range = 1320)
+; Logic GetNearestAgentPtr: living (0xDB) scan uses GetAgentPtrArray mode 3 with range 5000, then picks nearest.
+; Do not clamp to 1320 — CarefulAggro / callers apply their own distance gate afterward.
+Func Agent_GetNearestAgent($a_v_Agent = -2, $a_i_Type = 0xDB, $a_i_Allegiance = 2, $a_f_X = Default, $a_f_Y = Default, $a_i_PlayerNumber = 0, $a_f_Range = 5000)
 	Local $l_p_AgentPtr = Agent_GetAgentPtr($a_v_Agent)
 	If $a_f_X = Default Then $a_f_X = Agent_GetAgentInfo($l_p_AgentPtr, "X")
 	If $a_f_Y = Default Then $a_f_Y = Agent_GetAgentInfo($l_p_AgentPtr, "Y")
-	If $a_f_Range <= 0 Or $a_f_Range > 1320 Then $a_f_Range = 1320
+	If $a_f_Range <= 0 Then $a_f_Range = 5000
 
 	Local $l_i_Mode = 1
 	If $a_i_Type = 0xDB Then $l_i_Mode = 3
@@ -992,9 +993,12 @@ Func Agent_GetNearestAgentToXY($a_f_X, $a_f_Y, $a_i_PlayerNumber = 0, $a_i_Alleg
 	EndIf
 	If Not IsArray($l_ai_AgentPtrArray) Or $l_ai_AgentPtrArray[0] = 0 Then Return 0
 
+	Local $l_p_Me = Agent_GetAgentPtr(-2)
 	Local $l_p_Nearest = 0, $l_f_NearestDistance = 25000000
 	For $l_i_Idx = 1 To $l_ai_AgentPtrArray[0]
 		Local $l_p_TargetPtr = $l_ai_AgentPtrArray[$l_i_Idx]
+		If $l_p_TargetPtr = 0 Or $l_p_TargetPtr = $l_p_Me Then ContinueLoop
+		If Agent_ConvertID($l_p_TargetPtr) = Agent_ConvertID(-2) Then ContinueLoop
 		If $a_i_Allegiance = 0 And Agent_GetAgentInfo($l_p_TargetPtr, "IsDead") Then ContinueLoop
 		If $a_i_PlayerNumber <> 0 And Agent_GetAgentInfo($l_p_TargetPtr, "PlayerNumber") <> $a_i_PlayerNumber Then ContinueLoop
 		Local $l_f_Distance = Agent_GetDistanceToXY($a_f_X, $a_f_Y, $l_p_TargetPtr)
@@ -1308,14 +1312,15 @@ Func Agent_GetBestTarget($a_i_Range = 1320, $a_b_CastingOnly = False, $a_b_NoHex
 		If $a_b_MeleeOnly And Not $l_b_Martial Then ContinueLoop
 		If $a_b_CasterOnly And $l_b_Martial Then ContinueLoop
 
+		; Ball only against other in-range foes (Logic GetBestTargetPtr). Summing map-wide pulls toward distant packs.
 		Local $l_f_SumDistances = 0
 		For $j = 1 To $l_ai_AgentArray[0]
 			If $l_ai_AgentArray[$j] = $l_p_AgentPtr Then ContinueLoop
-			If Agent_GetAgentInfo($l_ai_AgentArray[$j], "Allegiance") <> 3 Then ContinueLoop
 			If Agent_GetAgentInfo($l_ai_AgentArray[$j], "IsDead") Then ContinueLoop
+			If Agent_GetAgentInfo($l_ai_AgentArray[$j], "Allegiance") <> 3 Then ContinueLoop
+			If Agent_GetDistanceToXY($l_f_X, $l_f_Y, $l_ai_AgentArray[$j]) > $a_i_Range Then ContinueLoop
 			If Agent_GetNpcInfoByAgentID($l_ai_AgentArray[$j], "IsMinion") Or Agent_GetNpcInfoByAgentID($l_ai_AgentArray[$j], "IsSpirit") Then ContinueLoop
-			$l_f_Distance = Agent_GetDistance($l_p_AgentPtr, $l_ai_AgentArray[$j])
-			$l_f_SumDistances += $l_f_Distance
+			$l_f_SumDistances += Agent_GetDistance($l_p_AgentPtr, $l_ai_AgentArray[$j])
 		Next
 
 		If $l_f_SumDistances < $l_f_LowestSum Then
@@ -1580,43 +1585,45 @@ Func GetAgentsFromXY($aX, $aY, $aRange = 1320, $aType = 0, $aReturnMode = 0, $aC
 	EndSwitch
 EndFunc
 
-; Returns the closest coordinates on a circle within a given radius of an agent
+; Closest point on a circle of radius $aDistance around $aAgent to the player (Logic GetClosestXYinRangeOfAgent).
 Func Agent_GetClosestXYinRange($aDistance, $aAgent, $sectors = 100)
-	Local $ClosestXY[2]
-	Local $lNearestDistance = 10000
-	If $aAgent = 0 Then Return
-	Local $coords = Agent_GetAllXYinRange($aDistance, $aAgent, $sectors)    ; divides circle into sectors
-
-	For $i = 0 To UBound($coords) - 1    ; Find coords closest to me
-		$Distance = Agent_GetDistanceToXY($coords[$i][0], $coords[$i][1], $aAgent)
-		If $Distance < $lNearestDistance Then
-			$lNearestDistance = $Distance
-			$ClosestXY[0] = $coords[$i][0]    ; select closest X but some degrees off axis
-			$ClosestXY[1] = $coords[$i][1]    ; select closest Y but some degrees off axis
-			;			Out($i & ", " & Floor($Distance) & ", " & Floor($ClosestXY[0]) & ", " & Floor($ClosestXY[1]))
-		EndIf
-	Next
-	Return $ClosestXY
-EndFunc   ;==>GetClosestXYinRangeOfAgent
-
-; Returns the closest coordinates to a wayppoint on a circle within a given radius of an agent
-Func Agent_GetClosestXYtoWaypointInRange($x, $y, $aDistance, $aAgent = -2, $sectors = 100)
-	Local $ClosestXY[2]
-	Local $lNearestDistance = 10000
-	If $aAgent = 0 Then Return
-	Local $coords = Agent_GetAllXYinRange($aDistance, $aAgent, $sectors)    ; divides circle into sectors
-
-	For $i = 0 To UBound($coords) - 1    ; Find coords closest to waypoint
-		$Distance = Agent_GetDistanceToXY($coords[$i][0], $coords[$i][1], $aAgent)
+	Local $ClosestXY[2] = [0, 0]
+	Local $lNearestDistance = 100000000.0
+	If $aAgent = 0 Then Return $ClosestXY
+	Local $coords = Agent_GetAllXYinRange($aDistance, $aAgent, $sectors)
+	If Not IsArray($coords) Then Return $ClosestXY
+	Local $i, $Distance
+	For $i = 0 To UBound($coords) - 1
+		; Must compare to self — comparing to $aAgent is ~constant (the radius) and picks an arbitrary sector.
+		$Distance = Agent_GetDistanceToXY($coords[$i][0], $coords[$i][1], -2)
 		If $Distance < $lNearestDistance Then
 			$lNearestDistance = $Distance
 			$ClosestXY[0] = $coords[$i][0]
 			$ClosestXY[1] = $coords[$i][1]
-			;			Out($i & ", " & Floor($Distance) & ", " & Floor($ClosestXY[0]) & ", " & Floor($ClosestXY[1]))
 		EndIf
 	Next
 	Return $ClosestXY
-EndFunc   ;==>GetClosestXYtoWaypointInRangeofAgent
+EndFunc   ;==>Agent_GetClosestXYinRange
+
+; Closest point on a circle around $aAgent to waypoint ($x,$y) — Logic GetClosestXYtoWaypointInRangeofAgent.
+Func Agent_GetClosestXYtoWaypointInRange($x, $y, $aDistance, $aAgent = -2, $sectors = 100)
+	Local $ClosestXY[2] = [0, 0]
+	Local $lNearestDistance = 100000000.0
+	If $aAgent = 0 Then Return $ClosestXY
+	Local $coords = Agent_GetAllXYinRange($aDistance, $aAgent, $sectors)
+	If Not IsArray($coords) Then Return $ClosestXY
+	Local $i, $Distance
+	For $i = 0 To UBound($coords) - 1
+		; Compare to waypoint, not agent (agent distance ≈ radius for every sector).
+		$Distance = Sqrt(($coords[$i][0] - $x) ^ 2 + ($coords[$i][1] - $y) ^ 2)
+		If $Distance < $lNearestDistance Then
+			$lNearestDistance = $Distance
+			$ClosestXY[0] = $coords[$i][0]
+			$ClosestXY[1] = $coords[$i][1]
+		EndIf
+	Next
+	Return $ClosestXY
+EndFunc   ;==>Agent_GetClosestXYtoWaypointInRange
 
 ; Returns an array of all coordinates equidistance to an agent assuming a given number of sectors for that circle
 Func Agent_GetAllXYinRange($aDistance, $aAgent, $sectors = 360)
@@ -1626,15 +1633,18 @@ Func Agent_GetAllXYinRange($aDistance, $aAgent, $sectors = 360)
 	ReDim $coords[$sectors][2]
 	For $i = 0 To $sectors - 1
 		$radian = 2 * 3.141592653589 * ($i / $sectors)
-		$coords[$i][0] = ($aDistance * Cos($radian)) + Agent_X($aAgent)
-		$coords[$i][1] = ($aDistance * Sin($radian)) + Agent_Y($aAgent)
+		$coords[$i][0] = ($aDistance * Cos($radian)) + Agent_GetAgentInfo($aAgent, "X")
+		$coords[$i][1] = ($aDistance * Sin($radian)) + Agent_GetAgentInfo($aAgent, "Y")
 		;Out("Closest :  ," & Floor($Coords[$i][0]) & ", " & Floor($Coords[$i][1]))
 	Next
 	Return $coords
 EndFunc   ;==>GetAllXYinRangeOfAgent
 
 ;~ Description: Test If an agent is near X Y coords.
-Func Agent_IsNearXY($aAgent, $lX = Agent_X(-2), $lY = AgentY(-2), $aRange = 1320)
+Func Agent_IsNearXY($aAgent, $lX = Default, $lY = Default, $aRange = 1320)
+	If $lX = Default Then $lX = Agent_GetAgentInfo(-2, "X")
+	If $lY = Default Then $lY = Agent_GetAgentInfo(-2, "Y")
+
 	$lPtr = GetAgentPtr($aAgent)
 	Local $lCount = 0
 	Local $aAgentPtrArray = Agent_GetAgentPtrArray(4, 0xDB, $allegiance_ally, $aRange, $aAgent)
