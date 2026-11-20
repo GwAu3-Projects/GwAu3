@@ -1,7 +1,7 @@
 #include-once
 ; Item quality checks ported from Logic ItemChecker.au3 onto GwAu3 Item_* getters.
-Func IsPerfectShield($aItem)
-    Local $ModStruct = Item_GetModStruct($aItem)
+Func IsPerfectShield($a_h_Item)
+    Local $ModStruct = Item_GetModStruct($a_h_Item)
 	; Universal mods
     Local $Plus30 = StringInStr($ModStruct, "1E4823", 0, 1) ; Mod struct for +30 (shield only?)
 	Local $Minus3Hex = StringInStr($ModStruct, "3009820", 0, 1) ; Mod struct for -3wHex (shield only?)
@@ -97,9 +97,9 @@ Func IsPerfectShield($aItem)
 	Return False
 EndFunc
 
-Func IsPerfectStaff($aItem)
-	Local $ModStruct = Item_GetModStruct($aItem)
-	Local $A = Item_GetItemAttribute($aItem)
+Func IsPerfectStaff($a_h_Item)
+	Local $ModStruct = Item_GetModStruct($a_h_Item)
+	Local $A = Item_GetItemAttribute($a_h_Item)
 	;Generic 10% HCT
 	Local $10Cast = StringInStr($ModStruct, "A0822", 0, 1) ; Mod struct for 10% HCT
 	; Ele mods
@@ -253,9 +253,9 @@ Func IsPerfectStaff($aItem)
 	Return False
 EndFunc
 
-Func IsPerfectCaster($aItem)
-	Local $ModStruct = Item_GetModStruct($aItem)
-	Local $A = Item_GetItemAttribute($aItem)
+Func IsPerfectCaster($a_h_Item)
+	Local $ModStruct = Item_GetModStruct($a_h_Item)
+	Local $A = Item_GetItemAttribute($a_h_Item)
     ; Universal mods
     Local $PlusFive = StringInStr($ModStruct, "5320823", 0, 1) ; Mod struct for +5^50
 	Local $PlusFiveEnch = StringInStr($ModStruct, "500F822", 0, 1)
@@ -662,8 +662,8 @@ Func IsPerfectCaster($aItem)
     Return False
 EndFunc
 
-Func IsRareRune($aItem)
-    Local $ModStruct = Item_GetModStruct($aItem)
+Func IsRareRune($a_h_Item)
+    Local $ModStruct = Item_GetModStruct($a_h_Item)
 	Local $SupVigor = StringInStr($ModStruct, "C202EA27", 0, 1) ; Mod struct for Sup vigor rune
 	Local $WindWalker = StringInStr($ModStruct, "040430A5060518A7", 0, 1) ; Windwalker insig
 	Local $MinorMyst = StringInStr($ModStruct, "05033025012CE821", 0, 1) ; Minor Mysticism
@@ -684,10 +684,10 @@ Func IsRareRune($aItem)
 	EndIf
 EndFunc
 
-Func GetItemMaxReq8($aItem)
-	Local $Type = Item_GetItemInfoByPtr(Item_GetItemPtr($aItem), "ItemType")
-	Local $Dmg = Item_GetItemMaxDmg($aItem)
-	Local $Req = Item_GetItemReq($aItem)
+Func GetItemMaxReq8($a_h_Item)
+	Local $Type = Item_GetItemInfoByPtr(Item_GetItemPtr($a_h_Item), "ItemType")
+	Local $Dmg = Item_GetItemMaxDmg($a_h_Item)
+	Local $Req = Item_GetItemReq($a_h_Item)
 
 	Switch $Type
     Case 12 ;~ Offhand
@@ -711,10 +711,10 @@ Func GetItemMaxReq8($aItem)
 	EndSwitch
 EndFunc
 
-Func GetItemMaxReq7($aItem)
-	Local $Type = Item_GetItemInfoByPtr(Item_GetItemPtr($aItem), "ItemType")
-	Local $Dmg = Item_GetItemMaxDmg($aItem)
-	Local $Req = Item_GetItemReq($aItem)
+Func GetItemMaxReq7($a_h_Item)
+	Local $Type = Item_GetItemInfoByPtr(Item_GetItemPtr($a_h_Item), "ItemType")
+	Local $Dmg = Item_GetItemMaxDmg($a_h_Item)
+	Local $Req = Item_GetItemReq($a_h_Item)
 
 	Switch $Type
     Case 12 ;~ Offhand
@@ -738,12 +738,12 @@ Func GetItemMaxReq7($aItem)
 	EndSwitch
 EndFunc
 
-Func IsReq8Max($aItem)
-	Local $Type = Item_GetItemInfoByPtr(Item_GetItemPtr($aItem), "ItemType")
-	Local $Rarity = Item_GetItemInfoByPtr(Item_GetItemPtr($aItem), "Rarity")
-	Local $MaxDmgOffHand = GetItemMaxReq8($aItem)
-	Local $MaxDmgShield = GetItemMaxReq8($aItem)
-	Local $MaxDmgSword = GetItemMaxReq8($aItem)
+Func IsReq8Max($a_h_Item)
+	Local $Type = Item_GetItemInfoByPtr(Item_GetItemPtr($a_h_Item), "ItemType")
+	Local $Rarity = Item_GetItemInfoByPtr(Item_GetItemPtr($a_h_Item), "Rarity")
+	Local $MaxDmgOffHand = GetItemMaxReq8($a_h_Item)
+	Local $MaxDmgShield = GetItemMaxReq8($a_h_Item)
+	Local $MaxDmgSword = GetItemMaxReq8($a_h_Item)
 
 	Switch $Rarity
     Case 2624 ;~ Gold
@@ -813,12 +813,12 @@ Func IsReq8Max($aItem)
 	Return False
 EndFunc
 
-Func IsReq7Max($aItem)
-	Local $Type = Item_GetItemInfoByPtr(Item_GetItemPtr($aItem), "ItemType")
-	Local $Rarity = Item_GetItemInfoByPtr(Item_GetItemPtr($aItem), "Rarity")
-	Local $MaxDmgOffHand = GetItemMaxReq7($aItem)
-	Local $MaxDmgShield = GetItemMaxReq7($aItem)
-	Local $MaxDmgSword = GetItemMaxReq7($aItem)
+Func IsReq7Max($a_h_Item)
+	Local $Type = Item_GetItemInfoByPtr(Item_GetItemPtr($a_h_Item), "ItemType")
+	Local $Rarity = Item_GetItemInfoByPtr(Item_GetItemPtr($a_h_Item), "Rarity")
+	Local $MaxDmgOffHand = GetItemMaxReq7($a_h_Item)
+	Local $MaxDmgShield = GetItemMaxReq7($a_h_Item)
+	Local $MaxDmgSword = GetItemMaxReq7($a_h_Item)
 
 	Switch $Rarity
     Case 2624 ;~ Gold
@@ -888,8 +888,8 @@ Func IsReq7Max($aItem)
 	Return False
 EndFunc
 
-Func IsEliteTome($aItem)
-	Local $ModelID = Item_GetItemInfoByPtr(Item_GetItemPtr($aItem), "ModelID")
+Func IsEliteTome($a_h_Item)
+	Local $ModelID = Item_GetItemInfoByPtr(Item_GetItemPtr($a_h_Item), "ModelID")
 
 	Switch $ModelID
     Case 21786, 21787, 21788, 21789, 21790, 21791, 21792, 21793, 21794, 21795
@@ -898,8 +898,8 @@ Func IsEliteTome($aItem)
 	Return False
 EndFunc
 
-Func IsRegularTome($aItem)
-	Local $ModelID = Item_GetItemInfoByPtr(Item_GetItemPtr($aItem), "ModelID")
+Func IsRegularTome($a_h_Item)
+	Local $ModelID = Item_GetItemInfoByPtr(Item_GetItemPtr($a_h_Item), "ModelID")
 
 	Switch $ModelID
     Case 21796, 21797, 21798, 21799, 21800, 21801, 21802, 21803, 21804, 21805
@@ -908,8 +908,8 @@ Func IsRegularTome($aItem)
 	Return False
 EndFunc
 
-Func IsPcon($aItem)
-	Local $ModelID = Item_GetItemInfoByPtr(Item_GetItemPtr($aItem), "ModelID")
+Func IsPcon($a_h_Item)
+	Local $ModelID = Item_GetItemInfoByPtr(Item_GetItemPtr($a_h_Item), "ModelID")
 
 	Switch $ModelID
     Case 2513, 5585, 6049, 6366, 6367, 6375, 15477, 19171, 19172, 19173, 22190, 24593, 30855, 31145, 31146, 35124, 36682 ;;28435 hard apple cider, 910 = hunters ales
@@ -926,9 +926,9 @@ Func IsPcon($aItem)
 	Return False
 EndFunc
 
-Func IsSpecialItem($aItem)
-	Local $ModelID = Item_GetItemInfoByPtr(Item_GetItemPtr($aItem), "ModelID")
-	Local $ExtraID = Item_GetItemInfoByPtr(Item_GetItemPtr($aItem), "ExtraID")
+Func IsSpecialItem($a_h_Item)
+	Local $ModelID = Item_GetItemInfoByPtr(Item_GetItemPtr($a_h_Item), "ModelID")
+	Local $ExtraID = Item_GetItemInfoByPtr(Item_GetItemPtr($a_h_Item), "ExtraID")
 
 	Switch $ModelID ; ovde je Magnas shield
     Case 5656, 18345, 21491, 37765, 21833, 28433, 28434, 5899, 344
@@ -961,8 +961,8 @@ Func IsSpecialItem($aItem)
 	Return False
 EndFunc
 
-Func IsRareMaterial($aItem)
-   Local $M = Item_GetItemInfoByPtr(Item_GetItemPtr($aItem), "ModelID")
+Func IsRareMaterial($a_h_Item)
+   Local $M = Item_GetItemInfoByPtr(Item_GetItemPtr($a_h_Item), "ModelID")
 
    Switch $M
    Case 937, 938, 935, 931, 932, 936, 930

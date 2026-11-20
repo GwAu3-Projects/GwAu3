@@ -179,10 +179,10 @@ Func Agent_GoToNPC($npc = Agent_GetNearestNPC(-2), $Interact = True)
 		$lMapLoadingOld = $lMapLoading
 		$lMapLoading = Map_GetInstanceInfo("Type")
 		If $lMapLoading <> $lMapLoadingOld Then ExitLoop
-		$npcXY = Agent_XY($npc)
+		Local $l_f_NpcXY[2] = [Agent_GetAgentInfo($npc, "X"), Agent_GetAgentInfo($npc, "Y")]
 		Cinematic_ConditionalSkipCinematic()
 		Sleep(200)
-	Until Agent_XY($npc)[0] = $npcXY[0] And Agent_XY($npc)[1] = $npcXY[1] ; wait until the NPC has stopped moving
+	Until Agent_GetAgentInfo($npc, "X") = $l_f_NpcXY[0] And Agent_GetAgentInfo($npc, "Y") = $l_f_NpcXY[1] ; wait until the NPC has stopped moving
 	Agent_MoveToDistanceAway(70, $npc)
 	If $Interact Then Agent_GoNPC($npc)
 EndFunc   ;==>GoToNPC
@@ -192,10 +192,10 @@ Func Agent_GoToPlayer($Player = GetNearestAgentPtr(-2), $Interact = True)
 	Local $lBlocked = 0
 	Local $lMapLoading = Map_GetInstanceInfo("Type"), $lMapLoadingOld
 	Do
-		$PlayerXY = Agent_XY($Player)
+		Local $l_f_PlayerXY[2] = [Agent_GetAgentInfo($Player, "X"), Agent_GetAgentInfo($Player, "Y")]
 		Cinematic_ConditionalSkipCinematic()
 		Sleep(200)
-	Until Agent_XY($Player)[0] = $PlayerXY[0] And Agent_XY($Player)[1] = $PlayerXY[1] ; wait until the NPC has stopped moving
+	Until Agent_GetAgentInfo($Player, "X") = $l_f_PlayerXY[0] And Agent_GetAgentInfo($Player, "Y") = $l_f_PlayerXY[1] ; wait until the NPC has stopped moving
 	Agent_MoveToDistanceAway(70, $Player)
 	If $Interact Then GoPlayer($Player)
 EndFunc   ;==>GoToNPC
@@ -243,19 +243,18 @@ EndFunc   ;==>Agent_MoveToDistanceAway
 
 ;~ Description: Move to signpost until you are within actionable distance and interect with it.
 Func Agent_GoToSignpost($aAgent)
-	Local $lMe, $lCount
-	Local $lBlocked = 0
-	Local $lMapLoading = Map_GetInstanceInfo("Type"), $lMapLoadingOld
+	If $aAgent = 0 Or Agent_GetAgentInfo(-2, "IsDead") Then Return
 	Agent_MoveToDistanceAway(60, $aAgent)
-	Pingsleep(100)
-	GoSignpost($aAgent)
-EndFunc   ;==>GoToSignpost
+	Other_PingSleep(100)
+	Agent_GoSignpost($aAgent)
+EndFunc   ;==>Agent_GoToSignpost
 
-; Finds signpost nearest given coords and PlayerID and talks to him/her
-Func Agent_GoToSignpostNearXY($x, $y) ; $dialog
-	$signpost = Agent_GetNearestSignpostToXY($x, $y)
-	GoToSignpost($signpost)
-EndFunc   ;==>GoToSignpostNearXY
+; Finds signpost nearest given coords and interacts with it (boss lock, chest, etc.).
+Func Agent_GoToSignpostNearXY($x, $y)
+	Local $signpost = Agent_GetNearestSignpostToXY($x, $y)
+	If $signpost = 0 Then Return
+	Agent_GoToSignpost($signpost)
+EndFunc   ;==>Agent_GoToSignpostNearXY
 
 
 ;~ Description: Move to a location and wait until you reach it.

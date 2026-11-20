@@ -191,9 +191,8 @@ Func Agent_GetAgentInfo($a_i_AgentID = -2, $a_s_Info = "")
 
         Case "ItemID"
             Return Memory_Read($l_p_AgentPtr + 0xC8, "dword")
-        Case "ExtraType"
-            Return Memory_Read($l_p_AgentPtr + 0xCC, "dword")
-        Case "GadgetID"
+		; +0xCC is padding. ExtraType/GadgetID for chests/signposts is +208 (0xD0) — Logic MemoryRead(+208).
+        Case "ExtraType", "GadgetID"
             Return Memory_Read($l_p_AgentPtr + 0xD0, "dword")
         Case "h00D4"
             Return Memory_Read($l_p_AgentPtr + 0xD4, "dword[3]")
@@ -1626,15 +1625,18 @@ Func Agent_GetAllXYinRange($aDistance, $aAgent, $sectors = 360)
 	ReDim $coords[$sectors][2]
 	For $i = 0 To $sectors - 1
 		$radian = 2 * 3.141592653589 * ($i / $sectors)
-		$coords[$i][0] = ($aDistance * Cos($radian)) + Agent_X($aAgent)
-		$coords[$i][1] = ($aDistance * Sin($radian)) + Agent_Y($aAgent)
+		$coords[$i][0] = ($aDistance * Cos($radian)) + Agent_GetAgentInfo($aAgent, "X")
+		$coords[$i][1] = ($aDistance * Sin($radian)) + Agent_GetAgentInfo($aAgent, "Y")
 		;Out("Closest :  ," & Floor($Coords[$i][0]) & ", " & Floor($Coords[$i][1]))
 	Next
 	Return $coords
 EndFunc   ;==>GetAllXYinRangeOfAgent
 
 ;~ Description: Test If an agent is near X Y coords.
-Func Agent_IsNearXY($aAgent, $lX = Agent_X(-2), $lY = AgentY(-2), $aRange = 1320)
+Func Agent_IsNearXY($aAgent, $lX = Default, $lY = Default, $aRange = 1320)
+	If $lX = Default Then $lX = Agent_GetAgentInfo(-2, "X")
+	If $lY = Default Then $lY = Agent_GetAgentInfo(-2, "Y")
+
 	$lPtr = GetAgentPtr($aAgent)
 	Local $lCount = 0
 	Local $aAgentPtrArray = Agent_GetAgentPtrArray(4, 0xDB, $allegiance_ally, $aRange, $aAgent)

@@ -12,6 +12,7 @@ Global $g_i_SkillLogHits = 0
 ; Detours stay installed; $g_b_SkillLogLive gates callbacks (Fight on/off without re-patch).
 Global $g_b_SkillLogLive = False
 Global $g_b_SkillLogDetoursOn = False
+Global $g_b_SkillLogAnnounced = False
 ; Example / debug: Out every valid HIT (RuptBot keeps this False — interrupt log is enough).
 Global $g_b_SkillLogVerboseHits = False
 
@@ -466,7 +467,6 @@ EndFunc   ;==>SkillLog_ReadBytes
 ; Gate callbacks without tearing down detours. Fight: SetLive(True/False); empty Respond still full-disarms.
 Func SkillLog_SetLive($a_b_Live)
 	$g_b_SkillLogLive = ($a_b_Live = True Or $a_b_Live = 1)
-	Out("SkillLog live=" & ($g_b_SkillLogLive ? "yes" : "no") & " detours=" & ($g_b_SkillLogDetoursOn ? "on" : "off"))
 	Return $g_b_SkillLogLive
 EndFunc   ;==>SkillLog_SetLive
 
@@ -481,6 +481,7 @@ Func SkillLog_Respond($a_s_OnSpell = "", $a_s_OnMelee = "")
 		$g_s_SkillMeleeActivate = ""
 		$g_b_SkillLogLive = False
 		$g_b_SkillLogDetoursOn = False
+		$g_b_SkillLogAnnounced = False
 		Out("SkillLog detours disarmed")
 		Return True
 	EndIf
@@ -519,18 +520,14 @@ Func SkillLog_Respond($a_s_OnSpell = "", $a_s_OnMelee = "")
 			Memory_WriteDetourEx("MeleeSkillLogStart", "MeleeSkillLogProc")
 		EndIf
 		$g_b_SkillLogDetoursOn = True
-		Local $sHookC = SkillLog_ReadBytes($g_p_CasterSkillLogStart, 5)
-		Local $sHookM = SkillLog_ReadBytes($g_p_MeleeSkillLogStart, 5)
-		Out("SkillLog detours installed Caster→" & $a_s_OnSpell & " hook=" & $sHookC & " start=" & $g_p_CasterSkillLogStart)
-		Out("SkillLog detours installed Melee→" & $a_s_OnMelee & " hook=" & $sHookM & " start=" & $g_p_MeleeSkillLogStart)
-		Out("SkillLog procs caster=" & $pProc & " melee=" & $pMelee)
-	Else
-		Out("SkillLog responders → Caster=" & $a_s_OnSpell & " Melee=" & $a_s_OnMelee & " (detours kept)")
 	EndIf
 
 	SkillLog_EnsureCallbackHwnd()
 	$g_b_SkillLogLive = True
-	Out("SkillLog live=yes hits C/M=" & $g_i_SkillLogHitsCaster & "/" & $g_i_SkillLogHitsMelee & " hwnd=" & $g_h_SkillLogGUI)
+	If Not $g_b_SkillLogAnnounced Then
+		Out("Skill log response activated")
+		$g_b_SkillLogAnnounced = True
+	EndIf
 	Return True
 EndFunc   ;==>SkillLog_Respond
 
