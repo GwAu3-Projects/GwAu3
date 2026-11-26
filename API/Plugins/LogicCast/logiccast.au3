@@ -5,6 +5,7 @@ Global $Skillbar[8] = [1, 2, 3, 4, 5, 6, 7, 8]
 Global $RuptSlots[9]
 Global $ProtSlots[9]
 Global $HeroPrecast[100][3]
+Global $HeroProts[0][3]		; [skillID, hero#, slot] — same IsProtectiveSkill filter as $ProtSlots
 Global $BiP[3] = [0, 0, 0]
 Global $SkillbarSlot[3500]	; used to store the skillslot of skill ID's present in the skill bar
 Global $aSkillRange
@@ -17,7 +18,7 @@ Global $MyTargetID = 0			; target at cast start (cancel / context)
 Global $MySkillID = 0			; skill ID we last started
 Global $MyActivation = 0		; our activation ms (aftercast gate in OnSpell)
 Global $MyAftercast = 0			; our aftercast ms
-Global $AftercastTimer = 501	; TimerInit() when that cast started (501 = never)
+Global $AftercastTimer = 0
 Global $MysticHealingArray[1][3]
 Global $HeroHeals[0][3]
 Global $HeroHexRemoval[0][3]
@@ -137,8 +138,8 @@ Func CacheSkillBar()
 	Out($PressureSpiritSkills & " pressure sprits on your skillbar")
 	$Summon_Spirits = $SkillbarSlot[$Summon_Spirits_Luxon] + $SkillbarSlot[$Summon_Spirits_Kurzick]
 	Out("Mapping your skill bar - completed")
-	; _ArrayDisplay($SkillBarCache)
-	; _ArrayDisplay($RuptSlots)
+	OutSkillBarSummary()
+	Debug_ShowHardRuptColumn()
 
 	; Arm SkillLog once at cache time. Fight / bots only toggle live.
 	If $RuptEventSystem Or $ProtEventSystem Then
@@ -151,6 +152,32 @@ Func CacheSkillBar()
 
 	Return True
 EndFunc   ;==>CacheSkillBar
+
+
+Func Debug_ShowHardRuptColumn()
+	If Not IsArray($SkillBarCache) Or UBound($SkillBarCache, 0) < 2 Then
+		Out("[HardRuptDebug] $SkillBarCache is not initialized")
+		Return
+	EndIf
+
+	Local $iMaxSlot = UBound($SkillBarCache, 1) - 1
+	If $iMaxSlot > 8 Then $iMaxSlot = 8
+
+	Out("[HardRuptDebug] Showing $hardrupt (col " & $hardrupt & ") vs $rupt (col " & $rupt & "):")
+	For $i = 1 To $iMaxSlot
+		Local $iSkillID = Number($SkillBarCache[$i][$all])
+		Local $vRupt = $SkillBarCache[$i][$rupt]
+		Local $vHardRupt = $SkillBarCache[$i][$hardrupt]
+		Local $sName = Skill_NameFromID($iSkillID)
+		Out(StringFormat("[Slot %d] SkillID=%d (%s) | $rupt=%s | $hardrupt=%s (IsRuptSkill(True)=%s)", _
+			$i, _
+			$iSkillID, _
+			$sName, _
+			String($vRupt), _
+			String($vHardRupt), _
+			String(IsRuptSkill($iSkillID, True))))
+	Next
+EndFunc   ;==>Debug_ShowHardRuptColumn
 
 
 ; Cast detect is SkillLog (OnSpell / OnMelee / RuptEX). Do not add EnemySkillWatch or Listen back.
@@ -192,18 +219,18 @@ Func Fight($x = X(-2), $y = Y(-2), $aAggroRange = 1320, $careful = False, $aMaxD
 			EndIf
 			Agent_Attack($BestTarget, False)
 		Else
-			; Stop leftover attack-move so we do not walk toward the next pack out of range.
-			Agent_CancelAction()
+			; Logic: no CancelAction here. Canceling every CanAttack-fail tick aborts HR
+			; (torch/bundle → FAIL → CancelAction → UseSkills starts HR → next tick cancels it).
 			$BestTarget = 0
 			$aCalledTarget = 0
 		EndIf
-		; Precast 2nd arg is precastspirits (bool), not careful / not a distance.
-		Precast($aAggroRange, True)
-		If $careful And $BestTarget <> 0 Then
-			CancelAll()
-			Map_Move(X($BestTarget), Y($BestTarget))
-			RndSleep(300)
-		EndIf
+		; Precast 2nd arg is precastspirits (bool). Skip wards/spirits mid-fight —
+		; CarefulAggro/Pull already precast; calling them every tick abort@2500-spammed.
+		Precast($aAggroRange, False)
+		; Do not CancelAll + Map_Move onto the foe when $careful — that walks spears/paras
+		; into adjacent and cancels Attack's weapon-range pathing. CarefulAggro handles
+		; ApplyHR / hero flags; Attack keeps martial range. $careful reserved for callers.
+		#forceref $careful
 		; Bar pass; UseSkills already drains Listen between slots.
 		UseSkills($x, $y, $aAggroRange, $all, $aMaxDistanceToXY, $aAgent)
 	Until Agent_NoEnemiesAround($aAggroRange) Or TimerDiff($TimerToGetOut) > 240000 Or Agent_GetAgentInfo(-2, "IsDead") Or Wipe()
@@ -238,7 +265,7 @@ Func UseSkills($x, $y, $aAggroRange = 1320, $skilltype = $all, $aMaxDistanceToXY
 			If $SkillBarCache[$aSkillSlot][$hexremove] <> "" Then ContinueLoop
 		EndIf
 
-		If CanUse($aSkillSlot, $aAggroRange, $skilltype) Then Skill_TryUseSkill($aSkillSlot, $BestTarget, False, 0)
+		If ShouldUse($aSkillSlot, $aAggroRange, $skilltype) Then Skill_TryUseSkill($aSkillSlot, $BestTarget, False, 0)
 	Next
 
 	If $aAgent <> 0 Then
@@ -257,36 +284,72 @@ Func LogMyInterrupt($aCasterID, $aEnemySkillID, $aSuccess, $aElapsedMs)
 	If Not IsString($sSkill) Or $sSkill = "" Then $sSkill = "#" & Number($aEnemySkillID)
 	Local $iMs = Floor($aElapsedMs)
 	If $aSuccess Then
-		Out("I interrupted " & $sName & "'s " & $sSkill & " in " & $iMs & "ms")
+		Out("Interrupted " & $sName & "'s " & $sSkill & " in " & $iMs & "ms")
 	Else
-		Out("I failed to interrupt " & $sName & "'s " & $sSkill & " in " & $iMs & "ms")
+		Out("Failed to interrupt " & $sName & "'s " & $sSkill & " in " & $iMs & "ms")
 	EndIf
 EndFunc   ;==>LogMyInterrupt
 
+; Fire path after ShouldUse (policy + CanUse already done). No second CanUse here.
+; $MyActivation is for OnSpell/rupt timing — not armed here (Logic TryUseSkill same).
 ; $aTimeout <= 0 returns after send.
 Func Skill_TryUseSkill($aSkillSlot, $aTarget = -2, $aCallTarget = False, $aTimeout = 10000)
 	If $aSkillSlot < 1 Or $aSkillSlot > 8 Then Return False
-	Local $lDeadlock = TimerInit()
-	Local $ExitTimer = 0
 	Local $lAgentID = Agent_ConvertID($aTarget)
 	If $lAgentID = 0 Or Agent_GetAgentInfo(-2, "IsDead") Then Return False
-	If Not CanCast($aSkillSlot) Then Return False
-	;If $lAgentID <> Agent_GetMyID() Then Agent_ChangeTarget($lAgentID)
 	If Not Skill_UseSkill($aSkillSlot, $lAgentID, $aCallTarget) Then Return False
-	$MySkillSlot = $aSkillSlot
-	$MyTargetID = $lAgentID
 	$AftercastTimer = TimerInit()
+	$MyActivation = GetAdjustedActivation($SkillBarCache[$aSkillSlot][$all], -2, $aTarget) ; accounts for fast casting and (when target is passed through) projectile travel time.
 	If $aTimeout <= 0 Then Return True
 	Return True
-EndFunc
+EndFunc   ;==>Skill_TryUseSkill
 
-; Milliseconds until this slot lands on $aTarget. Thin wrapper â†’ Skill_GetMyActivationTime.
-Func GetAdjustedActivation($aSkillSlot, $aTarget = 0)
-	If $aSkillSlot < 1 Or $aSkillSlot > 8 Then Return 0
-	Local $iSkill = $SkillBarCache[$aSkillSlot][$all]
-	If $iSkill = 0 Then Return 0
-	Return Skill_GetMyActivationTime($iSkill, $aTarget)
-EndFunc
+; Light fire for OnSpell / OnMelee interrupts — Diversion/Backfire/VoR/… via CanUseRuptEffects
+; (no busy/aftercast; GetBestRupt already checked recharge/energy).
+Func Skill_TryRuptSkill($aSkillSlot, $aTarget = -2, $aCallTarget = False, $aTimeout = 10000)
+	If $aSkillSlot < 1 Or $aSkillSlot > 8 Then Return False
+	If Agent_GetAgentInfo(-2, "IsDead") Or Agent_GetAgentInfo(-2, "IsKnocked") Then Return False
+	If Not CanUseRuptEffects($aSkillSlot) Then Return False
+	Return Skill_TryUseSkill($aSkillSlot, $aTarget, $aCallTarget, $aTimeout)
+EndFunc   ;==>Skill_TryRuptSkill
+
+Func GetRemainingAftercastMs()
+	If Not IsDeclared("AftercastTimer") Or $AftercastTimer = 0 Then Return 0
+	If Not IsDeclared("$MyActivation") Or $MyActivation <= 0 Then Return 0
+
+	Local $lElapsed = TimerDiff($AftercastTimer)
+	If $lElapsed >= $MyActivation Then Return 0
+
+	Return $MyActivation - $lElapsed
+EndFunc   ;==>GetRemainingAftercastMs
+
+Func GetAdjustedActivation($aSkillID, $aCasterID = -2, $aTargetID = -1)
+	Local $lActivation = $GC_AMX2_SKILL_DATA[$aSkillID][$GC_F_SKILL_ACTIVATION_TIME] * 1000
+	Local $lSkillType = Skill_GetSkillInfo($aSkillID, "SkillType")
+	Local $lWeaponType = Agent_GetAgentInfo($aCasterID, "WeaponType")
+
+	Switch $lSkillType
+
+		Case $Spell, $Hex
+			If Agent_GetAgentInfo($aCasterID, "Primary") = $Mesmer Then Return $lActivation * (0.5 ^ (GetAttributeByID($Fast_Casting, True) / 15))
+		Case $Signet
+			If Agent_GetAgentInfo($aCasterID, "Primary") = $Mesmer Then Return $lActivation * (1 - 0.03 * GetAttributeByID($Fast_Casting, True))
+		Case $Attack
+			Local $iDist = Agent_GetDistance($aCasterID, $aTargetID)
+			Local $lAttackSpeedModifier = Agent_GetAgentInfo($aCasterID, "AttackSpeedModifier")
+			If $lAttackSpeedModifier <= 0 Then $lAttackSpeedModifier = 1.0
+			Switch $lWeaponType
+				Case $Bow
+					If $lActivation > 0 Then Return 750 * $lAttackSpeedModifier + $iDist * 0.42
+				Case $Spear
+					If $lActivation > 0 Then Return 500 * $lAttackSpeedModifier + $iDist * 0.6
+				Case Else
+					If $lActivation > 0 Then Return 500 * $lAttackSpeedModifier
+		EndSwitch
+	EndSwitch
+	Return $lActivation
+
+EndFunc   ;==>GetAdjustedActivation
 
 ; SkillLog_Respond caster handler. Return: 0 = ignore/handled, 1 = reaction used.
 ; Cast detect = SkillLog.
@@ -299,15 +362,8 @@ Func OnSpell($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart = 0, $
 
 	Local $lMyID = Agent_GetMyID()
 
-	; Self cast — arm aftercast clock (classic SpellActivation / RuptEX Case 1).
-	If Number($aCasterID) = Number($lMyID) Then
-		$MyActivation = Skill_GetMyActivationTime($aSkillID, $aTargetID)
-		$MyAftercast = Skill_GetSkillInfo($aSkillID, "Aftercast") * 750
-		$MySkillID = $aSkillID
-		$MyTargetID = $aTargetID
-		$AftercastTimer = TimerInit()
-		Return 0
-	EndIf
+	; Self cast — do not react to our own spell start here.
+	If Number($aCasterID) = Number($lMyID) Then Return 0
 
 	; Spirit attacks (Bloodsong, Agony, …) are not casts worth reacting to.
 	; The ritualist's binding ritual is a different agent and still goes through.
@@ -316,65 +372,79 @@ Func OnSpell($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart = 0, $
 	; Cancel our cast if a hard rupt is coming at us (before busy gate).
 	If IsHardRuptSkill($aSkillID) And Number($aTargetID) = Number($lMyID) Then
 		Out($aCasterID & " is interrupting my " & Skill_NameFromID(OurSkillID()))
-		Local $lEnemyActivation = Number(Skill_GetSkillInfo($aSkillID, "Activation")) * 1000
+		Local $lEnemyActivation = GetAdjustedActivation($aSkillID, $aCasterID, $aTargetID)
 		If $lEnemyActivation <= 0 Then $lEnemyActivation = 500
-		If $lEnemyActivation > TimerDiff($AftercastTimer) Then Return 0
-		If $MyActivation > 250 Or OurSkillActivationMs() > 250 Then CancelAction()
-		$AftercastTimer = TimerInit()
+		Local $lElapsedSinceLast = ($g_hAftercastTimer <> 0) ? TimerDiff($g_hAftercastTimer) : 999999
+		If $lEnemyActivation > $lElapsedSinceLast Then Return 0
+		If $g_iLastSkillLockMs > 250 Or OurSkillActivationMs() > 250 Then CancelAction()
 		Return 0
 	EndIf
 
-	If Agent_GetAgentInfo(-2, "IsCasting") Or ($AftercastTimer <> 501 And $MyActivation > 0 And TimerDiff($AftercastTimer) < $MyActivation) Then Return 0
+	If Agent_GetAgentInfo(-2, "IsCasting") Then Return 0
 
-	; Rupt / strip / hex — same land rules as RuptEX.
+	; Rupt / strip / hex — factor remaining aftercast into timing rather than blocking early.
 	If $RuptEventSystem And Agent_GetAgentInfo($aCasterID, "Allegiance") = 3 Then
-		; Skip aftercast gate until we have actually started a cast (501 = never).
-		If $AftercastTimer <> 501 And $MyActivation > 0 And TimerDiff($AftercastTimer) < $MyActivation Then Return 0
+		Local $lTargetAllegiance = ($aTargetID <> 0) ? Agent_GetAgentInfo($aTargetID, "Allegiance") : 0
+
+		; Caster has Shame or Mark of Subversion and is casting on themselves or their ally ($aTargetID = 0 or Allegiance 3)
+		If ($aTargetID = 0 Or $lTargetAllegiance = 3) _
+				And (Skill_HasEffect($aCasterID, $Shame) Or Skill_HasEffect($aCasterID, $Mark_of_Subversion)) Then Return 0
+
+		; Caster has Mistrust or Guilt and is casting on MY ally (Allegiance 1 or self)
+		If $aTargetID <> 0 And ($lTargetAllegiance = 1 Or Number($aTargetID) = Number($lMyID)) _
+				And (Skill_HasEffect($aCasterID, $Mistrust) Or Skill_HasEffect($aCasterID, $Mistrust_PvP) Or Skill_HasEffect($aCasterID, $Guilt)) Then Return 0
+
 		Local $lRuptSlot = GetBestRupt($aSkillID, $aCasterID, $aAggroRange)
 		If $lRuptSlot > 0 And Agent_GetDistance($aCasterID) < 1200 Then
-			Local $lEnemyActivation = Number(Skill_GetSkillInfo($aSkillID, "Activation")) * 1000
-			Local $lMyActivation = GetAdjustedActivation($lRuptSlot, $aCasterID)
+			Local $lEnemyActivation = GetAdjustedActivation($aSkillID, $aCasterID, $aTargetID)
+			Local $lMyActivation = GetAdjustedActivation($SkillBarCache[$lRuptSlot][$all], -2, $aCasterID)
 			Local $lPing = GetPing()
-			If $lEnemyActivation > $lMyActivation Then
+			Local $lRemainingAftercast = GetRemainingAftercastMs()
+			Local $lEffectiveMyTime = $lRemainingAftercast + $lMyActivation + $lPing
+
+			If $lEnemyActivation > $lEffectiveMyTime Then
 				Local $lOk = False
 				If $lEnemyActivation <= 250 Then
-					$lOk = Skill_TryUseSkill($lRuptSlot, $aCasterID, False, 0)
+					$lOk = Skill_TryRuptSkill($lRuptSlot, $aCasterID, False, 0)
 				Else
-					Local $lSleep = $lEnemyActivation * 0.5 - $lMyActivation - $lPing - Random(0, 150)
+					Local $lSleep = ($lEnemyActivation * 0.5) - $lEffectiveMyTime - Random(0, 150)
 					If $lSleep > 0 Then Sleep($lSleep)
-					$lOk = Skill_TryUseSkill($lRuptSlot, $aCasterID, False)
+					$lOk = Skill_TryRuptSkill($lRuptSlot, $aCasterID, False)
 				EndIf
 				LogMyInterrupt($aCasterID, $aSkillID, $lOk, TimerDiff($aCastStart))
 				If $lOk Then Return 1
 			EndIf
 		EndIf
+
 		; Enchant removal — only when we see an enchantment being cast
 		If IsEnchantmentSkill($aSkillID) Or Skill_GetSkillInfo($aSkillID, "SkillType") = $Enchantment Then
 			For $i = 1 To 8
 				If $SkillBarCache[$i][$enchantremove] = "" Then ContinueLoop
 				If Not Skill_GetSkillbarInfo($i, "IsRecharged") Then ContinueLoop
 				If $SkillBarCache[$i][$energyreq] > Agent_GetAgentInfo(-2, "CurrentEnergy") Then ContinueLoop
+				If Not CanUseRuptEffects($i) Then ContinueLoop
 
 				Local $lStripTarget = 0
-				; Self/ally enchants â†’ strip the caster; else caster if already enchanted, else balled.
-				If SkillTargetsSelfOrAlly($aSkillID) and Agent_GetAgentInfo($aCasterID, "IsEnchanted") Then
+				; Self/ally enchants -> strip the caster; else caster if already enchanted, else balled.
+				If SkillTargetsSelfOrAlly($aSkillID) And Agent_GetAgentInfo($aCasterID, "IsEnchanted") Then
 					$lStripTarget = $aCasterID
 				Else
 					$lStripTarget = Agent_GetBalledEnchantedEnemy($aAggroRange)
 				EndIf
 				If $lStripTarget = 0 Or Agent_GetDistance($lStripTarget) > $aAggroRange Then ContinueLoop
-				; Shatter needs an enchanted target â€” fresh self-enchant at cast start is not ready yet.
+				; Shatter needs an enchanted target — fresh self-enchant at cast start is not ready yet.
 				If Not Agent_GetAgentInfo($lStripTarget, "IsEnchanted") Then ContinueLoop
 				If Skill_TryUseSkill($i, $lStripTarget, False, 0) Then Return 1
 			Next
 		EndIf
 
-		;~ 	Hex removal, only when we see a hex being cast
+		; Hex removal — only when we see a hex being cast
 		If IsHexSpell($aSkillID) Then
 			For $i = 1 To 8
 				If $SkillBarCache[$i][$hexremove] = "" Then ContinueLoop
 				If Not Skill_GetSkillbarInfo($i, "IsRecharged") Then ContinueLoop
 				If $SkillBarCache[$i][$energyreq] > Agent_GetAgentInfo(-2, "CurrentEnergy") Then ContinueLoop
+				If Not CanUseRuptEffects($i) Then ContinueLoop
 
 				Local $lHexTarget = 0
 				; Prefer cast target if it is an ally; else most-hexed ally in range.
@@ -390,18 +460,17 @@ Func OnSpell($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart = 0, $
 		EndIf
 	EndIf
 
-
-	;~ 	Prot skills
+	; Prot skills
 	If $ProtSlots[0] > 0 Then
 		If Agent_GetAgentInfo($aCasterID, "Allegiance") <> 3 Or Agent_GetDistance($aTargetID) > 1250 Then Return 0
 		Local $lProtSlot = GetProtSlot($aSkillID, $aCasterID, $aTargetID)
-		If $lProtSlot > 0 Then
+		If $lProtSlot > 0 And CanUseRuptEffects($lProtSlot) Then
 			If Skill_TryUseSkill($lProtSlot, $aTargetID, False, 0) Then Return 1
 		EndIf
 	EndIf
 
 ;~ ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>		Move to Avoid AoE	<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-	;~ 	Area Range
+	;~ Area Range
 	If IsAoESkill($aSkillID) = 1 Then
 		If $aTargetID <> Agent_GetMyID() Then
 			$AOEDangerXYLocation = XY($aTargetID)
@@ -414,7 +483,7 @@ Func OnSpell($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart = 0, $
 		EndIf
 	EndIf
 
-	;~ 	Area Nearby
+	;~ Area Nearby
 	If IsAoESkill($aSkillID) = 2 Then
 		If $aTargetID <> Agent_GetMyID() Then
 			$AOEDangerXYLocation = XY($aTargetID)
@@ -427,7 +496,7 @@ Func OnSpell($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart = 0, $
 		EndIf
 	EndIf
 
-	;~ 	Area Adjacent
+	;~ Area Adjacent
 	If IsAoESkill($aSkillID) = 3 Then
 		If $aTargetID <> Agent_GetMyID() Then
 			$AOEDangerXYLocation = XY($aTargetID)
@@ -440,7 +509,7 @@ Func OnSpell($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart = 0, $
 		EndIf
 	EndIf
 
-	;~ 	Static Area
+	;~ Static Area
 	If IsAoESkill($aSkillID) = 4 Then
 		If $aTargetID = Agent_GetMyID() Then
 			$AOEDangerXYLocation = XY($aTargetID)
@@ -460,34 +529,31 @@ Func OnSpell($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart = 0, $
 	EndIf
 
 ;~ ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>		Cancel, switch defensive set, stop moving		<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-	;~ 	Cancel casting to avoid damage
-	If IsAnnoyingSkill($aSkillID) = 1 And $aTargetID = Agent_GetMyID() Or IsAnnoyingSkill($aSkillID) = 2 And $aTargetID = Agent_GetMyID() Then ;Maybe separate 1 and 2
+	;~ Cancel casting to avoid damage
+	If (IsAnnoyingSkill($aSkillID) = 1 And $aTargetID = Agent_GetMyID()) Or (IsAnnoyingSkill($aSkillID) = 2 And $aTargetID = Agent_GetMyID()) Then
 		Out($aCasterID & " Hurt me " & Skill_NameFromID(OurSkillID()))
-		If TimerDiff($AftercastTimer) > OurSkillActivationMs() Then Return
+		If $g_hAftercastTimer <> 0 And TimerDiff($g_hAftercastTimer) > OurSkillActivationMs() Then Return
 		If OurSkillActivationMs() > 250 Then DoubleCancel()
-		$AftercastTimer = TimerInit()
 		Return
 	EndIf
 
-	;~ 	Cancel Skill to avoid Melee rupt
+	;~ Cancel Skill to avoid Melee rupt
 	If IsAnnoyingSkill($aSkillID) = 9 And $aTargetID = Agent_GetMyID() Then
 		Out($aCasterID & " Hurt me " & Skill_NameFromID(OurSkillID()))
-		If TimerDiff($AftercastTimer) > OurSkillActivationMs() Then Return
+		If $g_hAftercastTimer <> 0 And TimerDiff($g_hAftercastTimer) > OurSkillActivationMs() Then Return
 		If OurSkillActivationMs() > 250 Then DoubleCancel()
-		$AftercastTimer = TimerInit()
 		Return
 	EndIf
 
-	;~ 	Cancel Cast If Dazed or use block skill
+	;~ Cancel Cast If Dazed or use block skill
 	If IsAnnoyingSkill($aSkillID) = 7 And $aTargetID = Agent_GetMyID() Then
 		If Skill_HasEffect($Dazed) Then
 			If UseBlock() Then
 				Out("Use Block Skill to avoid Melee and Daze")
 			Else
 				Out("Can't use block, cancel action")
-				If TimerDiff($AftercastTimer) <= OurSkillActivationMs() Then
+				If $g_hAftercastTimer = 0 Or TimerDiff($g_hAftercastTimer) <= OurSkillActivationMs() Then
 					If OurSkillActivationMs() > 250 Then DoubleCancel()
-					$AftercastTimer = TimerInit()
 				EndIf
 			EndIf
 		EndIf
@@ -502,7 +568,7 @@ Func OnSpell($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart = 0, $
 		Return
 	EndIf
 
-	;~ 	Cancel Moving cause melee try to KD me
+	;~ Cancel Moving cause melee try to KD me
 	If IsAnnoyingSkill($aSkillID) = 4 And $aTargetID = Agent_GetMyID() Then
 		Out($aCasterID & " KD me " & Skill_NameFromID(OurSkillID()))
 		If Agent_GetAgentInfo(-2, "Moving") Then DoubleCancel()
@@ -510,7 +576,7 @@ Func OnSpell($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart = 0, $
 		Return
 	EndIf
 
-	;~ 	Cancel Action to use Block and Balance skill and defensif set
+	;~ Cancel Action to use Block and Balance skill and defensif set
 	If IsAnnoyingSkill($aSkillID) = 5 And $aTargetID = Agent_GetMyID() Then
 		If UseBalanced() Then
 			Out("Use Balanced Skill to avoid KD")
@@ -526,7 +592,7 @@ Func OnSpell($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart = 0, $
 		Return
 	EndIf
 
-	;~ 	Cancel Action to use Balance skill and defensif set
+	;~ Cancel Action to use Balance skill and defensif set
 	If IsAnnoyingSkill($aSkillID) = 6 And $aTargetID = Agent_GetMyID() Then
 		If UseBalanced() Then
 			Out("Use Balanced Skill to avoid KD")
@@ -540,7 +606,7 @@ Func OnSpell($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart = 0, $
 		Return
 	EndIf
 
-	;~ 	UseBlock or Defsenive set if melee pressure is on me
+	;~ UseBlock or Defsenive set if melee pressure is on me
 	If IsAnnoyingSkill($aSkillID) = 8 And $aTargetID = Agent_GetMyID() Then
 		If UseBlock() Then
 			Out("Use Block Skill, melee pressure on me")
@@ -554,7 +620,7 @@ Func OnSpell($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart = 0, $
 		Return
 	EndIf
 
-	;~ 	Cancel Action
+	;~ Cancel Action
 	If IsAnnoyingSkill($aSkillID) = 10 And $aTargetID = Agent_GetMyID() Then
 		If Agent_GetAgentInfo(-2, "Attacking") Then DoubleCancel()
 		Return
@@ -569,18 +635,40 @@ Func OnMelee($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart = 0, $
 	If $aCastStart = 0 Then $aCastStart = $RuptTimer
 	If Map_GetInstanceInfo("Type") <> $GC_I_MAP_TYPE_EXPLORABLE Or Agent_GetAgentInfo(-2, "IsDead") Or Agent_GetAgentInfo(-2, "IsKnocked") Then Return 0
 
-	; Same as OnSpell: ignore skills the spirit itself uses (Bloodsong attack, etc.).
+	Local $lMyID = Agent_GetMyID()
+
+	If Number($aCasterID) = Number($lMyID) Then Return 0
 	If Agent_IsSpiritAgent($aCasterID) Then Return 0
 
-	If Agent_GetAgentInfo($aCasterID, "Allegiance") = 3 Then
-		If Not ($AftercastTimer <> 501 And $MyActivation > 0 And TimerDiff($AftercastTimer) < $MyActivation) And Not Agent_GetAgentInfo(-2, "IsCasting") Then
+	If $RuptEventSystem And Agent_GetAgentInfo($aCasterID, "Allegiance") = 3 Then
+		Local $lTargetAllegiance = ($aTargetID <> 0) ? Agent_GetAgentInfo($aTargetID, "Allegiance") : 0
+
+		; Caster has Shame or Mark of Subversion and is casting on themselves or their ally ($aTargetID = 0 or Allegiance 3)
+		If ($aTargetID = 0 Or $lTargetAllegiance = 3) _
+				And (Skill_HasEffect($aCasterID, $Shame) Or Skill_HasEffect($aCasterID, $Mark_of_Subversion)) Then Return 0
+
+		; Caster has Mistrust or Guilt and is casting on MY ally (Allegiance 1 or self)
+		If $aTargetID <> 0 And ($lTargetAllegiance = 1 Or Number($aTargetID) = Number($lMyID)) _
+				And (Skill_HasEffect($aCasterID, $Mistrust) Or Skill_HasEffect($aCasterID, $Mistrust_PvP) Or Skill_HasEffect($aCasterID, $Guilt)) Then Return 0
+
+		If Not Agent_GetAgentInfo(-2, "IsCasting") Then
 			Local $lRuptSlot = GetBestRupt($aSkillID, $aCasterID, $aAggroRange)
 			If $lRuptSlot > 0 Then
-				Local $lEnemyActivation = Number(Skill_GetSkillInfo($aSkillID, "Activation")) * 1000
-				Local $lMyActivation = GetAdjustedActivation($lRuptSlot, $aCasterID)
-				; OnMelee: only immediate short casts (long casts → RuptEX / OnSpell Sleep path).
-				If $lEnemyActivation > $lMyActivation And $lEnemyActivation <= 250 Then
-					Local $lOk = Skill_TryUseSkill($lRuptSlot, $aCasterID, False, 0)
+				Local $lEnemyActivation = GetAdjustedActivation($aSkillID, $aCasterID, $aTargetID)
+				Local $lMyActivation = GetAdjustedActivation($SkillBarCache[$lRuptSlot][$all], -2, $aCasterID)
+				Local $lPing = GetPing()
+				Local $lRemainingAftercast = GetRemainingAftercastMs()
+				Local $lEffectiveMyTime = $lRemainingAftercast + $lMyActivation + $lPing
+
+				If $lEnemyActivation > $lEffectiveMyTime Then
+					Local $lOk = False
+					If $lEnemyActivation <= 250 Then
+						$lOk = Skill_TryRuptSkill($lRuptSlot, $aCasterID, False, 0)
+					Else
+						Local $lSleep = ($lEnemyActivation * 0.5) - $lEffectiveMyTime - Random(0, 150)
+						If $lSleep > 0 Then Sleep($lSleep)
+						$lOk = Skill_TryRuptSkill($lRuptSlot, $aCasterID, False)
+					EndIf
 					LogMyInterrupt($aCasterID, $aSkillID, $lOk, TimerDiff($aCastStart))
 					If $lOk Then Return 1
 				EndIf
@@ -588,54 +676,52 @@ Func OnMelee($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart = 0, $
 		EndIf
 	EndIf
 
-	If IsHardRuptSkill($aSkillID) And $aTargetID = Agent_GetMyID() Then
-		Out($aCasterID & " is interrupting my " & Skill_NameFromID(OurSkillID()))
-		Local $lTimeToRupt = TimeToRupt($aSkillID, $aCasterID, $aTargetID)
-		If $lTimeToRupt > TimerDiff($AftercastTimer) Then Return 0
-		If OurSkillActivationMs() > 250 Then DoubleCancel()
-		$AftercastTimer = TimerInit()
-		Return 0
+	;~ Cancel casting to avoid interruption
+	If IsHardRuptSkill($aSkillID) And Number($aTargetID) = Number($lMyID) Then
+		Local $lEnemyActivation = Number(Skill_GetSkillInfo($aSkillID, "Activation")) * 1000
+		If $lEnemyActivation <= 0 Then $lEnemyActivation = 500
+		If $lEnemyActivation > TimerDiff($AftercastTimer) Then Return
+		If $MyActivation > 250 Then CancelAction()
+		Return
 	EndIf
 
-	If ($AftercastTimer <> 501 And $MyActivation > 0 And TimerDiff($AftercastTimer) < $MyActivation) Or Agent_GetAgentInfo(-2, "IsCasting") Then Return 0
+	If Agent_GetAgentInfo(-2, "IsCasting") Then Return 0
+	If Agent_GetAgentInfo($aCasterID, "Allegiance") <> 3 Then Return
 
 	If $ProtSlots[0] > 0 Then
 		If Agent_GetAgentInfo($aCasterID, "Allegiance") <> 3 Or Agent_GetDistance($aTargetID) > 1250 Then Return 0
 		Local $lProtSlot = GetProtSlot($aSkillID, $aCasterID, $aTargetID)
-		If $lProtSlot > 0 Then
+		If $lProtSlot > 0 And CanUseRuptEffects($lProtSlot) Then
 			If Skill_TryUseSkill($lProtSlot, $aTargetID, False, 0) Then Return 1
 		EndIf
 	EndIf
 
 ;~ ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>		Cancel, switch defensive set, stop moving		<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-	;~ 	Cancel casting to avoid damage
-	If IsAnnoyingSkill($aSkillID) = 1 And $aTargetID = Agent_GetMyID() Or IsAnnoyingSkill($aSkillID) = 2 And $aTargetID = Agent_GetMyID() Then ;Maybe separate 1 and 2
+	;~ Cancel casting to avoid damage
+	If (IsAnnoyingSkill($aSkillID) = 1 And $aTargetID = Agent_GetMyID()) Or (IsAnnoyingSkill($aSkillID) = 2 And $aTargetID = Agent_GetMyID()) Then
 		Out($aCasterID & " Hurt me " & Skill_NameFromID(OurSkillID()))
-		If TimerDiff($AftercastTimer) > OurSkillActivationMs() Then Return
+		If $g_hAftercastTimer <> 0 And TimerDiff($g_hAftercastTimer) > OurSkillActivationMs() Then Return
 		If OurSkillActivationMs() > 250 Then DoubleCancel()
-		$AftercastTimer = TimerInit()
 		Return
 	EndIf
 
-	;~ 	Cancel Skill to avoid Melee rupt
+	;~ Cancel Skill to avoid Melee rupt
 	If IsAnnoyingSkill($aSkillID) = 9 And $aTargetID = Agent_GetMyID() Then
 		Out($aCasterID & " Hurt me " & Skill_NameFromID(OurSkillID()))
-		If TimerDiff($AftercastTimer) > OurSkillActivationMs() Then Return
+		If $g_hAftercastTimer <> 0 And TimerDiff($g_hAftercastTimer) > OurSkillActivationMs() Then Return
 		If OurSkillActivationMs() > 250 Then DoubleCancel()
-		$AftercastTimer = TimerInit()
 		Return
 	EndIf
 
-	;~ 	Cancel Cast If Dazed or use block skill
+	;~ Cancel Cast If Dazed or use block skill
 	If IsAnnoyingSkill($aSkillID) = 7 And $aTargetID = Agent_GetMyID() Then
 		If Skill_HasEffect($Dazed) Then
 			If UseBlock() Then
 				Out("Use Block Skill to avoid Melee and Daze")
 			Else
 				Out("Can't use block, cancel action")
-				If TimerDiff($AftercastTimer) <= OurSkillActivationMs() Then
+				If $g_hAftercastTimer = 0 Or TimerDiff($g_hAftercastTimer) <= OurSkillActivationMs() Then
 					If OurSkillActivationMs() > 250 Then DoubleCancel()
-					$AftercastTimer = TimerInit()
 				EndIf
 			EndIf
 		EndIf
@@ -650,7 +736,7 @@ Func OnMelee($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart = 0, $
 		Return
 	EndIf
 
-	;~ 	Cancel Moving cause melee try to KD me
+	;~ Cancel Moving cause melee try to KD me
 	If IsAnnoyingSkill($aSkillID) = 4 And $aTargetID = Agent_GetMyID() Then
 		Out($aCasterID & " KD me " & Skill_NameFromID(OurSkillID()))
 		If Agent_GetAgentInfo(-2, "Moving") Then DoubleCancel()
@@ -658,7 +744,7 @@ Func OnMelee($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart = 0, $
 		Return
 	EndIf
 
-	;~ 	Cancel Action to use Block and Balance skill and defensif set
+	;~ Cancel Action to use Block and Balance skill and defensif set
 	If IsAnnoyingSkill($aSkillID) = 5 And $aTargetID = Agent_GetMyID() Then
 		If UseBalanced() Then
 			Out("Use Balanced Skill to avoid KD")
@@ -674,7 +760,7 @@ Func OnMelee($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart = 0, $
 		Return
 	EndIf
 
-	;~ 	Cancel Action to use Balance skill and defensif set
+	;~ Cancel Action to use Balance skill and defensif set
 	If IsAnnoyingSkill($aSkillID) = 6 And $aTargetID = Agent_GetMyID() Then
 		If UseBalanced() Then
 			Out("Use Balanced Skill to avoid KD")
@@ -688,7 +774,7 @@ Func OnMelee($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart = 0, $
 		Return
 	EndIf
 
-	;~ 	UseBlock or Defsenive set if melee pressure is on me
+	;~ UseBlock or Defsenive set if melee pressure is on me
 	If IsAnnoyingSkill($aSkillID) = 8 And $aTargetID = Agent_GetMyID() Then
 		If UseBlock() Then
 			Out("Use Block Skill, melee pressure on me")
@@ -702,11 +788,12 @@ Func OnMelee($aCasterID, $aTargetID, $aSkillID, $aActivation, $aCastStart = 0, $
 		Return
 	EndIf
 
-	;~ 	Cancel Action
+	;~ Cancel Action
 	If IsAnnoyingSkill($aSkillID) = 10 And $aTargetID = Agent_GetMyID() Then
 		If Agent_GetAgentInfo(-2, "Attacking") Then DoubleCancel()
 		Return
 	EndIf
+	Out("OnMelee debug: myID=" & Agent_GetMyID() & " alleg=" & Agent_GetAgentInfo($aCasterID, "Allegiance") & " annoy=" & IsAnnoyingSkill($aSkillID))
 
 EndFunc   ;==>OnMelee
 
@@ -729,33 +816,41 @@ Func GetBestRupt($aSkillID, $aCasterID, $aAggroRange = 1320)
 	Local $lReadySlot = 0
 	Local $lOverloadSlot = 0
 
+
 	For $i = 1 To $RuptSlots[0]
 		Local $aSkillSlot = $RuptSlots[$i]
 		If Not Skill_GetSkillbarInfo($aSkillSlot, "IsRecharged") Then ContinueLoop
+
 		If $SkillBarCache[$aSkillSlot][$energyreq] > $lEnergy Then ContinueLoop
 		; $hardrupt column = IsRuptSkill(id, True) at CacheSkillBar.
 		If $bNeedsHardRupt And $SkillBarCache[$aSkillSlot][$hardrupt] = "" Then ContinueLoop
+
 		; Signet of Disruption interrupts spells either way. A non-spell only lands if that foe is hexed.
 		If Number($SkillBarCache[$aSkillSlot][$all]) = $Signet_of_Disruption Then
 			If RequiresHardRupt($aSkillID) And Not Agent_GetAgentInfo($aCasterID, "IsHexed") Then ContinueLoop
 		EndIf
-		; Ignorance/Rust/VoR/Backfire type gates (CanCast without busy — we may stage while casting).
-		If Not CanCastRuptEffects($aSkillSlot) Then ContinueLoop
+		Out("Skillbarslot hardrupt ID1: " & $SkillBarCache[$aSkillSlot][$hardrupt])
+		; Ignorance/Rust/VoR/Backfire type gates (CanUse without busy — we may stage while casting).
+		If Not CanUseRuptEffects($aSkillSlot) Then ContinueLoop
 		; Overload is a soft rupt but never preferred over real interrupts.
+		Out("Skillbarslot hardrupt ID2: " & $SkillBarCache[$aSkillSlot][$hardrupt])
+
 		If Number($SkillBarCache[$aSkillSlot][$all]) = Number($Overload) Then
 			$lOverloadSlot = $aSkillSlot
 			ContinueLoop
 		EndIf
+		Out("Skillbarslot hardrupt ID3: " & $SkillBarCache[$aSkillSlot][$hardrupt])
 		; Priority: Power Drain / energy-gain rupt when low energy.
 		If IsEnergyGainRuptSkill($SkillBarCache[$aSkillSlot][$all]) And $lEnergy < 20 Then Return $aSkillSlot
+		Out("Skillbarslot hardrupt ID4: " & $SkillBarCache[$aSkillSlot][$hardrupt])
 		If $lReadySlot = 0 Then $lReadySlot = $aSkillSlot
 	Next
 	If $lReadySlot > 0 Then Return $lReadySlot
 	Return $lOverloadSlot
 EndFunc   ;==>GetBestRupt
 
-; CanCast type/hex gates for a rupt slot, ignoring IsCasting / aftercast busy (staging OK while busy).
-Func CanCastRuptEffects($aSkillSlot)
+; CanUse type/hex gates for a rupt slot, ignoring IsCasting / aftercast busy (staging OK while busy).
+Func CanUseRuptEffects($aSkillSlot)
 	If $aSkillSlot < 1 Or $aSkillSlot > 8 Then Return False
 	If Skill_HasEffect($Diversion) Then Return False
 	Switch $SkillBarCache[$aSkillSlot][$type]
@@ -774,7 +869,7 @@ Func CanCastRuptEffects($aSkillSlot)
 					Or Skill_HasEffect($Spiteful_Spirit) Then Return False
 	EndSwitch
 	Return True
-EndFunc   ;==>CanCastRuptEffects
+EndFunc   ;==>CanUseRuptEffects
 
 ; GetSkillbarInfo → Wrappers\GwAu3_Data_Wrappers.au3
 
@@ -790,7 +885,7 @@ Func UseUnfightSkills($x, $y, $aAggroRange = 1320, $skilltype = $all, $aMaxDista
 		If Agent_GetAgentInfo(-2, "IsDead") Or Map_GetInstanceInfo("Type") == 2 Then Return False
 		If $BestTarget <> 0 And Agent_GetAgentInfo($BestTarget, "Allegiance") = 3 And Agent_GetAgentInfo($BestTarget, "IsDead") Then Return False
 		If $SkillBarCache[$aSkillSlot][$skilltype] = "" Then ContinueLoop
-		If CanUse($aSkillSlot, $aAggroRange, $skilltype) Then Skill_TryUseSkill($aSkillSlot, $BestTarget)
+		If ShouldUse($aSkillSlot, $aAggroRange, $skilltype) Then Skill_TryUseSkill($aSkillSlot, $BestTarget)
 	Next
 	If $aAgent <> 0 Then
 		If Agent_GetDistance($aAgent) > $aMaxDistanceToXY Then Return False
@@ -894,14 +989,13 @@ Func MoveToSafeSpot($aX, $aY, $radius = 100, $aMe = Agent_GetAgentPtr(-2))
    Local $coords[2], $TestDistance
    Local $theta = 0, $TempX, $TempY, $SafeDistance = 10000000
    Local $SafeX, $SafeY
-   Local $MyLocation = XY($aMe)
 
    For $i = 0 To 99
 	  $theta += 3.6
 	  $TempX = ($radius * Cos($theta * $d2r)) + $aX
 	  $TempY = ($radius * Sin($theta * $d2r)) + $aY
 
-	  $TestDistance = ComputeDistance($TempX, $TempY, $MyLocation[0], $MyLocation[1])
+	  $TestDistance = Agent_GetDistanceToXY($TempX, $TempY, -2)
 	  If $TestDistance < $SafeDistance Then
 		 $SafeDistance = $TestDistance
 		 $SafeX = $TempX
@@ -957,24 +1051,34 @@ Func CanAttack($aRange = 1320)
 		Out("CanAttack FAIL: knocked/dead/wipe")
 		Return False
 	EndIf
+	; Torch/keg/ashes — no weapon swing. Unlit torch often reports WeaponItemType=46, not TYPE_BUNDLE.
+	If Number(Item_GetInventoryInfo("BundleItemID")) <> 0 Or Number(Agent_GetAgentInfo(-2, "WeaponItemType")) = $TYPE_BUNDLE Then
+		Out("CanAttack FAIL: holding bundle (BundleItemID=" & Number(Item_GetInventoryInfo("BundleItemID")) & _
+				" WeaponItemType=" & Number(Agent_GetAgentInfo(-2, "WeaponItemType")) & ")")
+		Return False
+	EndIf
 
 	Local $lEnemyCount = Agent_GetNumberOfEnemies($aRange)
 	Out("CanAttack: Agent_GetNumberOfEnemies(" & $aRange & ")=" & $lEnemyCount)
 
-	; Modules API Ã¢â‚¬â€ returns ptr; test <> 0 (not an ID).
+	; Modules API — returns ptr; test <> 0 (not an ID).
 	Local $lNearestPtr = Agent_GetNearestAgent(-2, 0xDB, 3)
 	Local $lNearDist = 0
-	If $lNearestPtr <> 0 Then $lNearDist = Agent_GetDistance($lNearestPtr)
+	Local $lNearName = ""
+	If $lNearestPtr <> 0 Then
+		$lNearDist = Agent_GetDistance($lNearestPtr)
+		$lNearName = Agent_GetAgentInfo($lNearestPtr, "Name")
+		If $lNearName = "" Or $lNearName = "0" Then $lNearName = "id=" & Agent_ConvertID($lNearestPtr)
+	EndIf
 	Local $lNearWorm = False
 	If $lNearestPtr <> 0 Then $lNearWorm = Agent_IsWormAgent($lNearestPtr)
-	Out("CanAttack nearest ptr=" & $lNearestPtr & " id=" & Agent_ConvertID($lNearestPtr) & " dist=" & Floor($lNearDist) & " inRange=" & ($lNearDist <= $aRange) & " worm=" & $lNearWorm)
+	Out("CanAttack nearest=" & $lNearName & " dist=" & Floor($lNearDist) & " inRange=" & ($lNearDist <= $aRange) & " worm=" & $lNearWorm)
 	If $lNearestPtr <> 0 And $lNearDist <= $aRange And Not $lNearWorm Then
 		$BestTarget = $lNearestPtr
-		Out("CanAttack OK via nearest BestTargetPtr=" & $BestTarget)
 		Return True
 	EndIf
 	If $lNearestPtr = 0 Then
-		Out("CanAttack nearest FAIL: ptr=0")
+		Out("CanAttack nearest FAIL: none")
 	ElseIf $lNearDist > $aRange Then
 		Out("CanAttack nearest FAIL: dist " & Floor($lNearDist) & " > range " & $aRange)
 	ElseIf $lNearWorm Then
@@ -982,9 +1086,14 @@ Func CanAttack($aRange = 1320)
 	EndIf
 
 	$BestTarget = Agent_GetBestTarget($aRange)
-	Out("CanAttack GetBestTarget ptr=" & $BestTarget & " id=" & Agent_ConvertID($BestTarget))
+	Local $lBestName = ""
+	If $BestTarget <> 0 Then
+		$lBestName = Agent_GetAgentInfo($BestTarget, "Name")
+		If $lBestName = "" Or $lBestName = "0" Then $lBestName = "id=" & Agent_ConvertID($BestTarget)
+	EndIf
+	Out("CanAttack GetBestTarget=" & $lBestName)
 	If $BestTarget = 0 Then
-		Out("CanAttack FAIL: GetBestTarget ptr=0")
+		Out("CanAttack FAIL: GetBestTarget none")
 		Return False
 	EndIf
 	Local $lBestDist = Agent_GetDistance($BestTarget)
@@ -999,32 +1108,33 @@ Func CanAttack($aRange = 1320)
 		$BestTarget = 0
 		Return False
 	EndIf
-	Out("CanAttack OK via GetBestTarget BestTargetPtr=" & $BestTarget)
+	Out("CanAttack OK via GetBestTarget BestTarget=" & $lBestName)
 	Return True
 EndFunc   ;==>CanAttack
 
-;~ Description: Determines whether we should cast based on recharge/energy/adrenaline and
-;~ a few hard shut-downs (knocked/dead). Activation busy / IsCasting block; aftercast does not.
-;~ Also blocks skill types that punish hexes (Backfire/Diversion/…) — same idea as old Logic CanCast.
+;~ CanUse: whether we *can* fire a skill (any type) — recharge/energy/adrenaline,
+;~ hard shut-downs (knocked/dead/busy), and type-punish hexes (Backfire/Diversion/…).
 ;~ (OnSpell IsAnnoyingSkill=1/2 only DoubleCancels mid-cast when those hexes are cast AT you.)
-Func CanCast($aSkillSlot = 0)
-; REVIEW: GwAu3 equivalent is UAI_CanUse() + per-skill CanUse_* handlers. This one uses $SkillBarCache.
+Func CanUse($aSkillSlot = 0)
+	; REVIEW: GwAu3 equivalent is UAI_CanUse() + per-skill CanUse_* handlers. This one uses $SkillBarCache.
 	UAI_CachePlayerEffectsAndBonds()
 
-	If Map_GetInstanceInfo("Type") == 2 Then Connection_CheckAndReconnect()
-	If Map_GetInstanceInfo("Type") == 0 Then Return False
+	If Map_GetInstanceInfo("Type") = 2 Then Connection_CheckAndReconnect()
+	If Map_GetInstanceInfo("Type") = 0 Then Return False
 	If Agent_GetAgentInfo(-2, "IsKnocked") Or Agent_GetAgentInfo(-2, "IsDead") Or Wipe() Then Return False
-	If ($AftercastTimer <> 501 And $MyActivation > 0 And TimerDiff($AftercastTimer) < $MyActivation) Or Agent_GetAgentInfo(-2, "IsCasting") Then Return False
+	If GetRemainingAftercastMs() > 0 Or Agent_GetAgentInfo(-2, "IsCasting") Then Return False
 
 	; Diversion: next skill (any) takes huge recharge — never start one while hexed.
 	If Skill_HasEffect($Diversion) Then Return False
 
 	If $aSkillSlot <> 0 Then
 		If Not Skill_GetSkillbarInfo($aSkillSlot, "IsRecharged") Then Return False
-		Local $lEnergyReq = $SkillBarCache[$aSkillSlot][$energyreq]
+		Local $lEnergyReq = Number($SkillBarCache[$aSkillSlot][$energyreq])
 		If Skill_HasEffect($Quickening_Zephyr) Then $lEnergyReq = $lEnergyReq * 1.3
 		If Agent_GetAgentInfo(-2, "CurrentEnergy") < $lEnergyReq Then Return False
-		If $SkillBarCache[$aSkillSlot][$adrereq] <> 0 And Skill_GetSkillbarInfo($aSkillSlot, "Adrenaline") < $SkillBarCache[$aSkillSlot][$adrereq] Then Return False
+		; Adrenaline gate — Number() so empty/string cache never bypasses the compare.
+		Local $lAdreReq = Number($SkillBarCache[$aSkillSlot][$adrereq])
+		If $lAdreReq > 0 And Number(Skill_GetSkillbarInfo($aSkillSlot, "Adrenaline")) < $lAdreReq Then Return False
 	EndIf
 
 	If $aSkillSlot = 0 Then Return True
@@ -1058,7 +1168,7 @@ Func CanCast($aSkillSlot = 0)
 	EndSwitch
 	Return True
 
-EndFunc   ;==>CanCast
+EndFunc   ;==>CanUse
 
 Func OurSkillActivationMs()
 	If $MySkillSlot < 1 Or $MySkillSlot > 8 Then Return 0
@@ -1082,20 +1192,73 @@ Func Skill_NameFromID($a_i_SkillID)
 	Return $s
 EndFunc   ;==>Skill_NameFromID
 
-;~ Tests if a skill can be used based on them belonging to one or more skill types;
-;~ $aSkillType = SkillBarCache column ($rupt / $enchantremove / $hexremove / $all / â€¦).
-;~ Target source switches on that column; TryUseSkill stays outside.
-Func CanUse($aSkillSlot, $aAggroRange = 1320, $aSkillType = $all)
+; Fixed-width pad for OutSkillBarSummary.
+Func _OutPad($aText, $aWidth, $aRightAlign = False)
+	Local $s = String($aText)
+	If StringLen($s) > $aWidth Then Return StringLeft($s, $aWidth)
+	If $aRightAlign Then Return StringFormat("%" & $aWidth & "s", $s)
+	Return StringFormat("%-" & $aWidth & "s", $s)
+EndFunc
+
+; Log-friendly skillbar dump — energy/adre/type/target after CacheSkillBar (no _ArrayDisplay).
+Func OutSkillBarSummary()
+	Out("Slot  ID    Name                      Ene  Adr  Type  Tgt")
+	Out("----  ----  ------------------------  ---  ---  ----  ---")
+	For $i = 1 To 8
+		Local $iID = Number($SkillBarCache[$i][$all])
+		If $iID = 0 Then
+			Out(_OutPad($i, 4) & "  " & _OutPad("-", 4) & "  " & _OutPad("(empty)", 24) & "  " & _
+					_OutPad("-", 3, True) & "  " & _OutPad("-", 3, True) & "  " & _OutPad("-", 4, True) & "  " & _OutPad("-", 3, True))
+			ContinueLoop
+		EndIf
+		Local $sName = Skill_NameFromID($iID)
+		$sName = StringReplace($sName, "_", " ")
+		Out(_OutPad($i, 4) & "  " & _OutPad($iID, 4) & "  " & _OutPad($sName, 24) & "  " & _
+				_OutPad(Number($SkillBarCache[$i][$energyreq]), 3, True) & "  " & _
+				_OutPad(Number($SkillBarCache[$i][$adrereq]), 3, True) & "  " & _
+				_OutPad(Number($SkillBarCache[$i][$type]), 4, True) & "  " & _
+				_OutPad(Number($SkillBarCache[$i][$target]), 3, True))
+	Next
+EndFunc   ;==>OutSkillBarSummary
+
+;~ ShouldUse: whether we *should* fire — policy + valid $BestTarget.
+;~ $aSkillType = SkillBarCache column ($rupt / $enchantremove / $hexremove / $all / …).
+;~ Calls CanUse for afford/gates; TryUseSkill stays outside.
+Func ShouldUse($aSkillSlot, $aAggroRange = 1320, $aSkillType = $all)
 ; REVIEW: GwAu3 equivalent is UAI_CanUse(). Keep this while using Logic cache.
 	If $aSkillSlot = "" Then Return
-	; Reactive columns: aftercast must not block; still require energy/recharge via CanCastFollowUp.
-	If Not CanCast($aSkillSlot) Then Return False
+
+	; Reactive columns: aftercast must not block; still require energy/recharge via ShouldUse.
+	If Not CanUse($aSkillSlot) Then Return False
 
 	If Skill_HasEffect($Glyph_Of_Sacrifice) And $aSkillSlot <> $SkillbarSlot[$Meteor_Shower] Then Return False
 
+	;~  ECHOES, CHANTS AND SHOUTS - Needs to be before CanUse test for energy since this block requests BiP from hero.
+	If $SkillBarCache[$aSkillSlot][$echochantshout] <> "" Then
+		Switch $SkillBarCache[$aSkillSlot][$echochantshout]
+			Case $To_the_Limit
+				If Agent_GetNumberOfEnemies($Earshot_Range) = 0 Then Return False
+			Case $Save_Yourselves_Kurzick, $Save_Yourselves_Luxon, $Theres_Nothing_to_Fear
+				If Skill_HasEffect($Cacophony) Or Skill_HasEffect($Vocal_Minority) Then UseHeroHexRemoval()
+				; If GetNumberOfEnemies(1400) = 0 Then Return False We don't need this because when are not using those skills when enemies are not around
+				Local $lLowestAlly = Agent_GetLowestAlly()
+				If $lLowestAlly = 0 Or Agent_GetAgentInfo($lLowestAlly, "HP") > 0.90 Then Return False
+			Case $Heroic_Refrain, $Mending_Refrain, $Bladeturn_Refrain, $Burning_Refrain
+				If $BiP[0] <> 0 And Agent_GetAgentInfo(-2, "CurrentEnergy") < 20 And Not Skill_HasEffect($Blood_is_Power) Then
+					Local $lBiPHero = Agent_GetHero($BiP[0])
+					Local $lBiPMinHP = 0.4
+					; Scourge Sacrifice amplifies BiP's HP loss — skip if it would likely kill Livia.
+					If $lBiPHero <> 0 And Skill_HasEffect($Scourge_Sacrifice, $lBiPHero) Then $lBiPMinHP = 0.55
+					If $lBiPHero <> 0 And Not Agent_GetAgentInfo($lBiPHero, "IsDead") And Agent_GetAgentInfo($lBiPHero, "HP") > $lBiPMinHP Then Skill_UseHeroSkill($BiP[0], $BiP[1], -2)
+				EndIf
+			Case Else
+					If Skill_HasEffect($SkillBarCache[$aSkillSlot][$echochantshout]) Or Skill_HasEffect($Vocal_Minority) Then Return False
+		EndSwitch
+	EndIf
+
 	Switch $aSkillType
 		Case $rupt
-			; Slot choice for a known cast is GetBestRupt (Listen_TryRupt). Bar CanUse only needs a casting foe.
+			; Slot choice for a known cast is GetBestRupt (Listen_TryRupt). Bar ShouldUse only needs a casting foe.
 			If $SkillBarCache[$aSkillSlot][$rupt] = "" Then Return False
 			If GetBestTargetBySkillSlot($aSkillSlot, $aAggroRange) = 0 Then Return False
 			Return True
@@ -1130,8 +1293,14 @@ Func CanUse($aSkillSlot, $aAggroRange = 1320, $aSkillType = $all)
 	If $SkillBarCache[$aSkillSlot][$bind] <> "" Then
 		Switch $SkillBarCache[$aSkillSlot][$bind]     ; binding ritual skills
 			Case $Summon_Spirits_Kurzick, $Summon_Spirits_Luxon
-				If Agent_GetNumberOfPressureSpirits(5000) > 0 And Agent_GetNumberOfPressureSpirits(1250) = 0 Then Return True
-				If Agent_GetAgentInfo(Agent_GetLowestSpirit(), "HP") > 0.85 Then Return False
+				; UAI-aligned: any controlled spirit — pull stragglers, or refresh when one is low HP.
+				Local $nFar = Agent_GetMySpiritCount(5000)
+				If $nFar = 0 Then Return False
+				Local $nNear = Agent_GetMySpiritCount(1250)
+				If $nNear < $nFar Then Return True
+				Local $lLowestSpirit = Agent_GetLowestSpirit()
+				If $lLowestSpirit = 0 Then Return False
+				If Agent_GetAgentInfo($lLowestSpirit, "HP") >= 0.85 Then Return False
 			Case $Spirit_Siphon
 				Out("Spirit Energy" & Agent_GetAgentInfo(Agent_GetNearestSpirit(), "CurrentEnergy"))
 				If Agent_GetAgentInfo(-2, "CurrentEnergy") > 30 Or Agent_GetAgentInfo(Agent_GetNearestSpirit(), "CurrentEnergy") < 19 Then Return False
@@ -1233,7 +1402,12 @@ Func CanUse($aSkillSlot, $aAggroRange = 1320, $aSkillType = $all)
 					$Signet_Of_Spirits, $Signet_of_Spirits_PvP, $Vampirism
 				If Agent_GetNumberOfPressureSpirits() >= $PressureSpiritSkills Then Return False
 			Case $Summon_Spirits_Kurzick, $Summon_Spirits_Luxon
-				If Agent_GetNumberOfPressureSpirits() = 0 Or Agent_GetAgentInfo(Agent_GetLowestSpirit(), "HP") > 0.85 Then Return False
+				Local $nFarP = Agent_GetMySpiritCount(5000)
+				If $nFarP = 0 Then Return False
+				If Agent_GetMySpiritCount(1250) >= $nFarP Then
+					Local $lLowestPrecast = Agent_GetLowestSpirit()
+					If $lLowestPrecast = 0 Or Agent_GetAgentInfo($lLowestPrecast, "HP") >= 0.85 Then Return False
+				EndIf
 		EndSwitch
 	EndIf
 
@@ -1301,36 +1475,8 @@ Func CanUse($aSkillSlot, $aAggroRange = 1320, $aSkillType = $all)
 		EndSwitch
 	EndIf
 
-;~  ECHOES, CHANTS AND SHOUTS
-	If $SkillBarCache[$aSkillSlot][$echochantshout] <> "" Then
-		Switch $SkillBarCache[$aSkillSlot][$echochantshout]
-			Case $To_the_Limit
-				If Agent_GetNumberOfEnemies($Earshot_Range) = 0 Then Return False
-			Case $Save_Yourselves_Kurzick, $Save_Yourselves_Luxon, $Theres_Nothing_to_Fear
-				If Skill_HasEffect($Cacophony) Or Skill_HasEffect($Vocal_Minority) Then UseHeroHexRemoval()
-				; If GetNumberOfEnemies(1400) = 0 Then Return False We don't need this because when are not using those skills when enemies are not around
-				Local $lLowestAlly = Agent_GetLowestAlly()
-				If $lLowestAlly = 0 Or Agent_GetAgentInfo($lLowestAlly, "HP") > 0.90 Then Return False ;Party_GetPartyHealth() > 0.9
-			Case $Heroic_Refrain, $Mending_Refrain, $Bladeturn_Refrain, $Burning_Refrain
-				; BiP hero → HR Paragon (self) when energy is low and necro still has HP to sacrifice.
-				If $BiP[0] <> 0 And Agent_GetAgentInfo(-2, "CurrentEnergy") < 20 And Not Skill_HasEffect($Blood_is_Power) _
-						And Agent_GetAgentInfo(Agent_GetHero($BiP[0]), "HP") > 0.4 Then Skill_UseHeroSkill($BiP[0], $BiP[1], -2)
-				If Agent_GetAgentInfo(-2, "IsDead") Then Return False
-			Case $Go_for_the_Eyes, $Go_for_the_Eyes_PvP, $Burning_Refrain
-				Return True
-			Case Else
-				If Skill_HasEffect($SkillBarCache[$aSkillSlot][$echochantshout]) Or Skill_HasEffect($Vocal_Minority) Then Return False
-		EndSwitch
-	EndIf
-
-;~ INTERRUPTS â€” pool pass owns $rupt; never cast them from Else / category CanUse.
+;~ INTERRUPTS skill log respond passes owns $rupt; never cast them from Else / category ShouldUse.
 	If $SkillBarCache[$aSkillSlot][$rupt] <> "" Then Return False
-
-;~ 	Switch $SkillBarCache[$aSkillSlot][$all]
-;~ 		Case $Ether_Signet
-;~ 			If Agent_GetAgentInfo(-2, "CurrentEnergy") > 4 Then Return False
-;~ 		Case $To_the_Limit
-;~ 	EndSwitch
 
 ;~ JUNUNDU
 	If $SkillBarCache[$aSkillSlot][$junundu] <> "" Then
@@ -1341,13 +1487,13 @@ Func CanUse($aSkillSlot, $aAggroRange = 1320, $aSkillType = $all)
 			Case $Burning_Breath, $Junundu_Siege1	; skill fails if target is closer than nearbyrange, check if we should move out of range before using
 				If Agent_GetDistance($BestTarget) < $Nearby_Range Then Return False
 			Case $Blinding_Breath, $Choking_Breath, $Junundu_Smash ; untargeted skill, only affects adjacent foes
-				If CanCast($SkillbarSlot[$Burning_Breath]) Or CanCast($SkillbarSlot[$Junundu_Siege1]) Then Return False
+				If CanUse($SkillbarSlot[$Burning_Breath]) Or CanUse($SkillbarSlot[$Junundu_Siege1]) Then Return False
 				MoveTo(X($BestTarget), Y($BestTarget))
 			Case $Junundu_Bite	; does not heal if target is not knocked down and easily reachable
 				If Not Agent_GetAgentInfo($BestTarget, "Knocked") And Agent_GetDistance($BestTarget) < $Nearby_Range Then Return False
 			Case $Junundu_Feast
 				If GetNumberOfCorpses($Adjacent_Range) = 0 Then Return False
-			Case $Junundu_Tunnel	; stance is used on recharge as per CanCast() conditions
+			Case $Junundu_Tunnel	; stance is used on recharge as per CanUse() conditions
 				For $aHero = 1 To GetPartySize() -1	; make heroes run with us, they won't use on their own
 					For $aSkillSlot = 1 To 8
 						$aSkillID = Skill_GetSkillbarInfo($aSkillSlot, "SkillID", $aHero)
@@ -1395,14 +1541,16 @@ Func CanUse($aSkillSlot, $aAggroRange = 1320, $aSkillType = $all)
 				If Skill_HasEffect($Vow_of_Piety) Then Return False
 			Case $Glyph_Of_Sacrifice
 				If Agent_GetAgentInfo(-2, "CurrentEnergy") < 30 Then Return False
-				If Not CanCast($SkillbarSlot[$Meteor_Shower]) Then Return False
+				If Not CanUse($SkillbarSlot[$Meteor_Shower]) Then Return False
 			Case $Meteor_Shower
 				If Not Skill_HasEffect($Glyph_Of_Sacrifice) Then Return False
+			Case $Ether_Signet
+				If Agent_GetAgentInfo(-2, "CurrentEnergy") > 4 Then Return False
 		EndSwitch
 	EndIf
 
 	Return True
-EndFunc   ;==>CanUse
+EndFunc   ;==>ShouldUse
 
 ; Best target for a skillslot. Shame/Guilt/Mistrust/Mark of Subversion scoring lives here
 ; (not separate helpers). CounterEnemyCasts uses the same function for rupt targeting.
@@ -1425,7 +1573,7 @@ Func GetBestTargetBySkillSlot($aSkillSlot, $aAggroRange = 1320)
 	EndSwitch
 
 	; Ally helpers: ($aRange [, $excludeself=False]). Only Case 4 (other ally) passes True.
-	; All of these return ptrs Ã¢â‚¬â€ test with <> 0 / IsPtr, never treat as raw IDs.
+	; All of these return ptrs — test with <> 0 / IsPtr, never treat as raw IDs.
 	Switch $SkillBarCache[$aSkillSlot][$target]
 		Case 0	; self
 			Local $lNearEnemy = Agent_GetNearestAgent(-2, 0xDB, 3)
@@ -1440,7 +1588,7 @@ Func GetBestTargetBySkillSlot($aSkillSlot, $aAggroRange = 1320)
 					$BestTarget = $MyPtr
 			EndSwitch
 
-		Case 3	; ally Ã¢â‚¬â€ self allowed (default excludeself=False)
+		Case 3	; ally — self allowed (default excludeself=False)
 			If $SkillBarCache[$aSkillSlot][$condremove] <> "" Then
 				$BestTarget = Agent_GetMostCondsAlly($aAggroRange)
 			ElseIf $SkillBarCache[$aSkillSlot][$hexremove] <> "" Then
@@ -1461,7 +1609,7 @@ Func GetBestTargetBySkillSlot($aSkillSlot, $aAggroRange = 1320)
 				$BestTarget = Agent_GetLowestAlly($aAggroRange)
 			EndIf
 
-		Case 4	; other ally Ã¢â‚¬â€ exclude self (only case that passes True)
+		Case 4	; other ally — exclude self (only case that passes True)
 			If $SkillBarCache[$aSkillSlot][$condremove] <> "" Then
 				$BestTarget = Agent_GetMostCondsAlly($aAggroRange, True)
 			ElseIf $SkillBarCache[$aSkillSlot][$hexremove] <> "" Then
@@ -1496,6 +1644,8 @@ Func GetBestTargetBySkillSlot($aSkillSlot, $aAggroRange = 1320)
 			ElseIf $SkillBarCache[$aSkillSlot][$rupt] <> "" Then
 				; CastingOnly=True is 2nd arg of Agent_GetBestTarget (via MostBalledCastingEnemy).
 				$BestTarget = Agent_GetMostBalledCastingEnemy($aAggroRange)
+			ElseIf Skill_GetSkillInfo($SkillBarCache[$aSkillSlot][$all], "AoERange") = $adjacent_range Or Skill_GetSkillInfo($SkillBarCache[$aSkillSlot][$all], "AoERange") = $Nearby_Range Then
+				$BestTarget = Agent_GetBestTarget($aAggroRange , False, False, False, False, True) ; do not target stationary foes
 			Else
 				$BestTarget = Agent_GetBestTarget($aAggroRange)
 			EndIf
@@ -1504,6 +1654,15 @@ Func GetBestTargetBySkillSlot($aSkillSlot, $aAggroRange = 1320)
 			$BestTarget = Agent_GetNearestDeadAlly($aAggroRange)
 		Case 14	; spirit, minion
 			$BestTarget = Agent_GetNearestMinionAlly()
+		Case 16 ; Spells targeting the ground, like snow storm
+			Local $lSkillID = $SkillBarCache[$aSkillSlot][$all]
+			If $lSkillID = "" Then $lSkillID = Skill_GetSkillbarInfo($aSkillSlot, "SkillID")
+			Local $lAoE = Skill_GetSkillInfo($lSkillID, "AoERange")
+			If $lAoE = $adjacent_range Or $lAoE = $Nearby_Range Then
+				$BestTarget = Agent_GetBestTarget($aAggroRange, False, False, False, False, True)
+			Else
+				$BestTarget = Agent_GetBestTarget($aAggroRange)
+			EndIf
 	EndSwitch
 
 	; Never hand Fight/UseSkills an enemy outside the requested range.
@@ -1519,13 +1678,13 @@ EndFunc   ;==>GetBestTargetBySkillSlot
 
 Func Survive($aAggroRange = 1500)
 	If Agent_GetAgentInfo(-2, "IsDead") Then Return
-	If CanUse($SkillbarSlot[$I_Am_Unstoppable], $aAggroRange) Then Skill_TryUseSkill($SkillbarSlot[$I_Am_Unstoppable])
-	If CanUse($SkillbarSlot[$Glyph_of_Swiftness], $aAggroRange) Then Skill_TryUseSkill($SkillbarSlot[$Glyph_of_Swiftness])
-	If CanUse($SkillbarSlot[$Shadow_Form], $aAggroRange) Then Skill_TryUseSkill($SkillbarSlot[$Shadow_Form])
+	If ShouldUse($SkillbarSlot[$I_Am_Unstoppable], $aAggroRange) Then Skill_TryUseSkill($SkillbarSlot[$I_Am_Unstoppable])
+	If ShouldUse($SkillbarSlot[$Glyph_of_Swiftness], $aAggroRange) Then Skill_TryUseSkill($SkillbarSlot[$Glyph_of_Swiftness])
+	If ShouldUse($SkillbarSlot[$Shadow_Form], $aAggroRange) Then Skill_TryUseSkill($SkillbarSlot[$Shadow_Form])
 
-	If CanUse($SkillbarSlot[$Protective_Spirit], $aAggroRange) Then Skill_TryUseSkill($SkillbarSlot[$Protective_Spirit])
-	If CanUse($SkillbarSlot[$Shielding_Hands], $aAggroRange) Then Skill_TryUseSkill($SkillbarSlot[$Shielding_Hands])
-;~ 	If CanUse($SkillbarSlot[$Spirit_Bond]) Then Skill_TryUseSkill($SkillbarSlot[$Spirit_Bond])
+	If ShouldUse($SkillbarSlot[$Protective_Spirit], $aAggroRange) Then Skill_TryUseSkill($SkillbarSlot[$Protective_Spirit])
+	If ShouldUse($SkillbarSlot[$Shielding_Hands], $aAggroRange) Then Skill_TryUseSkill($SkillbarSlot[$Shielding_Hands])
+;~ 	If ShouldUse($SkillbarSlot[$Spirit_Bond]) Then Skill_TryUseSkill($SkillbarSlot[$Spirit_Bond])
 
 	For $aSkillSlot In $Skillbar
 		If Agent_GetAgentInfo(-2, "IsDead") Then ExitLoop
@@ -1537,36 +1696,38 @@ Func Survive($aAggroRange = 1500)
 		EndIf
 
 		If $SkillBarCache[$aSkillSlot][$survive] = "" Then ContinueLoop
-		If CanUse($aSkillSlot, $aAggroRange) Then Skill_TryUseSkill($aSkillSlot, $BestTarget)
+		If ShouldUse($aSkillSlot, $aAggroRange) Then Skill_TryUseSkill($aSkillSlot, $BestTarget)
 	Next
 EndFunc   ;==>Survive
 
 Func Precast($aAggroRange = $compass_range, $precastspirits = True)
 	If $precastspirits Then PrecastWardsAndSpirits()
-	If CanUse($SkillbarSlot[$Ebon_Battle_Standard_Of_Honor], $longbow_range) Then Skill_TryUseSkill($SkillbarSlot[$Ebon_Battle_Standard_Of_Honor])
-	If CanUse($SkillbarSlot[$Summon_Spirits_Luxon]) Then Skill_TryUseSkill($SkillbarSlot[$Summon_Spirits_Luxon])
-	If CanUse($SkillbarSlot[$Painful_Bond]) Then Skill_TryUseSkill($SkillbarSlot[$Painful_Bond], $BestTarget)
-	If CanUse($SkillbarSlot[$Boon_Of_Creation]) Then Skill_TryUseSkill($SkillbarSlot[$Boon_Of_Creation])
+	If ShouldUse($SkillbarSlot[$Ebon_Battle_Standard_Of_Honor], $longbow_range) Then Skill_TryUseSkill($SkillbarSlot[$Ebon_Battle_Standard_Of_Honor])
+	If $Summon_Spirits > 0 And ShouldUse($Summon_Spirits) Then Skill_TryUseSkill($Summon_Spirits)
+	If ShouldUse($SkillbarSlot[$Painful_Bond]) Then Skill_TryUseSkill($SkillbarSlot[$Painful_Bond], $BestTarget)
+	If ShouldUse($SkillbarSlot[$Boon_Of_Creation]) Then Skill_TryUseSkill($SkillbarSlot[$Boon_Of_Creation])
 EndFunc   ;==>Precast
 
 Func SpreadChants()
 	For $aSkillSlot In $Skillbar
 		If $SkillBarCache[$aSkillSlot][$echochantshout] = "" Then ContinueLoop
-		If CanUse($aSkillSlot) Then Skill_TryUseSkill($aSkillSlot, $BestTarget)
+		If ShouldUse($aSkillSlot) Then Skill_TryUseSkill($aSkillSlot, $BestTarget)
 	Next
 EndFunc   ;==>SpreadChants
 
 Func Precastupkeep()
 	For $aSkillSlot In $Skillbar
 		If $SkillBarCache[$aSkillSlot][$precast] = "" Then ContinueLoop
-		If CanUse($aSkillSlot) Then Skill_TryUseSkill($aSkillSlot, -2)
+		If ShouldUse($aSkillSlot) Then Skill_TryUseSkill($aSkillSlot, -2)
 	Next
 EndFunc   ;==>Precastupkeep
 
 Func SpeedBoost()
 	For $aSkillSlot In $Skillbar
 		If $SkillBarCache[$aSkillSlot][$speedBoost] = "" Then ContinueLoop
-		If CanUse($aSkillSlot) Then Skill_TryUseSkill($aSkillSlot, $BestTarget)
+		; Lit torch: keep Fall Back / ToF etc., but do not start HR (1s activation).
+		If Skill_HasEffect($Lit_Torch) And Number($SkillBarCache[$aSkillSlot][$all]) = $Heroic_Refrain Then ContinueLoop
+		If ShouldUse($aSkillSlot) Then Skill_TryUseSkill($aSkillSlot, $BestTarget)
 	Next
 EndFunc   ;==>SpeedBoost
 
@@ -1595,7 +1756,7 @@ Func Rezz($aAggroRange = 5000)
 	Out("Resurrecting")
 	For $aSkillSlot In $Skillbar
 		If $SkillBarCache[$aSkillSlot][$rezz] = "" Then ContinueLoop
-		If CanUse($aSkillSlot) Then Skill_TryUseSkill($aSkillSlot, $BestTarget)
+		If ShouldUse($aSkillSlot) Then Skill_TryUseSkill($aSkillSlot, $BestTarget)
 	Next
 EndFunc    ;==>Rezz
 
@@ -1623,7 +1784,7 @@ EndFunc   ;==>IsSurvivalSkill
 Func IsPrecastSkill($aSkillID) ; priority skills used first in a fight, to be expanded based on your needs
 	If IsPressureSpiritSkill($aSkillID) Then Return True
 	Switch $aSkillID
-		Case $Balthazars_Spirit, $Blessed_Aura, $Boon_Of_Creation
+		Case $Balthazars_Spirit, $Blessed_Aura, $Boon_Of_Creation, $Summon_Spirits_Luxon, $Summon_Spirits_Kurzick
 			Return True
 	EndSwitch
 	If IsSelfPrehealSkill($aSkillID) Then Return True
@@ -1863,10 +2024,11 @@ Func IsProtectiveSkill($aSkill)
 
 	Switch $lSkillID
 		Case $Spirit_Bond, $Spirit_Bond_PvP, $Protective_Spirit, $Shield_of_Absorption, $Guardian, $Weapon_of_Warding, $Weapon_of_Warding_PvP, $Aegis, $Aegis_PvP, _
-		$Reversal_of_Fortune, $Life_Sheath, $Weapon_of_Remedy, $Xinraes_Weapon, $Resilient_Weapon, $Weapon_of_Shadow, $Vengeful_Weapon, $Aura_of_Stability, $Reversal_of_Damage
+				$Reversal_of_Fortune, $Life_Sheath, $Weapon_of_Remedy, $Xinraes_Weapon, $Resilient_Weapon, $Weapon_of_Shadow, $Vengeful_Weapon, $Aura_of_Stability, $Reversal_of_Damage
+			Return True
 	EndSwitch
 	Return False
-EndFunc   ;==>IsRuptSkill
+EndFunc   ;==>IsProtectiveSkill
 
 Func IsRuptSkill($aSkill, $hardrupt = False)
 ; REVIEW: Keep this. Uses Effect2 bit (+0x20) + soft-rupt exceptions. GwAu3 has no direct equivalent.
@@ -2334,72 +2496,6 @@ Func IsBelow50PercentEnemySkill($SKILL) ;
 	Return False
 EndFunc   ;==>IsBelow50PercentEnemySkill
 
-; IsElementalAttunementSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; IsKnockMySelfSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; IsAttackAndSppedMoveSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; IsReverseDamageSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; IsLooseEnchantAndHealAndRemoveHexSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; IsLooseEnchantAndEnergyRegenSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; IsDervHealSignetWithRemoveDervEnchantSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; IsDervHealWithRemoveDervEnchantAndHexSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; IsRemoveDervEnchantSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; IsHealAndConditionAndHexRemovalSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; IsConditionAndHexRemovalSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; IsConditionTransfertSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; IsConditionRemovalSpecialSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; IsHexRemovalWithEnergyGainSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; IsHexRemovalWithHealSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; IsEnchantOnAllyAffectEnemisSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; IsEnrgeyDegenSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; IsTouchSkillSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; IsCloseRangeSpell2Skill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; IsCloseRangeSpellSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; IsEnergyStealSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; IsEnergyGainSpellSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
 ; Interrupts that restore energy on land (Power Drain Effect2=257; others lack that tag).
 Func IsEnergyGainRuptSkill($aSkill)
 	Local $lID = 0
@@ -2541,11 +2637,14 @@ Func CacheHeroHeals()
 EndFunc   ;==>CacheHeroHeals
 
 Func CacheBiP()
-	For $aHero = 1 To GetPartySize() -1
-		For $aSkillSlot = 1 To 8            ; precast wards and binding rituals
+	$BiP[0] = 0
+	$BiP[1] = 0
+	For $aHero = 1 To GetPartySize() - 1
+		For $aSkillSlot = 1 To 8
 			If Skill_GetSkillbarInfo($aSkillSlot, "SkillID", $aHero) = $Blood_is_Power Then
 				$BiP[0] = $aHero
 				$BiP[1] = $aSkillSlot
+				Return
 			EndIf
 		Next
 	Next
@@ -2581,6 +2680,25 @@ Func CacheHeroPrecast()
 	Next
 	ReDim $HeroPrecast[$HeroPrecast[0][0]+1][3]
 EndFunc
+
+; Same IsProtectiveSkill filter as CacheSkillBar → $ProtSlots; aimed at the player during PrecastWardsAndSpirits.
+Func CacheHeroProts()
+	Out("Mapping heroes that have prots")
+	$HeroProts = 0
+	Global $HeroProts[0][3]
+	For $aHero = 1 To GetPartySize() - 1
+		For $aSkillSlot = 1 To 8
+			Local $aSkillID = Skill_GetSkillbarInfo($aSkillSlot, "SkillID", $aHero)
+			If $aSkillID = 0 Or Not IsProtectiveSkill($aSkillID) Then ContinueLoop
+			ReDim $HeroProts[UBound($HeroProts) + 1][3]
+			$HeroProts[UBound($HeroProts) - 1][0] = $aSkillID
+			$HeroProts[UBound($HeroProts) - 1][1] = $aHero
+			$HeroProts[UBound($HeroProts) - 1][2] = $aSkillSlot
+			Party_DisableHeroSkill($aHero, $aSkillSlot)
+		Next
+	Next
+	Out("Hero prots cached: " & UBound($HeroProts))
+EndFunc   ;==>CacheHeroProts
 
 Func CacheMysticHealing()
 	Out("Mapping Heroes, that have Mystic Healing")
@@ -2624,34 +2742,71 @@ Func CacheMysticHealing()
 	Return True
 EndFunc   ;==>CacheMysticHealing
 
-Func PrecastWardsAndSpirits($aAggroRange = $spirit_range)
-    Do
-        Sleep(200)
-    Until Not Agent_GetAgentInfo(-2, "Moving")
-    For $aSkillSlot In $Skillbar
-        If $SkillBarCache[$aSkillSlot][$precast] = "" Then ContinueLoop
-        If CanUse($aSkillSlot, $aAggroRange) Then Skill_TryUseSkill($aSkillSlot, $BestTarget)
-		If Agent_IsEnemyNear($aAggroRange) Then ExitLoop
-    Next
-    Out("Precasting hero wards and binding rituals")
-    For $i = 1 to $HeroPrecast[0][0]
-		If GetEffectTimeRemaining(Skill_GetSkillbarInfo($aSkillSlot)) > 15 Then ContinueLoop
-        Skill_UseHeroSkill($HeroPrecast[$i][1], $HeroPrecast[$i][2], 0)
-        If Mod($i, 3) = 0  And CanUse($SkillbarSlot[$Heroic_Refrain]) Then
-            Skill_TryUseSkill($SkillbarSlot[$Heroic_Refrain], $BestTarget)
-            If CanUse($SkillbarSlot[$Burning_Refrain]) Then Skill_TryUseSkill($SkillbarSlot[$Burning_Refrain])
-            If CanUse($SkillbarSlot[$Theyre_on_Fire]) Then Skill_TryUseSkill($SkillbarSlot[$Theyre_on_Fire])
+; $aAbortEnemyRange: stop if foes this close (0 = never abort). Staging pulls use $danger_range.
+Func PrecastWardsAndSpirits($aAggroRange = $spirit_range, $aAbortEnemyRange = $spirit_range)
+	; Never block forever — approach Map_Move can leave Moving=True after CarefulAggro stand.
+	Local $lMoveWait = TimerInit()
+	Do
+		Sleep(50)
+	Until Not Agent_GetAgentInfo(-2, "Moving") Or TimerDiff($lMoveWait) > 5000
+	; Bars may still be empty if onStart ran before party / load-skills — refresh once.
+	If Number($HeroPrecast[0][0]) = 0 Then CacheHeroPrecast()
+	If UBound($HeroProts) < 0 Then CacheHeroProts()
+
+	For $aSkillSlot In $Skillbar
+		If $SkillBarCache[$aSkillSlot][$precast] = "" Then ContinueLoop
+		If ShouldUse($aSkillSlot, $aAggroRange) Then Skill_TryUseSkill($aSkillSlot, $BestTarget)
+	Next
+	Out("Precasting hero wards and binding rituals (" & Number($HeroPrecast[0][0]) & ")")
+	; Skill_UseHeroSkill only flags the next cast — a second flag to the same hero cancels the first.
+	Local $lPrevHero = 0, $lPrevSlot = 0, $lPrevSkillID = 0
+	For $i = 1 To $HeroPrecast[0][0]
+		Local $lHero = $HeroPrecast[$i][1]
+		Local $lHeroSlot = $HeroPrecast[$i][2]
+		Local $lHeroSkillID = Skill_GetSkillbarInfo($lHeroSlot, "SkillID", $lHero)
+		; Binding rituals are spirits, not self-effects — never skip them via GetEffectTimeRemaining.
+		Local $lType = Skill_GetSkillInfo($lHeroSkillID, "SkillType")
+		If $aAbortEnemyRange > 0 And Agent_IsEnemyNear($aAbortEnemyRange) Then Return
+		Out("Hero precast: hero " & $lHero & " slot " & $lHeroSlot & " " & $HeroPrecast[$i][0])
+		Skill_UseHeroSkill($lHero, $lHeroSlot, 0)
+
+		; Logic: refresh HR / shouts every 3rd hero skill so echo doesn't drop mid-precast
+		If Mod($i, 3) = 0 Then
+			If ShouldUse($SkillbarSlot[$Heroic_Refrain]) Then Skill_TryUseSkill($SkillbarSlot[$Burning_Refrain], $BestTarget)
+			If ShouldUse($SkillbarSlot[$Burning_Refrain]) Then Skill_TryUseSkill($SkillbarSlot[$Burning_Refrain])
+			If ShouldUse($SkillbarSlot[$Theyre_on_Fire]) Then Skill_TryUseSkill($SkillbarSlot[$Theyre_on_Fire])
 		EndIf
-		If Agent_IsEnemyNear($aAggroRange) Then ExitLoop
-    Next
+
+		Other_PingSleep(1000)
+	Next
+
+	; Ally-target prots (PS, Spirit Bond, …) on the player after spirits/wards are down.
+	If UBound($HeroProts) >= 0 Then Out("Precasting hero prots on player (" & (UBound($HeroProts) + 1) & ")")
+
+	For $i = 0 To UBound($HeroProts) - 1
+		Local $lProtID = $HeroProts[$i][0]
+		Local $lProtHero = $HeroProts[$i][1]
+		Local $lProtSlot = $HeroProts[$i][2]
+		If $aAbortEnemyRange > 0 And Agent_IsEnemyNear($aAbortEnemyRange) Then Return
+		If $lProtID <> 0 And GetEffectTimeRemaining($lProtID, -2) > 15000 Then ContinueLoop
+		Skill_UseHeroSkill($lProtHero, $lProtSlot, -2)
+		ApplyHR()
+		Other_PingSleep(1000)
+	Next
 EndFunc   ;==>PrecastWardsAndSpirits
 
+; Keep casting HR until nobody needs it (NeedEchoAlly) or timeout.
+; Wiki: HR reapplied whenever a chant/shout *ends* on that ally — shouts do not cancel the echo.
+; ToF / BR are the upkeep; always top them up before return so HR does not fall off during Flag/Precast/Cancel.
+; After starting HR (1s activation), sleep activation so the next UseSkill does not interrupt the cast.
 Func ApplyHR()
-	While CanUse($SkillbarSlot[$Heroic_Refrain])
+	If $SkillbarSlot[$Heroic_Refrain] = 0 Then Return
+	Out("ApplyHR start (Lead=" & Number(Attribute_GetPartyAttributeInfo($Leadership, 0, "Level")) & ")")
+
+	While ShouldUse($SkillbarSlot[$Heroic_Refrain])
         Skill_TryUseSkill($SkillbarSlot[$Heroic_Refrain], $BestTarget)
-		; If $BiP[0] <> 0 And Agent_GetAgentInfo(-2, "CurrentEnergy") < 10 And Not Skill_HasEffect($Blood_is_Power) And Agent_GetAgentInfo($BiP[0], "HP") > 0.4 Then Skill_UseHeroSkill($BiP[1], $BiP[2], -2) ;Use Blood is Power on me
-		If CanUse($SkillbarSlot[$Theyre_on_Fire]) Then Skill_TryUseSkill($SkillbarSlot[$Theyre_on_Fire])
-		If CanUse($SkillbarSlot[$Burning_Refrain]) Then Skill_TryUseSkill($SkillbarSlot[$Burning_Refrain])
+		If ShouldUse($SkillbarSlot[$Theyre_on_Fire]) Then Skill_TryUseSkill($SkillbarSlot[$Theyre_on_Fire])
+		If ShouldUse($SkillbarSlot[$Burning_Refrain]) Then Skill_TryUseSkill($SkillbarSlot[$Burning_Refrain])
 		Sleep(11000)
     WEnd
 EndFunc   ;==>ApplyHR
@@ -2663,7 +2818,7 @@ Func PrecastBonds($aTargetAlly = 0)
 		For $aSkillSlot = 1 To 8            ; precast bonds
 			ApplyHR()
 			If GetEffectTimeRemaining(GetEffect(Skill_GetSkillbarInfo($aSkillSlot))) > 0 Then ContinueLoop
-			If IsBondSkill(GetSkillbarInfo($i, "SkillID", "SkillID")($aSkillSlot)) Then
+			If IsBondSkill(Skill_GetSkillbarInfo($aSkillSlot, "SkillID", $aHero)) Then
 				DisableHeroSkillSlot($aHero, $aSkillSlot)
 				Skill_UseHeroSkill($aHero, $aSkillSlot, $aTargetAlly)
 			EndIf
@@ -2674,8 +2829,8 @@ EndFunc   ;==>PrecastBonds
 Func UseHeroHeals()
 	If Agent_GetAgentInfo(-2, "IsDead") Then Return
 	For $i = UBound($HeroHeals) - 1 To 0 Step -1
+		Out($HeroHeals[$i][0])
 		Switch $HeroHeals[$i][0]
-			Out($HeroHeals[$i][0])
 			Case $Martyr
 				If GetNumberOfConditionedAllies() - Agent_GetAgentInfo(GetHeroID($HeroHeals[$i][1]), "Condition") > 0 Then Skill_UseHeroSkill($HeroHeals[$i][1], $HeroHeals[$i][2], 0)
 			Case $Cautery_Signet, $Extinguish
@@ -2692,8 +2847,8 @@ EndFunc   ;==>UseHeroHeals
 Func UseHeroHexRemoval()
 	If Agent_GetAgentInfo(-2, "IsDead") Then Return
 	For $i = UBound($HeroHexRemoval) - 1 To 0 Step -1
+		Out($HeroHexRemoval[$i][0])
 		Switch $HeroHexRemoval[$i][0]
-			Out($HeroHexRemoval[$i][0])
 			Case $Hex_Eater_Signet
 				If Skill_GetSkillbarInfo($HeroHexRemoval[$i][2], $HeroHexRemoval[$i][1]) Then
 					Skill_UseHeroSkill($HeroHexRemoval[$i][1], $HeroHexRemoval[$i][2], -2)
@@ -2717,9 +2872,7 @@ EndFunc
 Func UseHeroConditionRemoval()
 	If Agent_GetAgentInfo(-2, "IsDead") Then Return
 	For $i = UBound($HeroConditionRemoval) - 1 To 0 Step -1
-		Switch $HeroConditionRemoval[$i][0]
-			Out($HeroConditionRemoval[$i][0])
-		EndSwitch
+		Out($HeroConditionRemoval[$i][0])
 	Next
 EndFunc
 
@@ -2757,2393 +2910,4 @@ Func MysticHealing()
 EndFunc   ;==>MysticHealing
 
 #EndRegion HeroCast
-
-#Region Skill Effect 1
-; CausesBleedingSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; CausesBlindSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; CausesBurningSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; CausesCrippleSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; CausesDeepWoundSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; CausesDiseaseSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; CausesSlowerMoveSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; CausesKnockdownSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; CausesPoisonSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; CausesDazeSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; CauseWeaknessSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-
-; CauseWaterHexSkill → Wrappers\GwAu3_Data_Wrappers.au3
-
-#EndRegion Skill Effect 1
-
-; WeaponReq / Combo / ComboReq wrappers → Wrappers\GwAu3_Data_Wrappers.au3
-
-;~ ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;~ ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;~ ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;~ ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;~ ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;~ ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;~ ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;~ ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;~ ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;~ ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;~ ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;~ ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;~ ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-
-
-
-
-
-
-#Region Classified
-;~ #Region Add By Alusion
-;~ #Region Flash enchantment spell
-;~ ;Flash enchantment Interrupts spells only
-;~ Func FlashRuptSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~     Case $Lyssas_Haste, $Lyssas_Haste_PvP
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Flash Better result if use during combat
-;~ Func FlashInFightSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Aura_of_Thorns, $Aura_of_Thorns_PvP, $Balthazars_Rage, $Dust_Cloak, _
-;~ 		$Dust_Cloak_PvP, $Ebon_Dust_Aura, $Ebon_Dust_Aura_PvP, $Grenths_Aura, _
-;~ 		$Grenths_Fingers, $Heart_of_Holy_Flame, $Heart_of_Holy_Flame_PvP, $Mirage_Cloak, _
-;~ 		$Mystic_Corruption, $Rending_Aura, $Shield_of_Force, $Staggering_Force, _
-;~ 		$Veil_of_Thorns, $Zealous_Renewal
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Flash Better result if use before combat
-;~ Func FlashBeforeFightSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Attackers_Insight, $Conviction, $Conviction_PvP, $Enchanted_Haste, _
-;~ 		$Fleeting_Stability, $Grenths_Grasp, $Harriers_Grasp, $Harriers_Haste, _
-;~ 		$Onslaught, $Onslaught_PvP, $Pious_Renewal, $Sand_Shards, $Whirling_Charge
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-;~ #EndRegion
-
-;~ #Region Item spell
-;~ ; Remove Ally's condition, use it and drop it
-;~ Func ItemDropToRemoveCondition($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Pure_Was_Li_Ming
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ; Heal all team, use it and dropt it
-;~ Func ItemDropToHeal($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	;Rit
-;~ 	Case $Protective_Was_Kaolai, $Protective_Was_Kaolai_PvP, _ ;Rit Maybe always use it and drop when need heal
-;~ 		$Courageous_Was_Saidra
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Drop it for damage all near enemy
-;~ Func ItemDropToDamage($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Cruel_Was_Daoshen, $Defiant_Was_Xinrae, $Destructive_Was_Glaive, $Destructive_Was_Glaive_PvP, _
-;~ 		$Grasping_Was_Kuurong, $Blind_Was_Mingson ;Blind, no damage
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ Func ItemAlwaysGotIt($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	;Rit
-;~ 	Case $Generous_Was_Tsungrai ;Drop it for Heal my self
-;~ 		Return True
-;~ 	Case $Resilient_Was_Xiko ;Regen pv for each hex or condition, drop it to remove my condition
-;~ 		Return True
-;~ 	Case $Tranquil_Was_Tanasen ;Can't be rupt and gain XX armor
-;~ 		Return True
-;~ 	Case $Vengeful_Was_Khanhei ;Steel XX health at every hit
-;~ 		Return True
-;~ 	Case $Vocal_Was_Sogolon	;Chant use last XX longer
-;~ 		Return True
-;~ 	Case $Attuned_Was_Songkai ;Spell and ritual cost less, no effect when drop
-;~ 		Return True
-;~ 	Case $Energetic_Was_Lee_Sa ;energy regen, gain XX energy when drop
-;~ 		Return True
-;~ 	Case $Mighty_Was_Vorizun ;More armor, more enegy
-;~ 		Return True
-;~ 	Case $Anguished_Was_Lingwah ;Always have it and drop when need to recharge ritual hex
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-;~ #EndRegion
-#EndRegion Classified
-
-
-
-;~ #Region Ward spell
-;~ Func DefenseWard($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Banner_of_the_Unseen, $Ebon_Battle_Standard_of_Courage,  $Ebon_Battle_Standard_of_Honor, $Ebon_Battle_Standard_of_Wisdom, _
-;~ 		$Ebon_Vanguard_Battle_Standard_of_Power
-;~ 		Return True
-;~ 	Case $Time_Ward ;Don't know if it work on ally or alli spirit (Translate problem)
-;~ 		Return True
-;~ 	Case $Ward_Against_Elements,  $Ward_Against_Harm, $Ward_Against_Harm_PvP, $Ward_Against_Melee, $Ward_Against_Melee_PvP, _
-;~ 		$Ward_of_Stability
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ Func AgressiveWard($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Ward_of_Weakness ;Weakened condition to enemy if it take elemental damage
-;~ 		Return True
-;~ 	Case $Ward_Against_Foes ;Slow enemy
-;~ 		Return True
-;~ 	Case $Radiation_Field ;Degen enemy
-;~ 		Return True
-;~ 	Case $Teinais_Heat ;Degen enemy
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-;~ #EndRegion
-
-;~ #Region Weapon spell
-;~ Func DefensiveWeaponSpellSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Spirit_Light_Weapon ;Heal more if have a spirit
-;~ 		Return True
-;~ 	Case $Vengeful_Weapon, $Vital_Weapon
-;~ 		Return True
-;~ 	Case $Weapon_of_Shadow ;Blind enemy who attack ally with weapon spell
-;~ 		Return True
-;~ 	Case $Weapon_of_Warding, $Weapon_of_Warding_PvP,  $Xinraes_Weapon
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ Func WeaponSpellConditionSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Weapon_of_Remedy
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ func WeaponSpellConditionOrHexSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Resilient_Weapon
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ func WeaponSpellOnCacSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Guided_Weapon, $Ghostly_Weapon, $Brutal_Weapon, $Great_Dwarf_Weapon, _
-;~ 		$Nightmare_Weapon,  $Splinter_Weapon, $Splinter_Weapon_PvP, $Sundering_Weapon, _
-;~ 		$Wailing_Weapon, $Warmongers_Weapon, $Weapon_of_Fury, $Weapon_of_Renewal
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ func WeaponSpellOnCasterSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Weapon_of_Quickening
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ func WeaponSpellMySelfSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Weapon_of_Aggression, $Weapons_of_Three_Forges
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-;~ #EndRegion
-
-;~ #Region Well spell
-;~ ;Exploit a corpse
-;~ func WellSpellSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Well_Of_Blood, $Well_of_Darkness, $Well_of_Power, $Well_of_Ruin, _
-;~ 		$Well_of_Silence, $Well_of_Suffering, $Well_of_Weariness, $Well_of_the_Profane, _
-;~ 		$Holiday_Blues, $Tear_Gas
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-;~ #EndRegion
-
-;~ #Region Form
-;~ func FormBeforeFightSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Avatar_of_Balthazar, $Avatar_of_Dwayna, $Avatar_of_Dwayna_PvP, $Avatar_of_Dwayna_snow_fighting_skill, _
-;~ 		$Avatar_of_Grenth, $Avatar_of_Grenth_PvP, $Avatar_of_Grenth_snow_fighting_skill, $Avatar_of_Lyssa, _
-;~ 		$Avatar_of_Melandru, $Avatar_of_Melandru_PvP, $Raven_Blessing, $Ursan_Blessing, _
-;~ 		$Volfen_Blessing
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ func FormSpecialSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Feign_Death, $Hide, $Siege_Devourer
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-;~ #EndRegion
-
-;~ #Region Glyph
-;~ func GlyphSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Glyph_of_Elemental_Power ;Add 2 to elemental power
-;~ 		Return True
-;~ 	Case $Glyph_of_Energy ;no afflux and add XX elemental power
-;~ 		Return True
-;~ 	Case $Glyph_of_Essence ; Instant cast (lost all energy)
-;~ 		Return True
-;~ 	Case $Glyph_of_Immolation ;Burn Target with next skill
-;~ 		Return True
-;~ 	Case $Glyph_of_Lesser_Energy	;Next spell coast less energy
-;~ 		Return True
-;~ 	Case $Glyph_of_Renewal ;Next spell Instant recharge
-;~ 		Return True
-;~ 	Case $Glyph_of_Restoration ;Next spell healing
-;~ 		Return True
-;~ 	Case $Glyph_of_Sacrifice ; Instant cast (30sec more recharge time)
-;~ 		Return True
-;~ 	Case $Glyph_of_Swiftness ; nest spell Recharge 25% faster
-;~ 		Return True
-;~ 	Case $Hidden_Rock; snowball
-;~ 		Return True
-;~ 	Case $Polymock_Glyph_of_Concentration ;Next spell cannot be interrupt
-;~ 		Return True
-;~ 	Case $Polymock_Glyph_of_Power ; more damage for nest spell
-;~ 		Return True
-;~  	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ func GlyphDazedSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Glyph_of_Concentration ;Next skill can't be rupt and unaffected by daze
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-;~ #EndRegion
-
-;~ #Region Preparation
-;~ ;Always use before fight
-;~ func PreparationSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Apply_Poison, $Barbed_Arrows, $Choking_Gas, $Corrupted_Breath, _
-;~ 		$Disrupting_Accuracy,  $Expert_Focus, $Glass_Arrows, $Glass_Arrows_PvP, _
-;~ 		$Ignite_Arrows, $Kindle_Arrows, $Marksmans_Wager, $Melandrus_Arrows, _
-;~ 		$Rapid_Fire, $Read_the_Wind, $Read_the_Wind_PvP, $Seeking_Arrows, _
-;~ 		$Trappers_Focus, $Yellow_Snow
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-;~ #EndRegion
-
-;~ #Region Nature ritual
-;~ ;Always use before fight, not in aggro or just before aggro
-;~ func NatureRitualSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Winds, $Brambles, $Conflagration, $Edge_of_Extinction, _
-;~ 		$Energizing_Wind, $Equinox, $Famine, $Favorable_Winds, _
-;~ 		$Fertile_Season, $Frozen_Soil, $Greater_Conflagration, $Infuriating_Heat, _
-;~ 		$Lacerate, $Muddy_Terrain, $Natures_Renewal, $Pestilence, $tory_Season, _
-;~ 		$Primal_Echoes, $Quickening_Zephyr, $Quicksand, $Roaring_Winds, $Symbiosis, _
-;~ 		$Toxicity, $Tranquility, $Winnowing, $Winter
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-;~ #EndRegion
-
-;~ #Region Shout
-;~ ;Shout best target
-;~ func ShoutBestTargetSkill($Skill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $You_Are_All_Weaklings
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Shout require target 50% hp
-;~ func Shout50hpSkill($Skill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Finish_Him, $Ill_Be_Back, $You_Will_Die
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Shout require Adrenaline
-;~ func ShoutAdrenalineSkill($Skill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Save_Yourselves_Kurzick, $Save_Yourselves_Luxon, $Dodge_This, _
-;~ 		$Fear_Me, $For_Elona, $Go_for_the_Eyes, $Go_for_the_Eyes_PvP, _
-;~ 		$The_Power_Is_Yours, $Watch_Yourself, $Watch_Yourself_PvP, _
-;~ 		$Cry_of_Madness
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Shout only for target ally
-;~ func ShoutAllySkill($Skill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Brace_Yourself, $Brace_Yourself_PvP, $Lead_the_Way, _
-;~ 		$Make_Haste, $Godspeed
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ; Shout if dead ally
-;~ func ShoutDeadAllySkill($Skill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $I_Will_Avenge_You
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ; Shout if I have condition
-;~ func ShoutConditionSkill($Skill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $I_Will_Survive, $Tango_Down
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Shout If ally have condition
-;~ func ShoutAllyConditionSkill($Skill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Its_Just_a_Flesh_Wound
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Shout if I need heal
-;~ func ShoutHealSkill($Skill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Mmmm_Snowcone
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Shout
-;~ func ShoutSkill($Skill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Cant_Touch_This, $Cant_Touch_This_PvP, $Charge, $Dont_Trip, _
-;~ 		$Fall_Back, $Fall_Back_PvP, $For_Great_Justice,  $For_Great_Justice_PvP, _
-;~ 		$Form_Up_and_Advance, $I_Am_Unstoppable, $I_Am_the_Strongest, $Incoming, _
-;~ 		$Incoming_PvP,  $Lets_Get_Em, $Make_Your_Time, $Never_Give_Up, $Never_Give_Up_PvP, _
-;~ 		$Never_Surrender, $Never_Surrender_PvP, $Retreat, $Shields_Up, $Stand_Your_Ground, _
-;~ 		$Stand_Your_Ground_PvP, $Theres_Nothing_to_Fear, $Theres_Nothing_to_Fear_Thackeray, _
-;~ 		$Theyre_on_Fire, $To_the_Limit, $Together_as_One, $Call_of_Haste, $Call_of_Haste_PvP, _
-;~ 		$Call_of_Protection, $Otyughs_Cry, $Predatory_Bond, $Predatory_Bond_PvP, $Raven_Shriek, _
-;~ 		$Steady_Aim, $Sticky_Ground, $Strike_as_One, $Sugar_Shock, $Symbiotic_Bond, $Ursan_Roar, _
-;~ 		$Ursan_Roar_Blood_Washes_Blood, $Volfen_Bloodlust, $Volfen_Bloodlust_Curse_of_the_Nornbear
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Shout if target moving
-;~ func ShoutTargetMovingSkill($Skill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $None_Shall_Pass
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Shout if target has conition
-;~ func ShoutTargetConditionSkill($Skill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Victory_Is_Mine
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Shout for cac
-;~ func ShoutCacSkill($Skill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Find_Their_Weakness, $Find_Their_Weakness_PvP, $Find_Their_Weakness_Thackeray
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Shout for Healer
-;~ func ShoutHealerSkill($Skill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Help_Me, $Help_Me_PvP
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Interrupts skills but not regular attacks
-;~ func ShoutRuptSkill($Skill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $You_Move_Like_a_Dwarf ;PvE Cause crippled
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Require adrenaline and target moving
-;~ func ShoutMovingAdrenalineSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Coward
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Require adrenaline and if i'm adjacent to knocked down foe
-;~ func ShoutNearAndKnockAdrenalineSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $On_Your_Knees
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-;~ #EndRegion
-
-;~ #Region Signet
-;~ ; Use signet on best target
-;~ func SignetBestTarget($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Signet_of_Weariness, $Signet_of_the_Unseen, $Tryptophan_Signet, _
-;~ 		$Unnatural_Signet,  $Unnatural_Signet_PvP, $Unnatural_Signet_Saul_DAlessio
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Use If i'm enchanted
-;~ func SignetIHaveEnchantSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Signet_of_Mystic_Wrath, $Signet_of_Pious_Light, _
-;~ 		$Signet_of_Pious_Restraint, $Signet_of_Pious_Restraint_PvP
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Is touch signet
-;~ func SignetTouchSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Signet_of_Midnight
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Use Signet If target below 50% hp
-;~ func SignetTarget50hpSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Signet_of_Lost_Souls
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Use signet if target poisoned
-;~ func SignetTargetPoisonedSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Signet_of_Toxic_Shock
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Use signet if target blind
-;~ func SignetTargetBlindSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Signet_of_Shadows
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Use signet if target bleed
-;~ func SignetTargetBleedSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Signet_of_Infection
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Signet Remove Ench on target
-;~ func SignetRemoveEnchantSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Signet_of_Disenchantment, $Signet_of_Twilight
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Is Heal Signet
-;~ func SignetHealAllySkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Signet_of_Devotion, $Signet_of_Rejuvenation, $Signet_of_Synergy
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Use Signet If have a spirit
-;~ func SignetSpiritAllySkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Signet_of_Creation, $Signet_of_Creation_PvP, $Signet_of_Ghostly_Might, $Signet_of_Ghostly_Might_PvP
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Use signet if target is spirit enemy
-;~ func SignetSpiritEnemySkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Signet_of_Binding
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Use signet if enemy is near
-;~ func SignetEnemyNearSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Signet_of_Agony, $Signet_of_Agony_PvP
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Use signet touch ally if he has hex
-;~ func SignetTouchAllyHexSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Hex_Eater_Signet
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Use signet on target, no requi
-;~ func SignetUseSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Barbed_Signet, $Barbed_Signet_PvP, $Candy_Corn_Strike, $Signet_of_Humility, _
-;~ 		$Signet_of_Judgment, $Signet_of_Judgment_PvP, $Signet_of_Rage, $Signet_of_Sorrow
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Use If target attack
-;~ func SignetAttackSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Bane_Signet, $Castigation_Signet, $Castigation_Signet_Saul_DAlessio
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ; Use signet for me
-;~ func SignetOnMeSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Archers_Signet, $Blessed_Signet, $Boon_Signet, $Dolyak_Signet, _
-;~ 		$Keystone_Signet, $Poison_Tip_Signet, $Signet_of_Aggression, $Signet_of_Illusions, _
-;~ 		$Signet_of_Mystic_Speed, $Signet_of_Recall, $Signet_of_Spirits, $Signet_of_Spirits_PvP, _
-;~ 		$Signet_of_Stamina, $Signet_of_Strength, $Signet_of_Suffering
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ; Remove on all alli condition
-;~ func SignetRemoveConditionSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Cautery_Signet
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ; Remove condition on my self
-;~ func SignetRemoveMySelfConditionSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Remedy_Signet, $Antidote_Signet, $Lightbringer_Signet
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ; if target has condition
-;~ func SignetTargetConditionSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Signet_of_Malice, $Sadists_Signet, $Signet_of_Corruption_Luxons, $Signet_of_Corruption_Kurzicks, _
-;~ 		$Signet_of_Deadly_Corruption, $Signet_of_Deadly_Corruption_PvP
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ; transfert my condition on target
-;~ func SignetTransfetConditionSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Plague_Signet
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Use it if target burn
-;~ func SignetEnergyTargetBurnSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Glowing_Signet
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Use it if don't have energy
-;~ func SignetNoMoreEnergySkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Ether_Signet
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Use on War, Ranger, Sin, Der, Para to rupt attack
-;~ func SignetRuptCac($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Signet_of_Clumsiness,  $Signet_of_Clumsiness_PvP, $Polymock_Signet_of_Clumsiness
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Interrupts skills but not regular attacks
-;~ func SignetRuptSkill($Skill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Signet_of_Distraction
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Interrupts skills if target has hex
-;~ func SignetRuptSkillIfTargetHasHex($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Signet_of_Disruption
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-;~ #EndRegion
-
-;~ #Region Chant
-;~ ;Chant require adrenaline
-;~ func ChantAdrenalineSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Anthem_of_Envy, $Anthem_of_Envy_PvP, $Lyric_of_Zeal, $Anthem_of_Guidance, _
-;~ 		$Crippling_Anthem, $Energizing_Chorus, $Song_of_Purification, $Chorus_of_Restoration, _
-;~ 		$Hexbreaker_Aria
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Chant
-;~ func ChantSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Anthem_of_Disruption, $Anthem_of_Disruption_PvP, $Anthem_of_Flame, $Anthem_of_Fury, _
-;~ 		$Anthem_of_Weariness, $Aria_of_Restoration, $Aria_of_Zeal,  $Ballad_of_Restoration, _
-;~ 		$Ballad_of_Restoration_PvP, $Defensive_Anthem, $Defensive_Anthem_PvP, $Lyric_of_Purification, _
-;~ 		$Presence_of_the_Skale_Lord, $Song_of_Power, $Song_of_Restoration, $Song_of_Restoration_PvP, _
-;~ 		$Zealous_Anthem, $Focused_Anger
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Use If alli will die
-;~ func ChantSaveSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Angelic_Bond, $Angelic_Protection
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-;~ #EndRegion
-
-;~ #Region Echo
-;~ ;Echo on me or ally
-;~ func EchoSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Bladeturn_Refrain, $Bladeturn_Refrain_PvP ;Better on caster ally
-;~ 		Return True
-;~ 	Case $Blazing_Finale, $Blazing_Finale_PvP ;Better on cac ally
-;~ 		Return True
-;~ 	Case $Enduring_Harmony ;Chant and shout last 50% longer on target ally
-;~ 		Return True
-;~ 	Case $Energizing_Finale, $Burning_Refrain, $Finale_of_Restoration, $Finale_of_Restoration_PvP, $Hasty_Refrain, _
-;~ 		$Heroic_Refrain, $Purifying_Finale, $Mending_Refrain, $Mending_Refrain_PvP
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Echo on ally only
-;~ func EchoOnAllykill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Inspirational_Speech
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Echo on me only
-;~ func EchoMySelfSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Aggressive_Refrain, $Soldiers_Fury, $Burning_Shield, $Natural_Temper, _
-;~ 		$Leaders_Zeal
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Echo for heal myself
-;~ func EchoHealMySelfSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Leaders_Comfort
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-;~ #EndRegion
-
-;~ #Region Trap
-;~ ;Heal Only me Req adrenaline
-;~ func TrapSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Barbed_Trap, $Black_Powder_Mine,  $Dust_Trap, $Flame_Trap, _
-;~ 		$Healing_Spring, $Land_Mine, $Piercing_Trap, $Smoke_Trap, _
-;~ 		$Snare, $Spike_Trap, $Tripwire, $Vipers_Nest, $Weakness_Trap
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-;~ #EndRegion
-
-;~ #Region Stance
-;~ ;Need to create a func for Stance
-;~ ;Expl: I use Mantra Of Earth, Use it again only if i don't have the mantra of earth effect any more
-;~ ;Stance Adrenaline use during fight
-;~ func StanceAdrenalineSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Bonettis_Defense, $Defensive_Stance, $Defy_Pain, $Defy_Pain_PvP, _
-;~ 		$Battle_Rage, $Flail, $Heart_of_Fury, $Heart_of_Fury_PvP, _
-;~ 		$Primal_Rage, $Rush, $Auspicious_Parry
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Stance use during fight
-;~ func StanceSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Bestial_Fury, $Flashing_Blades, $Elemental_Resistance, $Lightning_Reflexes, _
-;~ 		$Lightning_Reflexes_PvP, $Mantra_of_Earth, $Mantra_of_Flame, $Mantra_of_Frost, _
-;~ 		$Mantra_of_Inscriptions, $Mantra_of_Lightning, $Mantra_of_Resolve, $Mantra_of_Resolve_PvP, _
-;~ 		$Natures_Blessing, $Physical_Resistance, $Pious_Concentration, $Storm_Chaser, _
-;~ 		$Symbolic_Posture, $Tigers_Fury, $Wary_Stance, $Whirling_Defense, $Balanced_Stance, _
-;~ 		$Berserker_Stance, $Bulls_Charge, $Burst_of_Aggression, $Charging_Strike, $Dark_Escape, _
-;~ 		$Dash, $Disciplined_Stance,  $Distortion, $Dodge, $Drunken_Master, $Dryders_Defenses, _
-;~ 		$Dwarven_Battle_Stance, $Enraging_Charge, $Escape, $Escape_PvP, $Experts_Dexterity, _
-;~ 		$Experts_Dexterity_PvP, $Flurry, $Frenzied_Defense, $Frenzy, $Gladiators_Defense, _
-;~ 		$Hekets_Rampage, $Hex_Breaker, $Junundu_Tunnel, $Mantra_of_Concentration, _
-;~ 		$Mantra_of_Persistence, $Mantra_of_Recovery, $Mantra_of_Signets, $Mantra_of_Signets_PvP, _
-;~ 		$Melandrus_Resilience, $Natural_Stride, $Pious_Fury, $Pious_Fury_PvP, $Pious_Haste, _
-;~ 		$Practiced_Stance, $Riot_Shield, $Run_as_One, $Serpents_Quickness, $Seven_Weapons_Stance, _
-;~ 		$Shield_Stance, $Smoke_Powder_Defense, $Soldiers_Defense, $Soldiers_Speed, $Soldiers_Stance, _
-;~ 		$Soldiers_Stance_PvP,$Sprint, $Steady_Stance, $Storms_Embrace, $Sugar_Rush_Agent_of_the_Mad_King, _
-;~ 		$Tiger_Stance, $Trappers_Speed, $Unseen_Fury, $Unseen_Fury_PvP, $Warriors_Endurance, _
-;~ 		$Warriors_Endurance_PvP, $Way_of_the_Assassin, $Zojuns_Haste, $Warriors_Cunning
-;~ 		Return True
-;~ 	Case $Protectors_Defense ;alli can block
-;~ 		Return True
-;~ 	Case $Riposte ; block next attack
-;~ 		Return True
-;~ 	Case $Shield_Bash ;block next attack cause knock down
-;~ 		Return True
-;~ 	Case $Endure_Pain ;more pv
-;~ 		Return True
-;~ 	Case $Hundred_Blades ;each attack cause more damage
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-;~ #EndRegion
-
-;~ #Region Pet attack
-;~ ;attack pet
-;~ func PetAttackSkill($Skill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Enraged_Lunge, $Enraged_Lunge_PvP, $Feral_Lunge, $Ferocious_Strike, _
-;~ 		$Maiming_Strike, $Melandrus_Assault, $Melandrus_Assault_PvP, $Poisonous_Bite, _
-;~ 		$Pounce, $Predators_Pounce, $Rampage_as_One, $Feral_Aggression, $Never_Rampage_Alone
-;~ 		Return True
-;~ 	Case $Heal_as_One ;Not attack, heal pet
-;~ 		Return True
-;~ 	Case $Heal_as_One_PvP ;Not attack, heal pet
-;~ 		Return True
-;~ 	Case $Companionship ;Not attack, heal pet
-;~ 		Return True
-;~ 	Case $Revive_Animal ;rez pet
-;~ 		Return True
-;~ 	Case $Comfort_Animal
-;~ 		Return True
-;~ 	Case $Comfort_Animal_PvP ;heal and rez pet
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Use if target has condition
-;~ func PetConditionSkill($Skill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Scavenger_Strike
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Use if target knock down
-;~ func PetTargetKnockSkill($Skill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Bestial_Mauling
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Use if target less 50% hp
-;~ func PetTarget50HpSkill($Skill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Brutal_Strike
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Interrupts by pet
-;~ func PetRuptSkill($Skill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Disrupting_Lunge, $Bestial_Pounce, $Savage_Pounce
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-;~ #EndRegion
-
-;~ #Region Bow attack
-;~ ;Bow attack
-;~ func BowAttackSkill($Skill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Arcing_Shot, $Called_Shot, $Crossfire, $Determined_Shot, $Focused_Shot, _
-;~ 		$Hunters_Shot, $Keen_Arrow, $Keen_Arrow_PvP, $Melandrus_Shot, $Point_Blank_Shot, _
-;~ 		$Poison_Arrow, $Prepared_Shot, $Quick_Shot, $Zojuns_Shot, $Burning_Arrow, _
-;~ 		$Crippling_Shot, $Debilitating_Shot, $Dual_Shot, $Forked_Arrow, _
-;~ 		$Keirans_Sniper_Shot_Hearts_of_the_North, $Marauders_Shot, $Oath_Shot, _
-;~ 		$Penetrating_Attack, $Penetrating_Attack_PvP, $Power_Shot, $Precision_Shot, _
-;~ 		$Screaming_Shot,  $Sloth_Hunters_Shot, $Sloth_Hunters_Shot_PvP, $Sundering_Attack, _
-;~ 		$Sundering_Attack_PvP, $Pin_Down, $Relentless_Assault
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Bow attack on best target
-;~ func BowBestTargetAttackSkill($Skill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Barrage, $Incendiary_Arrows, $Rain_of_Arrows, $Volley, _
-;~ 		$Splinter_Shot, $Triple_Shot_Kurzicks, $Triple_Shot_Luxons
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Target has condition
-;~ func BowTargetHHasCondition($Skill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Scavengers_Focus
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Target has cracked armor
-;~ func BowTargetCrackedArmorAttackSkill($Skill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Body_Shot
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Target less 50% hp
-;~ func BowTarget50HpAttackSkill($Skill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Needling_Shot
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Target Has weakness
-;~ func BowTargetWeaknessAttackSkill($Skill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Gravestone_Marker
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Interrupts skills but not regular attacks
-;~ func BowRuptSkill($Skill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Broad_Head_Arrow,  $Concussion_Shot, $Punishing_Shot, $Savage_Shot, _
-;~ 		$Magebane_Shot, $Disrupting_Shot, $Distracting_Shot, $Terminal_Velocity
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-;~ #EndRegion
-
-;~ #Region Spear attack
-;~ ;Spear skill
-;~ func SpearSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Spear_of_Lightning, $Swift_Javelin, $Vicious_Attack, $Harriers_Toss, _
-;~ 		$Harriers_Toss_PvP, $Slayers_Spear, $Spear_Swipe
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Spear attack if target has cracked armor
-;~ func SpearTargetCrackedArmorSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Chest_Thumper
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Spear attack if target bleeding
-;~ func SpearTargetBleedingSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Maiming_Spear
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Spear attack if target has condition
-;~ func SpearTargetConditionSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Spear_of_Fury_Luxon, $Spear_of_Fury_Kurzick
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Require adrenaline
-;~ func SpearAdrenalineSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Barbed_Spear, $Blazing_Spear, $Holy_Spear, $Mighty_Throw, _
-;~ 		$Spear_of_Redemption, $Unblockable_Throw, $Wearying_Spear
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Require adrenaline and Conditioned Target
-;~ func SpearTargetConditionedAdrenalineSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Stunning_Strike ; spear
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Require adrenaline and Stanced target
-;~ func SpearTargetStancedAdrenalineSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Wild_Throw ;Spear
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Require adrenaline and 50%hp or less
-;~ func Spear50HPLessAdrenalineSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Merciless_Spear ;Distance attack
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Interrupts skills
-;~ func SpearRuptSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Jadoths_Storm_of_Judgment
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Interrupts skills If target has condition
-;~ func SpearRuptTargetHasCondition($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Disrupting_Throw
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Spear require knockdown arget
-;~ func SpearTargetKnockDownSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Awe
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Require adrenaline and target don't moving
-;~ func SpearDontMovingAdrenalineSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	;Para
-;~ 	Case $Cruel_Spear
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-;~ #EndRegion
-
-;~ #Region Dagger attack
-;~ #Region Lead attack
-;~ ;Lead Attack
-;~ func LeadAttackSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Desperate_Strike, $Golden_Fox_Strike, $Jagged_Strike, $Leaping_Mantis_Sting, _
-;~ 		$Unsuspecting_Strike, $Dancing_Daggers, $Shadow_Theft
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Lead Attack if i'm enchanted
-;~ func LeadImEnchantSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Golden_Lotus_Strike
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Lead Attack if target has hex or condition
-;~ func LeadTargetHexOrConditionSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Iron_Palm
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-;~ ;Lead attack, if target hexed
-;~ func LeadTargetHexSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Black_Lotus_Strike; Lead Attack
-;~ 		Return True
-;~ 	Case $Black_Mantis_Thrust
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Lead attack, Interrupts spells only
-;~ func LeadRuptSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Disrupting_Stab ; Lead Attack
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-;~ #EndRegion
-
-;~ #Region Off-hand attack
-;~ ;OffHand Attack
-;~ ; $Fox_Fangs
-;~ ; $Fox_Fangs_PvP
-;~ ; $Lotus_Strike
-;~ ; $Repeating_Strike
-;~ ; $Wild_Strike
-;~ ; $Wild_Strike_PvP
-;~ ; $Withering_Blade
-;~ ; $Mantis_Touch
-;~ ; $Palm_Strike
-
-;~ ;OffHand require target knock down
-;~ ; $Falling_Lotus_Strike
-;~ ; $Falling_Spider
-
-;~ ;OffHand require Hex
-;~ ; $Black_Spider_Strike
-
-;~ ;OffHand If I'm enchanted
-;~ ; $Golden_Fang_Strike
-;~ ; $Golden_Phoenix_Strike
-
-;~ ;OffHand If Target enchanted
-;~ ; $Golden_Skull_Strike
-
-;~ ;OffHand If Target Crippled
-;~ ; $Jungle_Strike
-
-;~ ;OffHand If Target has less 50% hp
-;~ ; $Moebius_Strike
-
-;~ ;Off-Hand attack, Interrupts spells only
-;~ func OffHandRuptSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Temple_Strike ; Must follow lead attack
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-;~ #EndRegion
-
-;~ #Region Dual attack
-;~ ;Dual attack
-;~ ; $Blades_of_Steel
-;~ ; $Critical_Strike
-;~ ; $Death_Blossom
-;~ ; $Death_Blossom_PvP
-;~ ; $Horns_of_the_Ox
-;~ ; $Nine_Tail_Strike
-;~ ; $Twisting_Fangs
-;~ ; $Vampiric_Assault
-
-;~ ;Dual Attack If target enchanted
-;~ ; $Shattering_Assault
-
-;~ ;Dual Attack If target Crippled
-;~ ; $Trampling_Ox
-
-;~ ;Dual Attack if target has deep wound
-;~ ; $Venom_Fang
-
-;~ ;Dual attack, Interrupts spells only
-;~ func DualRuptSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Exhausting_Assault ;  Must follow lead attack
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-;~ #EndRegion
-;~ #EndRegion Dagger attack
-
-;~ #Region Hit
-;~ ;Hit with no requi
-;~ func Hit($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Judgment_Strike, $Hamstring, $Jaizhenju_Strike, $Pure_Strike, _
-;~ 		$Seeking_Blade, $Cyclone_Axe, $Furious_Axe, $Swift_Chop, _
-;~ 		$Triple_Chop, $Crude_Swing, $Enraged_Smash, $Enraged_Smash_PvP, _
-;~ 		$Irresistible_Blow, $Mokele_Smash, $Crippling_Sweep, $Eremites_Attack, _
-;~ 		$Eremites_Attack_PvP, $Farmers_Scythe, $Irresistible_Sweep, $Zealous_Sweep, _
-;~ 		$Banishing_Strike, $Banishing_Strike_PvP, $Brawling_Combo_Punch, $Brawling_Jab1, _
-;~ 		$Brawling_Jab2, $Brawling_Straight_Right, $Club_of_a_Thousand_Bears, $Counterattack, _
-;~ 		$Desperation_Blow, $Drunken_Blow, $Griffons_Sweep, $Judgment_Strike, $Leviathans_Sweep, _
-;~ 		$Magehunter_Strike,  $Pious_Assault, $Pious_Assault_PvP, $Power_Attack, $Sneak_Attack, _
-;~ 		$Soldiers_Strike, $Thrill_of_Victory, $Victorious_Sweep
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Melee attack, Interrupts spells only
-;~ func HitRupt($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Disarm, $Savage_Slash, $Critical_Chop, $Disrupting_Chop, _
-;~ 		$Lyssas_Assault, $Distracting_Blow
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Melee attack, Interrupts spells If target cracked armor
-;~ func HitRuptCrack($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Distracting_Strike
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Use if target is knock down
-;~ func HitKnock($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Belly_Smash, $Crushing_Blow, $Overbearing_Smash, _
-;~ 		$Renewing_Smash, $Renewing_Smash_PvP
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Attack If i'm enchanted
-;~ func HitIEnch($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Wounding_Strike, $Wounding_Strike_PvP, $Mystic_Sweep, $Mystic_Sweep_PvP
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Melee if target moving
-;~ func HitMove($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Bulls_Strike, $Protectors_Strike
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Melee if target has condition
-;~ func HitCondi($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Malicious_Strike
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Melee if target has stance
-;~ func HitStance($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Wild_Blow
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-;~ #EndRegion Hit
-
-;~ #Region Hit Adrenaline
-;~ ;Require adrenaline
-;~ func HitAdre($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Dragon_Slash, $Dragon_Slash_Turai_Ossa, $Galrath_Slash, $Silverwing_Slash, _
-;~ 		$Sun_and_Moon_Slash, $Crippling_Slash, $Standing_Slash, $Sever_Artery, _
-;~ 		$Decapitate, $Eviscerate, $Executioners_Strike, $Dismember, _
-;~ 		$Penetrating_Blow, $Penetrating_Chop, $Cleave, $Keen_Chop, _
-;~ 		$Backbreaker, $Devastating_Hammer, $Mighty_Blow, $Hammer_Bash, _
-;~ 		$Staggering_Blow, $Staggering_Blow_PvP, $Radiant_Scythe, $Rending_Sweep, _
-;~ 		$Brawling_Uppercut, $Falkens_Fire_Fist, $Brawling_Headbutt, $Brawling_Hook1, _
-;~ 		$Brawling_Hook2, $Symbolic_Strike,$Twin_Moon_Sweep, $Twin_Moon_Sweep_PvP
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Require adrenaline and target has knocked down
-;~ func HitAdreKnock($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Steelfang_Slash, $Lacerating_Chop, $Pulverizing_Smash, $Low_Blow, _
-;~ 		$Bludgeon, $Falken_Punch
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Require adrenaline and Conditioned Target
-;~ func HitAdreCondi($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Club_Strike, $Reap_Impurities
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Require adrenaline and Crippled target
-;~ func HitAdreCrip($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Knee_Cutter
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Require adrenaline and target has Weakned
-;~ func HitAdreWeak($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Fierce_Blow, $Fierce_Blow_PvP, $Auspicious_Blow, $Heavy_Blow
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Require adrenaline and target has cracked armor
-;~ func HitAdreCrack($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Body_Blow
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Require adrenaline and target bleeding
-;~ func HitAdreBleed($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Gash
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Require adrenaline and target deep wound
-;~ func HitAdreDeep($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Axe_Rake
-;~ 		Return True
-;~ 	Case $Axe_Twist
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Require adrenaline and target moving
-;~ func HitAdreMove($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Quivering_Blade
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Require adrenaline and Stanced target
-;~ func HitAdreStance($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Whirling_Axe, $Forceful_Blow
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Require adrenaline and I don't have stance
-;~ func HitAdreNoStance($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Barbarous_Slice
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Require adrenaline and take best target
-;~ func HitAdreBT($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Earth_Shaker, $Yeti_Smash, $Chilling_Victory, $Chilling_Victory_PvP, _
-;~ 		$Crippling_Victory, $Whirlwind_Attack, $Annihilator_Knuckle
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Require adrenaline and Enchanted target
-;~ func HitAdreEnch($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Magehunters_Smash
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Require adrenaline and Target attack
-;~ func HitAdreAtta($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Counter_Blow
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Require adrenaline and 50%hp or less
-;~ func HitAdre50($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Final_Thrust
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Melee attack require adre, Interrupts spells only if target has deep wound
-;~ func HitAdreRuptDeep($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Agonizing_Chop
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Require adrenaline and I Have Derv Enchant
-;~ func HitAdreDerv($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Reapers_Sweep, $Wearying_Strike
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Require adrenaline, Stanced target and Derv Enchantment
-;~ func HitAdreStanceDerv($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Irresistible_Sweep_PvP
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Require adrenaline and if i'm enchanted
-;~ func HitAdreIEnch($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Aura_Slicer
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Melee attack require adre, Interrupts spells only
-;~ func HitAdreRupt($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Skull_Crack
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-;~ #EndRegion Hit Adrenaline
-
-;~ #Region Skill (untyped)
-;~ func TouchSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Grapple ;Touch skill cause knock down
-;~ 		Return True
-;~ 	Case $Headbutt ;touch skill (i'm dazed)
-;~ 		Return True
-;~ 	Case $Throw_Dirt ;blind target
-;~ 		Return True
-;~ 	Case $Rending_Touch, $Holy_Strike, $Stonesoul_Strike, $Blackout, _
-;~ 		$Enfeebling_Touch, $Touch_of_Agony, $Wallows_Bite, $Vile_Touch, _
-;~ 		$Vampiric_Bite, $Vampiric_Touch, $Star_Burst, $Lightning_Touch, _
-;~ 		$Shock
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Touch if target has enchant
-;~ func TouchTargetEnchantSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Expunge_Enchantments
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Use touch if i have condition
-;~ func TouchConditionSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Plague_Touch
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Use heal touch on ally or me
-;~ func HealTouchSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Dwaynas_Touch, $Healing_Touch, $Mending_Touch
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Use on ally near enemy
-;~ func SkillAllyNearEnemy($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Ancestors_Rage, $Ancestors_Rage_PvP
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Heal Only me Req adrenaline
-;~ func HealMySelfAdrenalineSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Lions_Comfort
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-;~ #EndRegion
-
-;~ #Region Rez
-;~ ;Rez skill
-;~ func RezSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Unyielding_Aura, $Unyielding_Aura_PvP ;Bond, need to always activate and remove for rez
-;~ 		Return True
-;~ 	Case $Light_of_Dwayna, $Rebirth, $Renew_Life, $Resurrect, _
-;~ 		$Vengeance, $Death_Pact_Signet, $Death_Pact_Signet_PvP, $Flesh_of_My_Flesh, _
-;~ 		$Flesh_of_My_Flesh_PvP, $We_Shall_Return, $We_Shall_Return_PvP, $Signet_of_Return, _
-;~ 		$Signet_of_Return_PvP, $Resurrection_Signet, $By_Urals_Hammer, $Eternal_Aura, _
-;~ 		$Junundu_Wail, $Sunspear_Rebirth_Signet
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Rez skill, Need to be near from ally or move to ally
-;~ func TouchRezSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Resurrection_Chant ;Half Range
-;~ 		Return True
-;~ 	Case $Restore_Life ;Touch Skill
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ func BindingRitualRezSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Restoration, $Restoration_PvP
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Chant require adrenaline and use when ally are dead
-;~ func ChantAdrenalineHelpRezSkill($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Song_of_Concentration
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Rez Skill, use it and drop it
-;~ func ItemDropToRez($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Lively_Was_Naomei
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-;~ #EndRegion Rez
-
-;~ #Region Heal
-;~ ;Heal Only me
-;~ func HealMe($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Healing_Signet, $Healing_Signet_Turai_Ossa, $Troll_Unguent, $Healing_Ring, _
-;~ 		$Heal_Party, $Aegis, $Heal_Area, $Release_Enchantments, $Hexers_Vigor, _
-;~ 		$Blood_Renewal, $Spirit_Transfer, $Mystic_Healing, $Mystic_Healing_PvP
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Heal me or ally
-;~ Func HealMeOrAlly($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Light_of_Deliverance, $Light_of_Deliverance_PvP, $Glimmer_of_Light, $Healing_Burst, _
-;~ 		$Healing_Light, $Patient_Spirit, $Reversal_of_Fortune, $Restful_Breeze, _
-;~ 		$Watchful_Healing, $Healing_Seed, $Healing_Breeze, $Vigorous_Spirit, _
-;~ 		$Dwaynas_Sorrow, $Orison_of_Healing, $Ethereal_Light, $Heavens_Delight, _
-;~ 		$Divine_Healing, $Kareis_Healing_Circle, $Soothing_Memories, $Pious_Restoration, _
-;~ 		$Natural_Healing
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Heal if spirit in earshot
-;~ Func HealMeOrAllySpirit($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ Case $Mend_Body_and_Soul, $Spirit_Light
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Heal If me or ally has a weapon spell
-;~ Func HealWithWeaponSpell($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Wielders_Boon
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Heal ally only
-;~ Func HealAllyOnly($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Seed_of_Life, $Holy_Wrath, $Healing_Whisper, $Dwaynas_Kiss, _
-;~ 		$Gift_of_Health, $Healing_Ribbon, $Heal_Other, $Jameis_Gaze, _
-;~ 		$Ghostmirror_Light, $Imbue_Health
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Heal ally less 50% hp
-;~ Func HealAlly50Hp($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Word_of_Healing, $Zealous_Benediction, $Divine_Intervention, $Judges_Intervention
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Heal_ally_less_50%_hp_if_ally_spirit_in_earshot
-;~ Func HealAlly50HpSpirit($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Feast_of_Souls
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Heal_ally_less_25%_hp
-;~ Func HealAlly25Hp($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Infuse_Health
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Prot_me_or_ally
-;~ Func ProtMeOrAlly($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Aura_of_Faith, $Air_of_Enchantment, $Shield_of_Regeneration, $Mark_of_Protection, _
-;~ 		$Healing_Hands, $Shield_of_Absorption, $Protective_Spirit, $Shielding_Hands
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;if_the_ally_or_me_suffers_physical_damage
-;~ Func ProtPhysical($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Shield_of_Deflection, $Balthazars_Pendulum, $Shield_of_Judgment, $Shield_Guardian, _
-;~ 		$Guardian, $Aura_of_Stability, $Pensive_Guardian, $Supportive_Spirit, _
-;~ 		$Reversal_of_Damage, $Tainted_Flesh, $Withering_Aura
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;if_the_ally_suffers_magical_damage_or_hex
-;~ Func ProtMagical($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Spell_Breaker, $Aegis_PvP, $Spirit_Bond, $Spirit_Bond_PvP
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;if_the_ally_or_me_has_conditions
-;~ Func AllyOrMeCondi($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Life_Sheath, $Restore_Condition, $Smite_Condition, $Mend_Ailment, _
-;~ 		$Purge_Conditions, $Dismiss_Condition
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;if_the_ally_only_has_condition
-;~ Func AllyCondi($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Spotless_Soul, $Mend_Condition, $Draw_Conditions, $Foul_Feast
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Remove_condition_If_me_or_ally_has_a_weapon_spell
-;~ Func CondiWeaponSpell($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Mending_Grip
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;On_me_only_if_ally_has_condition
-;~ Func MeAllyCondi($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Martyr, $Extinguish,  $Words_of_Comfort, $Angorodons_Gaze
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Bond
-;~ Func JamesBond($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Life_Barrier, $Unyielding_Aura, $Unyielding_Aura_PvP, $Succor, _
-;~ 		$Mending, $Watchful_Spirit, $Vital_Blessing, $Purifying_Veil, _
-;~ 		$Retribution, $Holy_Veil, $Life_Bond, $Blessed_Aura, _
-;~ 		$Protective_Bond, $Strength_of_Honor, $Strength_of_Honor_PvP, $Life_Attunement, _
-;~ 		$Balthazars_Spirit, $Divine_Boon, $Essence_Bond, $Live_Vicariously, _
-;~ 		$Recall, $Shadow_Meld, $Aura_of_Displacement
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-;~ #EndRegion Heal
-
-;~ #Region Spell
-;~ ;On_me_only
-;~ Func SpellForMe($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Scribes_Insight, $Healers_Boon, $Healers_Covenant, $Amity, $Divine_Spirit, _
-;~ 		$Holy_Haste, $Smiters_Boon_PvP, $Spell_Shield, $Selfless_Spirit_Luxons, _
-;~ 		$Selfless_Spirit_Kurzicks, $Smiters_Boon, $Soul_Taker, $Cultists_Fervor, _
-;~ 		$Contagion, $Order_of_the_Vampire, $Order_of_Apostasy, $Aura_of_the_Lich, _
-;~ 		$Order_of_Undeath, $Offering_of_Blood, $Masochism, $Infuse_Condition, _
-;~ 		$Awaken_the_Blood, $Masochism_PvP, $Dark_Aura, $Dark_Bond, $Demonic_Flesh, _
-;~ 		$Veratas_Aura,  $Order_of_Pain, $Dark_Fury, $Veratas_Sacrifice, $Lyssas_Aura, _
-;~ 		$Mantra_of_Recall, $Illusionary_Weaponry, $Illusionary_Weaponry_PvP, $Echo, _
-;~ 		$Energy_Drain, $Ancestors_Visage, $Sympathetic_Visage, $Illusion_of_Haste, _
-;~ 		$Illusion_of_Haste_PvP, $Channeling, $Arcane_Echo, $Auspicious_Incantation, _
-;~ 		$Symbolic_Celerity, $Illusion_of_Weakness, $Master_of_Magic, $Ether_Renewal, _
-;~ 		$Ether_Renewal_PvP, $Ether_Prodigy, $Obsidian_Flesh, $Mist_Form, $Mist_Form_PvP, _
-;~ 		$Elemental_Attunement, $Over_the_Limit, $Ether_Prism, $Magnetic_Aura, _
-;~ 		$Swirling_Aura, $Sliver_Armor, $Windborne_Speed, $Stoneflesh_Aura, _
-;~ 		$Elemental_Flame, $Elemental_Flame_PvP, $Stone_Striker, $Burning_Speed, _
-;~ 		$Kinetic_Armor, $Flame_Djinns_Haste, $Iron_Mist, $Armor_of_Mist, _
-;~ 		$Frigid_Armor, $Storm_Djinns_Haste, $Armor_of_Frost, $Armor_of_Earth, _
-;~ 		$Fire_Attunement, $Water_Attunement, $Earth_Attunement, $Air_Attunement, _
-;~ 		$Elemental_Lord_Luxons, $Elemental_Lord_Kurzicks, $Aura_of_Restoration, _
-;~ 		$Aura_of_Restoration_PvP, $Conjure_Frost, $Conjure_Flame, $Conjure_Lightning, _
-;~ 		$Magnetic_Surge, $Ice_Spear, $Intensity, $Wielders_Zeal, $Spirits_Strength, _
-;~ 		$Ritual_Lord, $Soul_Twisting,  $Reclaim_Essence, $Consume_Soul, $Ghostly_Haste, _
-;~ 		$Renewing_Memories, $Sight_Beyond_Sight, $Wielders_Remedy, $Armor_of_Unfeeling, _
-;~ 		$Armor_of_Unfeeling_PvP, $Explosive_Growth, $Boon_of_Creation, $Spirits_Gift, _
-;~ 		$Spiritleech_Aura, $Spirit_Siphon, $Foxs_Promise, $Dark_Apostasy, $Shadow_Form, _
-;~ 		$Shadow_Form_PvP, $Way_of_the_Empty_Palm, $Locusts_Fury, $Critical_Agility, _
-;~ 		$Feigned_Neutrality, $Critical_Defenses, $Sharpen_Daggers, $Shadow_Refuge, _
-;~ 		$Shadow_Sanctuary_Luxons, $Shadow_Sanctuary_Kurzicks, $Way_of_the_Fox, _
-;~ 		$Deadly_Haste, $Way_of_the_Lotus, $Assassins_Remedy, $Assassins_Remedy_PvP, _
-;~ 		$Shroud_of_Distress, $Shroud_of_Distress_PvP, $Way_of_the_Master, $Way_of_Perfection, _
-;~ 		$Critical_Eye, $Dash, $Dark_Escape, $Vow_of_Revolution, $Vow_of_Silence, _
-;~ 		$Arcane_Zeal, $Vow_of_Strength, $Zealous_Vow, $Featherfoot_Grace, _
-;~ 		$Intimidating_Aura, $Mystic_Regeneration, $Mystic_Regeneration_PvP, $Meditation, _
-;~ 		$Mystic_Vigor, $Vital_Boon, $Guiding_Hands, $Guiding_Hands_PvP, $Vow_of_Piety, _
-;~ 		$Aura_of_Holy_Might_Luxons, $Aura_of_Holy_Might_Kurzicks, $Armor_of_Sanctity, _
-;~ 		$Faithful_Intervention, $Eternal_Aura, $Winds_of_Disenchantment
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;On_any_enemy
-;~ Func SpellEnemy($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Word_of_Censure, $Scourge_Healing, $Scourge_Sacrifice, $Smite, _
-;~ 		$Banish, $Spear_of_Light, $Vampiric_Spirit, $Wail_of_Doom, _
-;~ 		$Spoil_Victor, $Spoil_Victor_PvP, $Reapers_Mark, $Soul_Bind, _
-;~ 		$Grenths_Balance, $Atrophy, $Mark_of_Fury, $Malign_Intervention, _
-;~ 		$Defile_Flesh, $Spinal_Shivers, $Shivers_of_Dread, $Life_Siphon, _
-;~ 		$Parasitic_Bond, $Soul_Barbs, $Barbs, $Dark_Pact, $Bitter_Chill, _
-;~ 		$Enfeeble, $Enfeeble_PvP, $Vampiric_Gaze, $Blood_Drinker, $Recurring_Insecurity, _
-;~ 		$Conjure_Phantasm, $Conjure_Nightmare, $Illusion_of_Pain, $Illusion_of_Pain_PvP, _
-;~ 		$Ignorance, $Shrinking_Armor, $Phantom_Pain, $Arcane_Larceny, $Arcane_Thievery, _
-;~ 		$Ether_Feast, $Spiritual_Pain, $Spiritual_Pain_PvP, $Aneurysm, $Mind_Shock, _
-;~ 		$Mind_Shock_PvP, $Mind_Blast, $Second_Wind, $Winters_Embrace, $Lightning_Strike, _
-;~ 		$Smoldering_Embers, $Energy_Blast, $Lightning_Hammer, $Lightning_Hammer_PvP, _
-;~ 		$Immolate, $Obsidian_Flame, $Obsidian_Flame_PvP, $Enervating_Charge, $Ebon_Hawk, _
-;~ 		$Lightning_Orb, $Flare, $Stone_Daggers, $Caretakers_Charge, $Renewing_Surge, _
-;~ 		$Wielders_Strike, $Channeled_Strike, $Doom, $Seeping_Wound, $Hidden_Caltrops, _
-;~ 		$Shadow_Prison, $Shadow_Shroud, $Assassins_Promise, $Siphon_Strength, _
-;~ 		$Mark_of_Insecurity, $Wastrels_Collapse, $Shadow_Theft, $Beguiling_Haze, _
-;~ 		$Augury_of_Death, $Scorpion_Wire, $Dancing_Daggers, $Shadow_Fang, _
-;~ 		$Expose_Defenses, $Shadowy_Burden, $Mark_of_Death, $Enduring_Toxin, _
-;~ 		$Shameful_Fear, $Mirrored_Stance, $Mark_of_Instability, $Dark_Prison
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;On_Best_Target
-;~ Func SpellBT($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Ray_of_Judgment, $Lingering_Curse, $Spiteful_Spirit, $Icy_Veins, _
-;~ 		$Life_Transfer, $Ravenous_Gaze, $Feast_of_Corruption, $Putrid_Bile, _
-;~ 		$Rising_Bile, $Mark_of_Pain, $Shadow_of_Fear, $Blood_Bond, _
-;~ 		$Reckless_Haste, $Meekness, $Suffering, $Weaken_Armor, $Deathly_Swarm, _
-;~ 		$Rotting_Flesh, $Poisoned_Heart, $Enfeebling_Blood, $Enfeebling_Blood_PvP, _
-;~ 		$Vampiric_Swarm, $Migraine, $Migraine__PvP, $Ineptitude, $Fevered_Dreams, _
-;~ 		$Fevered_Dreams_PvP, $Stolen_Speed, $Stolen_Speed_PvP, $Visions_of_Regret, _
-;~ 		$Visions_of_Regret_PvP, $Panic, $Shared_Burden, $Shared_Burden_PvP, $Energy_Surge, _
-;~ 		$Wastrels_Worry, $Wastrels_Demise, $Ether_Nightmare_Luxons, $Ether_Nightmare_Kurzicks, _
-;~ 		$Chaos_Storm, $Lightning_Surge, $Shatterstone, $Savannah_Heat, $Savannah_Heat_PvP, _
-;~ 		$Sandstorm, $Unsteady_Ground, $Thunderclap, $Ride_the_Lightning, $Ride_the_Lightning_PvP, _
-;~ 		$Invoke_Lightning, $Mind_Burn, $Water_Trident, $Searing_Flames, $Star_Burst, _
-;~ 		$Incendiary_Bonds, $Earthen_Shackles, $Chilling_Winds, $Ice_Spikes, $Mark_of_Rodgort, _
-;~ 		$Rust, $Freezing_Gust, $Ash_Blast, $Bed_of_Coals, $Fire_Storm, $Arc_Lightning, _
-;~ 		$Meteor_Shower, $Meteor, $Liquid_Flame, $Maelstrom, $Shell_Shock, _
-;~ 		$Teinais_Wind, $Churning_Earth, $Eruption, $Breath_of_Fire, _
-;~ 		$Searing_Heat, $Chain_Lightning, $Icy_Prism, $Rodgorts_Invocation, _
-;~ 		$Teinais_Crystals, $Earthquake, $Dragons_Stomp, $Fireball, $Phoenix, _
-;~ 		$Lightning_Javelin, $Lava_Arrows, $Clamor_of_Souls, $Dulled_Weapon, _
-;~ 		$Lamentation, $Painful_Bond, $Binding_Chains, $Spirit_Rift, $Caltrops
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;On_me_or_ally_near_enemy
-;~ Func SpellMeOrAlly($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Gust, $Stone_Sheath, $Double_Dragon, $Energy_Boon, _
-;~ 		$Mirror_of_Ice
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;If_I'm_near_to_Enemy
-;~ Func SpellNear($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Balthazars_Aura, $Zealots_Fire, $Kirins_Wrath, $Symbol_of_Wrath, _
-;~ 		$Unholy_Feast, $Unholy_Feast_PvP, $Shockwave, $Grasping_Earth, _
-;~ 		$Frozen_Burst, $Lava_Font, $Crystal_Wave, $Flame_Burst, _
-;~ 		$Aftershock, $Inferno, $Whirlwind, $Eremites_Zeal
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;On_ally_Caster
-;~ Func SpellAllyCaster($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Blood_is_Power, $Blood_Ritual
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;On_Physical_Enemy,_derv,_war,_sin,_ranger,_para
-;~ Func SpellPhysic($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Defenders_Zeal, $Pacifism, $Scourge_Enchantment, $Blood_of_the_Aggressor, _
-;~ 		$Faintheartedness, $Insidious_Parasite, $Cacophony, $Price_of_Failure, _
-;~ 		$Vocal_Minority, $Ulcerous_Lungs, $Sum_of_All_Fears, $Clumsiness, _
-;~ 		$Wandering_Eye, $Wandering_Eye_PvP, $Images_of_Remorse, $Empathy, _
-;~ 		$Empathy_PvP, $Spirit_Shackles, $Imagined_Burden, $Ethereal_Burden, _
-;~ 		$Kitahs_Burden, $Spirit_of_Failure, $Soothing_Images, $Calculated_Risk, _
-;~ 		$Calculated_Risk_PvP,  $Icy_Shackles, $Glimmering_Mark, $Mind_Freeze, _
-;~ 		$Mind_Freeze_PvP, $Blinding_Surge, $Ice_Prison, $Blurred_Vision, _
-;~ 		$Deep_Freeze, $Shard_Storm, $Blinding_Flash, $Siphon_Speed
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;On_Enemy_Caster
-;~ Func SpellCaster($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Depravity, $Wither, $Soul_Leech, $Defile_Defenses, _
-;~ 		$Malaise, $Mark_of_Subversion, $Rigor_Mortis, $Arcane_Languor, _
-;~ 		$Confusing_Images, $Overload, $Price_of_Pride, $Frustration, _
-;~ 		$Frustration_PvP, $Mind_Wrack, $Mind_Wrack_PvP, $Diversion, _
-;~ 		$Ether_Phantom, $Backfire, $Arcane_Conundrum, $Ether_Lord, _
-;~ 		$Energy_Burn, $Energy_Tap, $Gale
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;If_target_is_monk_or_rit
-;~ Func SpellHealer($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Shame
-;~ 	Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;If_target_is_elem,_mes,_nec
-;~ Func SpellEleMesNec($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Guilt, $Mistrust, $Mistrust_PvP
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;On_undead_servant
-;~ Func SpellUndeadServant($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Jagged_Bones, $Death_Nova
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;If_target_Moving
-;~ Func SpellMoving($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Crippling_Anguish, $Crippling_Anguish_PvP, $Waste_Not_Want_Not, $Lightning_Bolt, _
-;~ 		$Weaken_Knees, $Slippery_Ground, $Crippling_Dagger
-;~ 			Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;If_Dead_body
-;~ Func SpellDeadBody($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Animate_Flesh_Golem, $Animate_Bone_Fiend, $Animate_Bone_Horror, $Animate_Shambling_Horror, _
-;~ 		$Animate_Vampiric_Horror, $Animate_Bone_Minions, $Putrid_Explosion, $Necrotic_Traversal, _
-;~ 		$Consume_Corpse, $Soul_Feast
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;If_target_enchanted
-;~ Func SpellEnch($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Corrupt_Enchantment, $Pain_of_Disenchantment, $Jaundiced_Gaze, $Defile_Enchantments, _
-;~ 		$Desecrate_Enchantments, $Chilblains, $Strip_Enchantment, $Rip_Enchantment, _
-;~ 		$Rend_Enchantments, $Envenom_Enchantments, $Gaze_of_Contempt, $Air_of_Disenchantment, _
-;~ 		$Shatter_Storm, $Shatter_Enchantment, $Drain_Enchantment, $Inspired_Enchantment, _
-;~ 		$Revealed_Enchantment, $Discharge_Enchantment, $Lyssas_Balance, $Mirror_of_Disenchantment, _
-;~ 		$Mirror_of_Disenchantment_PvP, $Feedback, $Drain_Delusions, $Assault_Enchantments
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;If_target_not_enchanted
-;~ Func SpellNotEnch($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Enchanters_Conundrum, $Vapor_Blade
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;If_target_has_condition
-;~ Func SpellCondi($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Oppressive_Gaze, $Fragility, $Fragility_PvP, $Epidemic, _
-;~ 		$Hypochondria
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;If_target_has_cracked_armor
-;~ Func SpellCrack($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Teinais_Prison, $Shock_Arrow
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;If_target_weakned
-;~ Func SpellWeak($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Glowstone, $Stoning
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;If_target_burning
-;~ Func SpellBurn($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Glowing_Gaze, $Steam
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;If_target_has_Hex
-;~ Func SpellHex($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Vile_Miasma, $Accumulated_Pain, $Accumulated_Pain_PvP, $Shatter_Delusions, _
-;~ 		$Shatter_Delusions_PvP, $Glowing_Ice
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;If_target_has_hex_AND_enchant
-;~ Func SpellHexAndEnch($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Discord
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;If_target_has_hex_OR_enchant
-;~ Func SpellHexOrEnch($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Toxic_Chill, $Necrosis
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;If_target_dont_have_condition
-;~ Func SpellNoCondi($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Virulence
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;if_target_have_more_50%_hp
-;~ Func SpellMore50HP($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Deathly_Chill, $Lifebane_Strike, $Shadow_Strike
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;if_target_have_less_50%_hp
-;~ Func SpellLess50HP($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Taste_of_Pain
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;If_target_is_knock_down
-;~ Func SpellKnock($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Fetid_Ground
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;On_target_if_i_have_condition
-;~ Func SpellMeCondi($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Plague_Sending
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;On_me_if_if_I_have_spirit_in_earshot
-;~ Func SpellMeSpirit($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Spirit_Channeling, $Offering_of_Spirit
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;on_target_if_i_hace_spirit_in_earshot
-;~ Func SpellSpirit($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Essence_Strike, $Gaze_from_Beyond, $Spirit_Burn, $Spirit_Boon_Strike
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-
-;~ ;Rupt
-;~ Func SpellRupt($aSkill)
-;~ 	Switch DllStructGetData($Skill, 'ID')
-;~ 	Case $Power_Leech, $Power_Flux, $Power_Block, $Tease, $Psychic_Distraction, _
-;~ 		$Simple_Thievery, $Psychic_Instability, $Psychic_Instability_PvP, $Persistence_of_Memory, _
-;~ 		$Web_of_Disruption, $Web_of_Disruption_PvP, $Leech_Signet, $Cry_of_Pain, _
-;~ 		$Cry_of_Frustration, $Complicate, $Power_Leak, $Power_Spike, $Power_Lock, _
-;~ 		$Power_Return, $Power_Drain, $Disrupting_Dagger
-;~ 		Return True
-;~ 	Case Else
-;~ 		Return False
-;~ 	EndSwitch
-;~ EndFunc
-;~ #EndRegion Spell
-;~ #Endregion Add by Alusion
-
-; Thin Module leverage (GetSkillPtr, IsRecharged, GetHP, Skill_HasEffect, …)
-; → Wrappers\GwAu3_Data_Wrappers.au3
-
-
 

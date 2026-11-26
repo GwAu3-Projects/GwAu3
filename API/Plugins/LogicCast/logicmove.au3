@@ -25,6 +25,8 @@ Global $questNPC = 0
 Global $dialog = 0
 Global $dialog2 = 0
 Global $dialog3 = 0x84
+; Brazier phase / Fight with Torch: when True, AggroMoveToEX may loot the torch (CanPickUpEx).
+; Fight with Torch also uses it to drop on martial engage and pick up after; Light Brazier and Drop Torch sets False so we leave it.
 Global $PickupTorch = False
 Global $droptorch = False
 ; Throttle timer for AggroMoveToEX "slow progress" Out() spam
@@ -45,6 +47,7 @@ Global $aPlayerAgent = Agent_GetAgentInfo(-2, "ID")
 Global $nBestRunTime = 5000000
 Global $nCurrentRunTime = 0
 Global $OpenedChestAgentIDs[1]    ;dirty fix for not using TargetNearestItem() (black list variable as previously opened chests were not targeted using TargetNearestItem(), now they are)
+; True when Lit_Torch failed / went out — MoveAndAggro backtracks via RekindleTorch (not "first grab").
 Global $unlit = False
 Global $lCantMoveCounter = 0
 Global $LastWaypoint = 0
@@ -82,15 +85,22 @@ Func EnterPortalWaypoint($aX, $aY, $aTargetMap, $aTimeout = 180000)
 		If Bot_HaltIfStopped() Then Return False
 		If Wipe() Then Return False
 
-		; Loading screen started — finish the wait properly once.
+		; Loading screen — WaitMapLoading gates skillbar/agents (not just MapID).
 		If Map_GetInstanceInfo("Type") = 2 Then
 			Out("Portal loading…")
-			Return WaitMapLoading($aTargetMap, 60000)
-		EndIf
-
-		If Map_GetMapID() = $aTargetMap Then
+			If Not WaitMapLoading($aTargetMap, 60000) Then Return False
 			Out("Portal OK — now on map " & $aTargetMap)
 			Return True
+		EndIf
+
+		; MapID can flip before skillbar is live — never return on MapID alone (L2 empty-bar race).
+		If Map_GetMapID() = $aTargetMap Then
+			Out("Portal map ID matched — waiting for skillbar/agents…")
+			If WaitMapLoading($aTargetMap, 60000) Then
+				Out("Portal OK — now on map " & $aTargetMap)
+				Return True
+			EndIf
+			Return False
 		EndIf
 
 		; Keep issuing moves with light jitter so we actually cross the portal volume.
@@ -110,8 +120,43 @@ Func EnterPortalWaypoint($aX, $aY, $aTargetMap, $aTimeout = 180000)
 	Return False
 EndFunc   ;==>EnterPortalWaypoint
 
+; Logic ChangeWeaponSet: wait out knockdown, then F-key set 1–4 (0x81–0x84).
+Func ChangeWeaponSet($aSet)
+	If $aSet < 1 Or $aSet > 4 Then Return False
+	Local $lWait = TimerInit()
+	While Agent_GetAgentInfo(-2, "IsKnocked") And TimerDiff($lWait) < 5000
+		Sleep(100)
+	WEnd
+	If Agent_GetAgentInfo(-2, "IsDead") Then Return False
+	Local $lAction
+	Switch $aSet
+		Case 1
+			$lAction = $GC_I_CONTROL_INVENTORY_ACTIVATE_WEAPON_SET_1
+		Case 2
+			$lAction = $GC_I_CONTROL_INVENTORY_ACTIVATE_WEAPON_SET_2
+		Case 3
+			$lAction = $GC_I_CONTROL_INVENTORY_ACTIVATE_WEAPON_SET_3
+		Case 4
+			$lAction = $GC_I_CONTROL_INVENTORY_ACTIVATE_WEAPON_SET_4
+	EndSwitch
+	Core_PerformAction($lAction, $GC_I_CONTROL_TYPE_ACTIVATE)
+	Return True
+EndFunc   ;==>ChangeWeaponSet
+
+; Inventory weapon sets are 0–3 (F1–F4). Returns 1–4 for ChangeWeaponSet, or 0 if none.
+Func FindWeaponSetByItemType($aItemType)
+	For $s = 0 To 3
+		Local $lPtr = Item_GetInventoryInfo("WeaponSet" & $s & "WeaponPtr")
+		If $lPtr = 0 Then ContinueLoop
+		If Number(Item_GetItemInfoByPtr($lPtr, "ItemType")) = Number($aItemType) Then Return $s + 1
+	Next
+	Return 0
+EndFunc   ;==>FindWeaponSetByItemType
+
 Func MoveAndAggro($aWaypoints, $WipeManagment = True)
 	Local $MyOldMap = Map_GetMapID(), $lMapLoadingOld = Map_GetInstanceInfo("Type")
+	; Do not clear $PickupTorch / $unlit from nearest-WP name — that desyncs mid-torch / RekindleTorch
+	; (standing near Group/Room clears flags → never loot torch → circle). Explicit WP cases + WM set them.
 
 	For $i = GetNearestWaypointIndex($aWaypoints) To UBound($aWaypoints) - 1 Step 1
 		If Bot_HaltIfStopped() Then Return
@@ -125,8 +170,16 @@ Func MoveAndAggro($aWaypoints, $WipeManagment = True)
 		; (SoO, Bogroot, Melandru, …). Do not clamp $i after WipeManagement — that undoes those redirects.
 		; Dead with wipe=False still needs this path (Fight used to hold the thread so $i stayed on Thorn/Gokir).
 		If $g_b_DiedOnWaypoint Or Agent_GetAgentInfo(-2, "IsDead") Then
-			$LastWaypoint = $i
-			CancelAll()
+			; For...Next / ContinueLoop already stepped past the pad where AggroMoveToEX set DiedOnWaypoint
+			; (e.g. died on Boss / Dungeon Key → $i is Exit → WipeManagement wrongly sent Boss lock).
+			If $g_b_DiedOnWaypoint And $i > 0 Then
+				$LastWaypoint = $i - 1
+			Else
+				$LastWaypoint = $i
+			EndIf
+			CancelAll()    ; Logic: clear pull flags when we die (in case we were pulling)
+			; Wipe → WipeManagement. Soft death in place → stay on pad. Soft death + shrine dump (nearest << last) → WipeManagement
+			; (Room 2 death rez'd at start was "Recovered at Dwarven Blessing" and replayed Chest/Grab Torch).
 			If $WipeManagment And Wipe() Then
 				GUI_SetWipes(GUI_GetWipes() + 1)
 				Out("We wiped at " & $aWaypoints[$LastWaypoint][3] & ", waiting for rezz")
@@ -134,18 +187,18 @@ Func MoveAndAggro($aWaypoints, $WipeManagment = True)
 				Do
 					Sleep(500)
 					If Bot_HaltIfStopped() Then Return
-					If Party_IsDefeated() Then Return ResignAndReturn()
 					If TimerDiff($lDeadlock) > 120000 Then Out("Party health "& Party_GetPartyHealth() & "%!")
 					; Ally rez makes you alive early — still wait for party HP like Logic (don't Or Not IsDead).
+					; Party health 0 is the full wipe; the dungeon shrine-rezzes in place. Do not resign.
 				Until Party_GetPartyHealth() > 0.5
+				CancelAll()    ; again after shrine rez — flags can stick through death
 				$i = WipeManagement($aWaypoints, GetNearestWaypointIndex($aWaypoints), $LastWaypoint)
 				Out("Restarting at : " & $aWaypoints[$i][3])
 				Sleep(2000)
 				ChangeWeaponSet(2)
 				Sleep(2000)
 			ElseIf Agent_GetAgentInfo(-2, "IsDead") Then
-				; Soft death (wipe=False): wait for ally/shrine rez only, then snap via WipeManagement.
-				Out("Dead at " & $aWaypoints[$LastWaypoint][3] & " — waiting for rez")
+				Out("Soft death at " & $aWaypoints[$LastWaypoint][3] & " — waiting for rez")
 				Local $lDeadlock = TimerInit()
 				Do
 					Sleep(500)
@@ -153,12 +206,16 @@ Func MoveAndAggro($aWaypoints, $WipeManagment = True)
 					If Party_IsDefeated() Then Return ResignAndReturn()
 					If TimerDiff($lDeadlock) > 180000 Then ExitLoop
 				Until Not Agent_GetAgentInfo(-2, "IsDead")
-				If $WipeManagment Then
-					$i = WipeManagement($aWaypoints, GetNearestWaypointIndex($aWaypoints), $LastWaypoint)
+				Sleep(500)
+				CancelAll()
+				Local $lNear = GetNearestWaypointIndex($aWaypoints)
+				If $WipeManagment And $lNear + 2 < $LastWaypoint Then
+					$i = WipeManagement($aWaypoints, $lNear, $LastWaypoint)
+					Out("Shrine dump after soft death — WipeManagement to " & $aWaypoints[$i][3])
 				Else
-					$i = GetNearestWaypointIndex($aWaypoints)
+					$i = $LastWaypoint
+					Out("Resume fighting at : " & $aWaypoints[$i][3])
 				EndIf
-				Out("Restarting at : " & $aWaypoints[$i][3])
 				If Agent_GetAgentInfo(-2, "IsDead") Then
 					Sleep(500)
 					$i -= 1
@@ -168,18 +225,21 @@ Func MoveAndAggro($aWaypoints, $WipeManagment = True)
 				ChangeWeaponSet(2)
 				Sleep(2000)
 			ElseIf $g_b_DiedOnWaypoint Then
-				; Already rezzed (e.g. shrine) while Fight/AggroMove exited — still redirect $i.
-				If $WipeManagment Then
-					$i = WipeManagement($aWaypoints, GetNearestWaypointIndex($aWaypoints), $LastWaypoint)
+				CancelAll()
+				Local $lNear = GetNearestWaypointIndex($aWaypoints)
+				If $WipeManagment And $lNear + 2 < $LastWaypoint Then
+					$i = WipeManagement($aWaypoints, $lNear, $LastWaypoint)
+					Out("Shrine dump on recover — WipeManagement to " & $aWaypoints[$i][3])
 				Else
-					$i = GetNearestWaypointIndex($aWaypoints)
+					$i = $LastWaypoint
+					Out("Recovered — resume fighting at : " & $aWaypoints[$i][3])
 				EndIf
-				Out("Restarting at : " & $aWaypoints[$i][3])
 				Sleep(2000)
 				ChangeWeaponSet(2)
 				Sleep(2000)
 			EndIf
 			$g_b_DiedOnWaypoint = False
+			; Keep $PickupTorch / $unlit across soft death — clearing by pad name broke rekindle after Group/Room deaths.
 		EndIf
 
 		; (SoO only) unlit effect intercept - backtracks until lit effect is reapplied and resumes at light torch waypoint
@@ -243,13 +303,22 @@ Func MoveAndAggro($aWaypoints, $WipeManagment = True)
 				If Agent_GetNumberOfEnemies(1250) = 0 And GetEndChest <> 0 And Wipe() = 0 Then Endchest($aWaypoints[$i][0], $aWaypoints[$i][1], $aWaypoints[$i][2])
 
 			Case "Chest and Reward"
-				If Agent_GetNumberOfEnemies(1250) = 0 And Not Agent_GetAgentInfo(-2, "IsDead") Then
-					If GetEndChest() = 0 Then
-						Out("Chest and Reward: end chest not found yet")
-					Else
-						Return ChestAndReward($aWaypoints, $aWaypoints[$i][0], $aWaypoints[$i][1], $aWaypoints[$i][2], $questNPC)
-					EndIf
+				If Agent_GetAgentInfo(-2, "IsDead") Or Wipe() Then ContinueLoop
+				; Clear leftovers (empty Case used to fall through → SoOLevel3 restart spam).
+				If Agent_GetNumberOfEnemies(1250) > 0 Then AggroMoveToEX($aWaypoints[$i][0], $aWaypoints[$i][1], 1250)
+				If GetEndChest() = 0 Then
+					; Locked Chest 8141 is ignored — wait for real dungeon ExtraType.
+					Out("Chest and Reward: waiting for dungeon chest spawn")
+					Local $lChestWait = TimerInit()
+					Do
+						If Bot_HaltIfStopped() Or Agent_GetAgentInfo(-2, "IsDead") Or Wipe() Then ExitLoop
+						Sleep(500)
+					Until GetEndChest() <> 0 Or TimerDiff($lChestWait) > 60000
 				EndIf
+				If GetEndChest() <> 0 Then
+					Return ChestAndReward($aWaypoints, $aWaypoints[$i][0], $aWaypoints[$i][1], $aWaypoints[$i][2], $questNPC)
+				EndIf
+				; No chest: fall through. Next MoveAndAggro starts at GetNearestWaypointIndex (KillFendi if still there).
 
 			Case "PrecastUpkeep"
 				PrecastUpkeep()
@@ -257,20 +326,27 @@ Func MoveAndAggro($aWaypoints, $WipeManagment = True)
 			Case "Precast"
 				Precast()
 
-			Case "Grab Torch and Light Next Brazier"    ; Grab torch before lithing the closest brazier to coords
-				LightBrazier($aWaypoints[$i][0], $aWaypoints[$i][1], $PickupTorch = True)
+			Case "Grab Torch and Light Next Brazier"    ; Grab torch before lighting; keeps $PickupTorch True for loot recovery
+				$PickupTorch = True
+				LightBrazier($aWaypoints[$i][0], $aWaypoints[$i][1], True)
 
-			Case "Light Brazier"                        ; Light brazier closest to coods
-				LightBrazier($aWaypoints[$i][0], $aWaypoints[$i][1], $PickupTorch = False)
+			Case "Light Brazier"                        ; Light brazier closest to coords
+				LightBrazier($aWaypoints[$i][0], $aWaypoints[$i][1], False)
 
-			Case "Light Brazier and Drop Torch"            ; light brazier closest and then drop torch
-				LightBrazier($aWaypoints[$i][0], $aWaypoints[$i][1], $PickupTorch = False, $droptorch = True)
+			Case "Light Brazier and Drop Torch"            ; light then leave torch (Logic: always DropBundle after the poke)
+				$PickupTorch = False
+				LightBrazier($aWaypoints[$i][0], $aWaypoints[$i][1], False, True)
 
-			Case "Fight and Grab Torch"    ; use this when you need to fight a group while carrying a torch
-				PickupTorch()
+			; Martial: drop on engage + pick up after (AggroMoveToEX). Casters keep torch. Same flag enables torch loot.
+			Case "Fight with Torch", "Fight and Grab Torch", "Drop Torch and Aggro"
+				$PickupTorch = True
+				; Ensure torch is in hand after Clear Spawn / loot — otherwise engage skips drop.
+				If Agent_IsMartialPrimary(-2) And Not HoldingBundle() Then PickupTorch()
 				AggroMoveToEX($aWaypoints[$i][0], $aWaypoints[$i][1], $aWaypoints[$i][2])
+				$PickupTorch = False
 
 			Case "Grab Torch"
+				$PickupTorch = True
 				PickupTorch()
 
 			Case "Drop Keg"
@@ -332,31 +408,35 @@ Func MoveAndAggro($aWaypoints, $WipeManagment = True)
 			Case "Asuran Blessing"
 				AggroMoveToEX($aWaypoints[$i][0], $aWaypoints[$i][1], $aWaypoints[$i][2])
 				If Wipe() = 0 Then Effect_GetAsuranBlessing($aWaypoints[$i][0], $aWaypoints[$i][1])
+				ApplyHR()
 
 			Case "Dwarven Blessing"
 				If Wipe() = 0 Then Effect_GetDwarvenBlessing($aWaypoints[$i][0], $aWaypoints[$i][1])
+				ApplyHR()
 
 			Case "Norn Blessing"
 				If Wipe() = 0 Then Effect_GetNornBlessing($aWaypoints[$i][0], $aWaypoints[$i][1])
+				ApplyHR()
 
 			Case "Vanguard Blessing"
 				If Wipe() = 0 Then Effect_GetVanguardBlessing($aWaypoints[$i][0], $aWaypoints[$i][1])
+				ApplyHR()
 
 			Case "Sunspears Blessing"
 				If Wipe() = 0 Then GEffect_etSunspearsBlessing($aWaypoints[$i][0], $aWaypoints[$i][1])
+				ApplyHR()
 
 			Case "LightBringer Blessing"
 				If Wipe() = 0 Then Effect_GetLightBringerBlessing($aWaypoints[$i][0], $aWaypoints[$i][1])
+				ApplyHR()
 
 			Case "Kurzicks Blessing"
 				If Wipe() = 0 Then Effect_GetKurzicksBlessing($aWaypoints[$i][0], $aWaypoints[$i][1])
+				ApplyHR()
 
 			Case "Luxon Blessing"
 				If Wipe() = 0 Then Effect_GetLuxonsBlessing($aWaypoints[$i][0], $aWaypoints[$i][1])
-
-			Case "Asuran Blessing"
-				AggroMoveToEX($aWaypoints[$i][0], $aWaypoints[$i][1], $aWaypoints[$i][2])
-				If Wipe() = 0 Then Effect_GetAsuranBlessing($aWaypoints[$i][0], $aWaypoints[$i][1])
+				ApplyHR()
 
 ;~ MISSION AND TRAVEL
 			Case "Setup"
@@ -405,6 +485,8 @@ Func MoveAndAggro($aWaypoints, $WipeManagment = True)
 				Sleep($aWaypoints[$i][2])
 
 			Case "Clear Spawn"    ; use to ensure enemies are being targeted within a wider radius
+				; Martial needs drop/pickup here too — do not rely on leftover $PickupTorch from braziers.
+				$PickupTorch = True
 				$nearestenemy = Agent_GetNearestAgent(-2, 0xDB, 3)
 				Out(Floor(Agent_GetDistance(-2)))
 				AggroMoveToEX($aWaypoints[$i][0], $aWaypoints[$i][1], $longbow_Range)
@@ -412,6 +494,7 @@ Func MoveAndAggro($aWaypoints, $WipeManagment = True)
 					Out(Agent_GetNumberOfEnemies($aWaypoints[$i][2]))
 					AggroMoveToEX(X(Agent_GetNearestAgent(-2, 0xDB, 3)), Y(Agent_GetNearestAgent(-2, 0xDB, 3)), $aWaypoints[$i][2])
 				WEnd
+				$PickupTorch = False
 
 			Case "Kite Enemies"
 				Move_ToCoord($aWaypoints[$i][0], $aWaypoints[$i][1])
@@ -431,15 +514,26 @@ Func MoveAndAggro($aWaypoints, $WipeManagment = True)
 				If Agent_GetNumberOfEnemies(5000) = 0 Then ContinueLoop        ; ensures we don't wait when we come back to the waypoint after a wipe
 				VigilantSleep($aWaypoints[$i][0], $aWaypoints[$i][1], $aWaypoints[$i][2])
 
-			Case "Pull Group"    ; passes the hero coordinates as an array in column three of the array
-				PullGroup($aWaypoints[$i][0], $aWaypoints[$i][1], $aWaypoints[$i][2])
+			Case "Pull Group"    ; pack sits at longbow of pad — spellcasting missed them; spirit_range (2500) covers pull without room_range next group.
+				If Agent_GetNumberOfEnemiesNearXY($aWaypoints[$i][0], $aWaypoints[$i][1], $spirit_range) = 0 Then
+					Out("Pull Group: no enemies within spirit range of pad — skip bow pull")
+					AggroMoveToEX($aWaypoints[$i][0], $aWaypoints[$i][1], $spellcasting_range)
+				Else
+					PullGroup($aWaypoints[$i][0], $aWaypoints[$i][1], $aWaypoints[$i][2])
+				EndIf
 
 			Case "Pull Enemies"    ; uses a more complex function that calculates hero coordinates automatically based on aggro range
 				Out(Agent_GetNumberOfEnemies(3000) & " enemies within " & $aWaypoints[$i][2] & " distance")
 				PullEnemies($aWaypoints[$i][0], $aWaypoints[$i][1], $aWaypoints[$i][2])
 
 			Case "Careful Aggro"
-				CarefulAggro($aWaypoints[$i][0], $aWaypoints[$i][1], $aWaypoints[$i][2])
+				; Wipe/rezz restart: skip flag/stand/precast when nothing is left at this pad.
+				If Agent_GetNumberOfEnemiesNearXY($aWaypoints[$i][0], $aWaypoints[$i][1], $spellcasting_range) = 0 Then
+					Out("Careful Aggro: no enemies near pad — skip careful")
+					AggroMoveToEX($aWaypoints[$i][0], $aWaypoints[$i][1], $aWaypoints[$i][2])
+				Else
+					CarefulAggro($aWaypoints[$i][0], $aWaypoints[$i][1], $aWaypoints[$i][2])
+				EndIf
 
 			Case "Follow"
 				FollowPartyLeader($aWaypoints[$i][2], $i)
@@ -448,7 +542,7 @@ Func MoveAndAggro($aWaypoints, $WipeManagment = True)
 				AggroMoveToEX($aWaypoints[$i][0], $aWaypoints[$i][1], $longbow_range)
 				While Agent_GetBoss() > 0
 					If Bot_HaltIfStopped() Then Return
-					Agent_MoveToDistanceAway($longbow_range, Agent_GetBoss($aWaypoints[$i][2]))
+					CarefulAggro($aWaypoints[$i][0], $aWaypoints[$i][1], $aWaypoints[$i][2])
 					AggroMoveToEX(X(Agent_GetBoss()), Y(Agent_GetBoss()), $longbow_range)
 				WEnd
 		;~ SKILLS
@@ -463,12 +557,18 @@ Func MoveAndAggro($aWaypoints, $WipeManagment = True)
 EndFunc   ;==>MoveandAggro
 
 Func MoveandAggro_Light($aWaypoints, $WipeManagment = True)
+	; Same as MoveAndAggro: never clear torch flags from nearest-WP name.
 	For $i = GetNearestWaypointIndex($aWaypoints) To UBound($aWaypoints) - 1 Step 1
 		If Bot_HaltIfStopped() Then Return
 		If Map_GetInstanceInfo("Type") == 2 Then Connection_CheckAndReconnect()
 		If $g_b_DiedOnWaypoint Or Agent_GetAgentInfo(-2, "IsDead") Then
-			$LastWaypoint = $i
-			CancelAll()
+			; For...Next already stepped past the pad where DiedOnWaypoint was set.
+			If $g_b_DiedOnWaypoint And $i > 0 Then
+				$LastWaypoint = $i - 1
+			Else
+				$LastWaypoint = $i
+			EndIf
+			CancelAll()    ; Logic: clear pull flags when we die
 			If $WipeManagment And Wipe() Then
 				GUI_SetWipes(GUI_GetWipes() + 1)
 				Out("We wiped at " & $aWaypoints[$LastWaypoint][3] & ", waiting for rezz")
@@ -476,16 +576,16 @@ Func MoveandAggro_Light($aWaypoints, $WipeManagment = True)
 				Do
 					Sleep(500)
 					If Bot_HaltIfStopped() Then Return
-					If Party_IsDefeated() Then Return ResignAndReturn($Outpost, $Language)
 					If TimerDiff($lDeadlock) > 120000 Then Out("Party heath "& Party_GetPartyHealth() & "%!")
 				Until Party_GetPartyHealth() > 0.5
+				CancelAll()    ; again after shrine rez
 				$i = WipeManagement($aWaypoints, GetNearestWaypointIndex($aWaypoints), $LastWaypoint)
 				Out("Restarting at : " & $aWaypoints[$i][3])
 				Sleep(2000)
 				ChangeWeaponSet(2)
 				Sleep(2000)
 			ElseIf Agent_GetAgentInfo(-2, "IsDead") Then
-				Out("Dead at " & $aWaypoints[$LastWaypoint][3] & " — waiting for rez")
+				Out("Soft death at " & $aWaypoints[$LastWaypoint][3] & " — waiting for rez")
 				Local $lDeadlock = TimerInit()
 				Do
 					Sleep(500)
@@ -493,12 +593,16 @@ Func MoveandAggro_Light($aWaypoints, $WipeManagment = True)
 					If Party_IsDefeated() Then Return ResignAndReturn($Outpost, $Language)
 					If TimerDiff($lDeadlock) > 180000 Then ExitLoop
 				Until Not Agent_GetAgentInfo(-2, "IsDead")
-				If $WipeManagment Then
-					$i = WipeManagement($aWaypoints, GetNearestWaypointIndex($aWaypoints), $LastWaypoint)
+				Sleep(500)
+				CancelAll()
+				Local $lNear = GetNearestWaypointIndex($aWaypoints)
+				If $WipeManagment And $lNear + 2 < $LastWaypoint Then
+					$i = WipeManagement($aWaypoints, $lNear, $LastWaypoint)
+					Out("Shrine dump after soft death — WipeManagement to " & $aWaypoints[$i][3])
 				Else
-					$i = GetNearestWaypointIndex($aWaypoints)
+					$i = $LastWaypoint
+					Out("Resume fighting at : " & $aWaypoints[$i][3])
 				EndIf
-				Out("Restarting at : " & $aWaypoints[$i][3])
 				If Agent_GetAgentInfo(-2, "IsDead") Then
 					Sleep(500)
 					$i -= 1
@@ -508,18 +612,23 @@ Func MoveandAggro_Light($aWaypoints, $WipeManagment = True)
 				ChangeWeaponSet(2)
 				Sleep(2000)
 			ElseIf $g_b_DiedOnWaypoint Then
-				If $WipeManagment Then
-					$i = WipeManagement($aWaypoints, GetNearestWaypointIndex($aWaypoints), $LastWaypoint)
+				CancelAll()
+				Local $lNear = GetNearestWaypointIndex($aWaypoints)
+				If $WipeManagment And $lNear + 2 < $LastWaypoint Then
+					$i = WipeManagement($aWaypoints, $lNear, $LastWaypoint)
+					Out("Shrine dump on recover — WipeManagement to " & $aWaypoints[$i][3])
 				Else
-					$i = GetNearestWaypointIndex($aWaypoints)
+					$i = $LastWaypoint
+					Out("Recovered — resume fighting at : " & $aWaypoints[$i][3])
 				EndIf
-				Out("Restarting at : " & $aWaypoints[$i][3])
 				Sleep(2000)
 				ChangeWeaponSet(2)
 				Sleep(2000)
 			EndIf
 			$g_b_DiedOnWaypoint = False
 		EndIf
+
+		If $unlit Then $i = RekindleTorch($aWaypoints, GetNearestWaypointIndex($aWaypoints))
 
 		Out("Nearest waypoint - " & $aWaypoints[GetNearestWaypointIndex($aWaypoints)][3])
 		Out("Moving to - " & $aWaypoints[$i][3])
@@ -550,12 +659,18 @@ Func MoveandAggro_Light($aWaypoints, $WipeManagment = True)
 			Case "Wait"
 				Sleep($aWaypoints[$i][2])
 			Case "Chest and Reward"
-				If Agent_GetNumberOfEnemies(3000) = 0 And Not Agent_GetAgentInfo(-2, "IsDead") Then
-					If GetEndChest() = 0 Then
-						Out("Chest and Reward: end chest not found yet")
-					Else
-						Return ChestAndReward($aWaypoints, $aWaypoints[$i][0], $aWaypoints[$i][1], $aWaypoints[$i][2], $questNPC)
-					EndIf
+				If Agent_GetAgentInfo(-2, "IsDead") Or Wipe() Then ContinueLoop
+				If Agent_GetNumberOfEnemies(3000) > 0 Then AggroMoveToEX($aWaypoints[$i][0], $aWaypoints[$i][1], 1250)
+				If GetEndChest() = 0 Then
+					Out("Chest and Reward: waiting for dungeon chest spawn")
+					Local $lChestWaitLite = TimerInit()
+					Do
+						If Bot_HaltIfStopped() Or Agent_GetAgentInfo(-2, "IsDead") Or Wipe() Then ExitLoop
+						Sleep(500)
+					Until GetEndChest() <> 0 Or TimerDiff($lChestWaitLite) > 60000
+				EndIf
+				If GetEndChest() <> 0 Then
+					Return ChestAndReward($aWaypoints, $aWaypoints[$i][0], $aWaypoints[$i][1], $aWaypoints[$i][2], $questNPC)
 				EndIf
 			Case "Take Quest"
 				CheckForQuest($aWaypoints[$i][2], True)
@@ -656,7 +771,7 @@ Func MoveChestrunning($aWaypoints, $UseHoS = False)
 
 			Case "Select quest"
 				If Agent_GetAgentInfo(-2, "Dead") Then Return
-				UI_Dialog($aWaypoints[$i][2])
+				Dialog($aWaypoints[$i][2])
 
 			Case "Skip Cinematic"
 				If Agent_GetAgentInfo(-2, "Dead") Then Return
@@ -679,7 +794,7 @@ Func MoveChestrunning($aWaypoints, $UseHoS = False)
 				AggroMoveToEX($aWaypoints[$i][0], $aWaypoints[$i][1], $aWaypoints[$i][2])
 
 			Case "Use Skill"
-				If CanUse($SkillbarSlot[$aWaypoints[$i][2]]) Then  UseSkills($SkillbarSlot[$aWaypoints[$i][2]])
+				If ShouldUse($SkillbarSlot[$aWaypoints[$i][2]]) Then  UseSkills($SkillbarSlot[$aWaypoints[$i][2]])
 
 			Case Else
 				If Agent_GetAgentInfo(-2, "Dead") Then Return
@@ -690,6 +805,10 @@ EndFunc   ;==>MoveChestrunning
 
 Func WipeManagement($aWaypoints, $NearestWaypoint, $LastWaypoint)                     ; after a wipe, converts nearest waypoint to the desired waypoint based on last waypoint
 	Out("Last waypoint - " & $aWaypoints[$LastWaypoint][3])
+	; Wipe rewrite walks AggroMoveToEX — do not loot torches mid-path. Switch re-sets $PickupTorch on Fight/Grab pads.
+	$PickupTorch = False
+	$droptorch = False
+	$unlit = False
 
 	Switch Map_GetMapID()
 		Case $Shards_of_Oor_Lvl1
@@ -701,48 +820,79 @@ Func WipeManagement($aWaypoints, $NearestWaypoint, $LastWaypoint)               
 			EndSwitch
 
 		Case $Shards_of_Oor_Lvl2
+			; Logic: AggroMoveToEX rewrite only — never Return into Light Brazier Switch without a torch
+			; (that sets $unlit → RekindleTorch → Grab Torch and Light → fail → loop).
 			Switch $aWaypoints[$LastWaypoint][3]
 				Case "Clear Spawn"
 					Out("Died at cemetery")
-					For $j = 4 To 12                                                                    ; go from chest to clearning spawn again
+					For $j = 4 To 12                                                                    ; go from chest to clearing spawn again
 						Out("Going back to last waypoint. Moving to " & $aWaypoints[$j][3])
 						AggroMoveToEX($aWaypoints[$j][0], $aWaypoints[$j][1], $aWaypoints[$j][2])
 					Next
-					Return $j                                                                           ; resume regular loop
-				Case "Fight and Grab Torch", "Braziers", "Boss / Dungeon Key"                            ; on level 2, if we die before getting the key, return for the key
+					Return $j                                                                           ; resume regular loop at Fight with Torch
+				Case "Fight with Torch", "Fight and Grab Torch", "Drop Torch and Aggro", "Braziers", "Light Brazier", "Light Brazier and Drop Torch", "Boss / Dungeon Key"
+					; Before key: walk path, skip first Light Brazier pads (8..12), land on Fight with Torch so Switch PickupTorch runs before Braziers.
 					Out("Died at before dungeon key")
 					For $j = 4 To 13
-						If $j = 8 Then $j = 13                                                           ; skip all the brazier lighting and go straight to next group of braziers
+						If $j = 8 Then $j = 13                                                           ; skip first brazier lighting + Clear Spawn
 						Out("Going back to last waypoint. Moving to " & $aWaypoints[$j][3])
 						AggroMoveToEX($aWaypoints[$j][0], $aWaypoints[$j][1], $aWaypoints[$j][2])
 					Next
-					Return $j + 1                                                                       ; resume regular loop
-				Case "Exit", "Last group", "Boss Lock", "Portal"                                        ; on level 2 if we die after collecting the key, go to boss lock
+					Return $j + 1                                                                       ; resume at next Fight with Torch
+				Case "Exit", "Last Group", "Last group", "Careful Aggro", "Boss lock", "Boss Lock", "Portal"
+					; Mislabel / shrine mid-map: treat as before-key (do not walk to portal without key path).
+					Switch $aWaypoints[$NearestWaypoint][3]
+						Case "Braziers", "Light Brazier", "Light Brazier and Drop Torch", "Boss / Dungeon Key", "Fight with Torch", "Fight and Grab Torch", "Clear Spawn", "Grab Torch", "Brigand", "Dwarven Blessing"
+							Out("Died labeled post-key but nearest is mid-level (" & $aWaypoints[$NearestWaypoint][3] & ") — before-key rewrite")
+							For $j = 4 To 13
+								If $j = 8 Then $j = 13
+								Out("Going back to last waypoint. Moving to " & $aWaypoints[$j][3])
+								AggroMoveToEX($aWaypoints[$j][0], $aWaypoints[$j][1], $aWaypoints[$j][2])
+							Next
+							Return $j + 1
+					EndSwitch
+					; After key: skip all brazier lighting, walk to boss lock approach
 					Out("Died at last group before portal")
 					For $j = 4 To UBound($aWaypoints) - 6
-						If $j = 8 Then $j = UBound($aWaypoints) - 7                                      ; skip all the brazier lighting and go straight to boss lock
+						If $j = 8 Then $j = UBound($aWaypoints) - 7                                      ; skip braziers → boss lock
 						Out("Going back to last waypoint. Moving to " & $aWaypoints[$j][3])
 						AggroMoveToEX($aWaypoints[$j][0], $aWaypoints[$j][1], $aWaypoints[$j][2])
 					Next
-					Return $j + 1                                                                        ; resume regular loop
+					Return $j + 1
 			EndSwitch
 
 		Case $Shards_of_Oor_Lvl3
+			; Careful Aggro inserted after Group 1 (+1 vs Logic). Pull Group = index 6.
 			Switch $LastWaypoint
 				Case 1 To 5
 					Out("Died before rezz shrine")
-					Return 1
-				Case 6 To 25
-					Out("Died before running the torch")	; return to group 2 and resume regular loop
-					Return 5
-				Case 40 To 44
-					Out("Died before getting the key")		; return to Brigand for key and resume regular loop
+					Return 1							; Group 1 — re-stage then Careful Aggro
+				Case 6 To 26
+					; Pull Group → Room 2 / second torch — skip Chest + Grab Torch + Light (Logic Return Pull Group).
+					Out("Died before running the torch — resume at Pull Group")
+					For $j = 0 To UBound($aWaypoints) - 1
+						If $aWaypoints[$j][3] = "Pull Group" Then Return $j
+					Next
+					Return 6
+				Case 41 To 45
+					Out("Died before getting the key")		; return to Last Group / key area
 					Return UBound($aWaypoints) - 8
-				Case 45 To 48
-					Out("Died at Bone Dragons / Fendi")		; return to Boss Lock and resume regular loop; changed from -7 22nd Apr
-					Return UBound($aWaypoints) - 6
+				Case 46 To 49
+					; Mid-map Rezz Shrine is before Boss lock — never resume there (torch run). Logic: UBound-6.
+					Local $lFendiRestart = UBound($aWaypoints) - 6
+					If $NearestWaypoint >= $lFendiRestart Then
+						Out("Died at Bone Dragons / Fendi — already near approach (" & $aWaypoints[$NearestWaypoint][3] & ")")
+						Return $NearestWaypoint
+					EndIf
+					Out("Died at Bone Dragons / Fendi — resume at " & $aWaypoints[$lFendiRestart][3])
+					Return $lFendiRestart
 				Case Else
-					Return UBound($aWaypoints) - 23			; return to killing ennemies in last room
+					; Room 3 / Second / Third / mid-shrine / final Light Brazier — Logic UBound-23; name-stable Room 3.
+					Out("Died in Room 3 / mid-shrine — resume at Room 3")
+					For $j = 0 To UBound($aWaypoints) - 1
+						If $aWaypoints[$j][3] = "Room 3" Then Return $j
+					Next
+					Return UBound($aWaypoints) - 23
 			EndSwitch
 
 		Case $Bogroot_Growths_Lvl1
@@ -766,6 +916,33 @@ Func WipeManagement($aWaypoints, $NearestWaypoint, $LastWaypoint)               
 	EndSwitch
 	Return $NearestWaypoint
 EndFunc   ;==>WipeManagement
+
+;~ Resign via chat, then travel back to outpost (farm scripts set Global $Outpost).
+Func Resign()
+	Chat_SendChat('resign', '/')
+EndFunc   ;==>Resign
+
+Func ResignAndReturn($aMapID = 0, $aLanguage = -1, $aRegion = -1)
+	Out("Resigning")
+	Resign()
+	If $GUI_RunCounter > 0 Then GUI_SetFailCounter()
+	Other_PingSleep(5000)
+	Out("Returning To Outpost")
+	If $aLanguage = -1 Then $aLanguage = Map_GetCharacterInfo("Language")
+	If $aRegion = -1 Then $aRegion = Map_GetCharacterInfo("Region")
+	If $aMapID = 0 And IsDeclared("Outpost") Then $aMapID = Eval("Outpost")
+	If $aMapID = 0 Then
+		Map_ReturnToOutpost()
+		Sleep(1000)
+		WaitMapLoading(-1, 10000)
+	Else
+		Map_TravelTo($aMapID, $aLanguage, $aRegion)
+	EndIf
+	If $GUI_RunCounter > 0 Then
+		GUI_SetAvgRunTime(AvgRunTime())
+		AdlibUnRegister("CurrentRunTime")
+	EndIf
+EndFunc   ;==>ResignAndReturn
 
 ;~O ptionally loads best skill template using the hero build declared under $herobuild global variable
 ;~ 1= $PISurge, 2= $PISurgeRezz, 3= $PanicSurge, 4= $ROJ, 5= $DualRoJ, 6= $Signets, 7= $HeroicRefrain, 8= $DOASoloSupport
@@ -826,22 +1003,14 @@ Func ChestAndReward($aWaypoints, $x, $y, $reloadmap = 0, $aPlayerID = 0)
 	GetReward($x, $y, $quest, $aPlayerID)               ;~Accept reward
 
 	If $GUI_GroupSettings_CheckSell = True And Item_CountEmptySlots(InventoryBagList()) < 8 Then Return Trade_ClearInventory()
-	; Dungeon eject → Sparkfly (Froggy). Wait until MapID matches AND we are not mid-load; then settle so Tekk/agents exist.
+	; Dungeon eject → outpost/explorable (Logic WaitMapLoading).
 	If $reloadmap <> 0 Then
 		Out("ChestAndReward: waiting for map " & $reloadmap & " (now " & Map_GetMapID() & ")")
-		Local $lZoneOk = False
 		Do
 			If Bot_HaltIfStopped() Then Return
 			Sleep(100)
-			$lZoneOk = WaitMapLoading($reloadmap, 180000)
-		Until $lZoneOk Or Map_GetMapID() = $reloadmap
-		; Extra settle: MapID can match before NPCs (Tekk) are spawned — TakeQuest would hit a random nearby agent.
-		Local $lSettle = TimerInit()
-		Do
-			If Bot_HaltIfStopped() Then Return
-			Sleep(250)
-		Until (Map_GetMapID() = $reloadmap And Map_GetInstanceInfo("Type") = 1 And Agent_GetAgentPtr(-2) <> 0) Or TimerDiff($lSettle) > 15000
-		Out("ChestAndReward: zoned — MapID=" & Map_GetMapID() & " Type=" & Map_GetInstanceInfo("Type"))
+		Until WaitMapLoading($reloadmap, 180000) Or Map_GetMapID() = $reloadmap
+		Out("ChestAndReward: zoned — MapID=" & Map_GetMapID())
 	EndIf
 
 EndFunc   ;==>ChestAndReward
@@ -873,7 +1042,11 @@ Func GetEndChest()
 	Local $lFallback = 0, $lFallbackDist = 999999999.0
 	Local $lExtraType, $lName, $lDist, $i
 	If Not IsArray($lAgentPtrArray) Or $lAgentPtrArray[0] < 1 Then
-		Out("GetEndChest: no gadgets (Type 0x200)")
+		Local Static $iLastEmpty = 0
+		If TimerDiff($iLastEmpty) > 15000 Or $iLastEmpty = 0 Then
+			$iLastEmpty = TimerInit()
+			Out("GetEndChest: no gadgets (Type 0x200)")
+		EndIf
 		Return 0
 	EndIf
 	For $i = 1 To $lAgentPtrArray[0]
@@ -897,53 +1070,80 @@ Func GetEndChest()
 		Out("End chest found: " & $aChestID[$lExtraType] & " (ExtraType " & $lExtraType & ")")
 		Return $lBest
 	EndIf
+	; A Locked Chest (8141) is not the boss chest. Returning it made Chest and Reward run while Fendi was still up.
 	If $lFallback <> 0 Then
 		$lExtraType = Agent_GetAgentInfo($lFallback, "ExtraType")
-		Out("End chest fallback: " & $aChestID[$lExtraType] & " (ExtraType " & $lExtraType & ")")
-		Return $lFallback
+		Local Static $sIgnored = ","
+		If Not StringInStr($sIgnored, "," & $lExtraType & ",") Then
+			$sIgnored &= $lExtraType & ","
+			Out("End chest ignored: " & $aChestID[$lExtraType] & " (ExtraType " & $lExtraType & ") — not a dungeon chest")
+		EndIf
+		Return 0
 	EndIf
-	; Dump gadgets so a new ExtraType can be added to $aChestID
-	Out("GetEndChest: no mapped chest. Gadgets:")
-	For $i = 1 To $lAgentPtrArray[0]
-		Out("  ID=" & Agent_GetAgentInfo($lAgentPtrArray[$i], "ID") & _
-			" ExtraType=" & Agent_GetAgentInfo($lAgentPtrArray[$i], "ExtraType") & _
-			" Dist=" & Floor(Agent_GetDistance($lAgentPtrArray[$i])))
-	Next
+	; Dump gadgets once every 15s so a new ExtraType can be added without flooding the log.
+	Local Static $iLastDump = 0
+	If TimerDiff($iLastDump) > 15000 Or $iLastDump = 0 Then
+		$iLastDump = TimerInit()
+		Out("GetEndChest: no mapped chest. Gadgets:")
+		For $i = 1 To $lAgentPtrArray[0]
+			Out("  ID=" & Agent_GetAgentInfo($lAgentPtrArray[$i], "ID") & _
+				" ExtraType=" & Agent_GetAgentInfo($lAgentPtrArray[$i], "ExtraType") & _
+				" Dist=" & Floor(Agent_GetDistance($lAgentPtrArray[$i])))
+		Next
+	EndIf
 	Return 0
 EndFunc   ;==>GetEndChest
 
-;~ Backtracks a waypoint array to find stuck reward NPCs; Contains a special case for Shards of Orr where some backtracking waypoints need to be skipped
+; Logic FindRewardNPC — backtrack until quest NPC is within 3000. Uses Agent_GetAgentByPlayerNumber (not broken Agent_GetByPlayerNumber).
 Func FindRewardNPCByPlayerID($aWaypoints, $aPlayerID)
 	Out("Find Reward NPC")
-	$Timer = TimerInit()
+	Local $Timer = TimerInit()
+	Local $i, $lNpc
 	Switch Map_GetMapID()
 		Case $Shards_of_Oor_Lvl3
 			For $i = UBound($aWaypoints) - 2 To 1 Step -1
-				Out($aPlayerID)
-				$shandra = DllStructGetData(Agent_GetByPlayerNumber($aPlayerID), "ID")
-				If $aWaypoints[$i][3] <> "Fendi's lair" And Agent_GetAgentInfo(Agent_GetByPlayerNumber($aPlayerID, "Dead"), -2) < 3000 Or Wipe() = 1 Then Return    ; may still wipe on poison traps
+				Out("Reward NPC player number " & $aPlayerID)
+				$lNpc = Agent_GetAgentByPlayerNumber($aPlayerID)
+				If $aWaypoints[$i][3] <> "Fendi's Lair" And $lNpc <> 0 And Agent_GetDistance($lNpc) < 3000 Or Wipe() = 1 Then Return
 				Out("Where the f*ck is Shandra?! Searching at - " & $aWaypoints[$i][3])
 				AggroMoveToEX($aWaypoints[$i][0], $aWaypoints[$i][1], $spellcasting_range)
-				If $i = UBound($aWaypoints) - 7 Then $i = 25    ; skipping waypoints to get from boss lock straight to room 2
-				If TimerDiff($Timer) > 160000 Then Return False    ; time out to ensure we return from current level before beign wraped back to dungeon entrance
+				If $i = UBound($aWaypoints) - 7 Then $i = 26    ; skip to Room 3 (index +1 after Group 1 pad)
+				If TimerDiff($Timer) > 160000 Then Return False
 			Next
 		Case Else
 			For $i = UBound($aWaypoints) - 2 To 1 Step -1
 				AggroMoveToEX($aWaypoints[$i][0], $aWaypoints[$i][1], $spellcasting_range)
-				; Out("Distance to quest NPC: " & Floor(Agent_GetAgentInfo(GetAgentByPlayerNumber($aPlayerID, "Dead")), -2)))
-				If Agent_GetAgentInfo(Agent_GetByPlayerNumber($aPlayerID, "Dead"), -2) < 3000 Or Wipe() = 1 Then Return
-				If TimerDiff($Timer) > 160000 Then Return False ; time out to ensure we return from current level before beign wraped back to dungeon entrance
+				$lNpc = Agent_GetAgentByPlayerNumber($aPlayerID)
+				If ($lNpc <> 0 And Agent_GetDistance($lNpc) < 3000) Or Wipe() = 1 Then Return
+				If TimerDiff($Timer) > 160000 Then Return False
 			Next
 	EndSwitch
 EndFunc   ;==>FindRewardNPCByPlayerID
 
-; Accepts quest reward from an NPC for a given Quest ID
+; Logic GetReward + Logic QuestReward retry (SendPacket 0x008QQQ07 until quest leaves log).
 Func GetReward($x, $y, $aQuestID, $aPlayerID = 0)
-	; RequestQuestInformation($aQuest)
 	Out($Quest_ID[$aQuestID] & ", Status: " & Quest_GetQuestInfo($aQuestID, "LogState"))
 	If Quest_GetQuestInfo($aQuestID, "LogState") < 2 Then Return
-	Agent_GoToNPCnearXY($x, $y, $aPlayerID)
-	Quest_QuestReward($aQuestID)
+	; Exact PlayerNumber when known — GoToNPCNearXY fallback once hit a spirit after Fendi.
+	If $aPlayerID <> 0 Then
+		Local $lNpc = Agent_GetAgentByPlayerNumber($aPlayerID)
+		If $lNpc = 0 Then
+			Out("GetReward: PlayerNumber " & $aPlayerID & " not loaded")
+			Return
+		EndIf
+		Agent_GoToNPC($lNpc)
+	Else
+		Agent_GoToNPCnearXY($x, $y, 0)
+	EndIf
+	Out("Accepting reward")
+	Local $Timer = TimerInit()
+	Do
+		Other_PingSleep(200)
+		Quest_QuestReward($aQuestID)
+	Until Not Quest_GetQuestInfo($aQuestID, "HasQuest") Or TimerDiff($Timer) > 1000
+	If Quest_GetQuestInfo($aQuestID, "HasQuest") Then _
+		Out("No reward collected " & $Quest_ID[$aQuestID] & " (Status = " & Quest_GetQuestInfo($aQuestID, "LogState") & ")")
+	Other_PingSleep(500)
 EndFunc   ;==>GetReward
 
 #Region Chest
@@ -964,6 +1164,15 @@ Func DropBundle()
 	Return Item_DropBundle()
 EndFunc   ;==>DropBundle
 
+; Unlit torch often reports WeaponItemType=46 (TYPE_NOT_EQUIPPED), not TYPE_BUNDLE=6.
+; BundleItemID from inventory is the reliable "something in hands" flag.
+Func HoldingBundle()
+	If Number(Item_GetInventoryInfo("BundleItemID")) <> 0 Then Return True
+	If Number(Agent_GetAgentInfo(-2, "WeaponItemType")) = $TYPE_BUNDLE Then Return True
+	If Skill_HasEffect($Lit_Torch) Then Return True
+	Return False
+EndFunc   ;==>HoldingBundle
+
 Func GoSignpost($aAgent)
 	Return Agent_GoSignpost($aAgent)
 EndFunc   ;==>GoSignpost
@@ -974,7 +1183,9 @@ Func CancelHero($aHeroNumber)
 EndFunc   ;==>CancelHero
 
 Func CancelAll()
-	Return Party_CancelAll()
+	Party_CancelAll()
+	; Party_CancelAll alone can leave heptagon flags after shrine rez — clear commands too.
+	Core_PerformAction($GC_I_CONTROL_ACTION_CLEAR_PARTY_COMMANDS, $GC_I_CONTROL_TYPE_ACTIVATE)
 EndFunc   ;==>CancelAll
 
 Func CommandHero($aHeroNumber, $x, $y)
@@ -1164,24 +1375,33 @@ EndFunc   ;==>GetNearestWaypointIndex
 
 ;~ Description: Returns the party leader agent pointer via GwAu3 party member ordering (slot 1 = leader).
 Func Party_GetPartyLeader()
-	If Party_GetPartyContextInfo("IsPartyLeader") Then Return Agent_GetAgentPtr(-2)
+	If Party_AmILeader() Then Return Agent_GetAgentPtr(-2)
 	Local $l_i_LeaderID = Party_GetMemberAgentID(1)
 	If $l_i_LeaderID = 0 Then Return 0
 	Return Agent_GetAgentPtr($l_i_LeaderID)
 EndFunc   ;==>Party_GetPartyLeader
 
+; Flag 0x80 can drop for a moment after zoning. Slot 1 of the party window is the leader.
+Func Party_AmILeader()
+	If Party_GetPartyContextInfo("IsPartyLeader") Then Return True
+	Local $lMyID = Agent_GetMyID()
+	If $lMyID = 0 Then Return False
+	Return Party_GetMemberAgentID(1) = $lMyID
+EndFunc   ;==>Party_AmILeader
+
 Func FollowPartyLeader($aFollowRange = 200, $aPartyLeader = 0)
     ; If $aPartyLeader isn't passed, find the leader's agent ID
-    If $aPartyLeader <= 0 Then $aPartyLeader = Party_GetPartyLeader() ; Or your project's leader getter function
+    If $aPartyLeader <= 0 Then $aPartyLeader = Party_GetPartyLeader()
 
     Local $iInstanceType = Map_GetInstanceInfo("Type")
     If $iInstanceType == 0 Then Return
     If $iInstanceType == 2 Then Connection_CheckAndReconnect()
 
     If Agent_GetAgentInfo(-2, "IsDead") Then Return
+    If $aPartyLeader = 0 Or Agent_ConvertID($aPartyLeader) = Agent_GetMyID() Then Return
 
-    ; Use proper distance check instead of checking "Dead" against range
-    If Agent_GetDistance($aPartyLeader) > $aFollowRange And Agent_GetAgentInfo($aPartyLeader, "IsMoving") Then
+    ; Walk up even when the leader is standing. The old IsMoving check left followers at the portal.
+    If Agent_GetDistance($aPartyLeader) > $aFollowRange Then
         AggroMoveToLeader(Agent_GetAgentInfo($aPartyLeader, "X"), Agent_GetAgentInfo($aPartyLeader, "Y"), 1320, $aFollowRange, $aPartyLeader)
     EndIf
 
@@ -1221,10 +1441,15 @@ Func AggroMoveToEX($x, $y, $aFightRange = 1350)
 ; REVIEW: Core movement+aggro. Calls Fight() from logiccast. GwAu3 has Map_Move and UAI_Fight.
 ; Logic Move() defaults to ±50; AggroMoveToEX historically passed 100 (extra zigzag on every re-issue).
 	If CantExplore() Then Return
+	; Pull Group wp[2] is hero-flag coords ("9754, 18972") — Number()→9754 and Fight pulls half the room with no prep.
+	If Not IsNumber($aFightRange) Or Number($aFightRange) <= 0 Then $aFightRange = 1350
 	Local $MyMap, $lMapLoading
 	Local $MyOldMap = Map_GetMapID(), $lMapLoadingOld = Map_GetInstanceInfo("Type")
 	Local $lDeadlock, $lBlocked, $aOldX, $aOldY
 	Local $random = 50
+	Local $lTorchDropX = 0, $lTorchDropY = 0, $lDroppedTorch = False
+	; Want torch on ground: explicit flag OR mid-rekindle ($unlit). Don't depend on nearest-WP clears.
+	Local $lWantTorch = ($PickupTorch Or $unlit)
 
 	If Party_GetPartyHealth() > 0.80 And Agent_GetNumberOfPartyInRange(1700) = Party_GetPartyContextInfo("TotalPartySize") Then Map_Move($x, $y, $random)
 
@@ -1239,14 +1464,50 @@ Func AggroMoveToEX($x, $y, $aFightRange = 1350)
 			$g_b_DiedOnWaypoint = True
 			ExitLoop
 		EndIf
-		If Agent_IsEnemyNear($aFightRange) Then Fight($x, $y, $aFightRange)
+		$lWantTorch = ($PickupTorch Or $unlit)
+		If Agent_IsEnemyNear($aFightRange) Then
+			; Fight with Torch / Clear Spawn / rekindle: martial drops at engage XY, picks up after Fight.
+			If $lWantTorch And Not $lDroppedTorch And Agent_IsMartialPrimary(-2) Then
+				If Not HoldingBundle() Then
+					Out("Torch drop: not holding (Lit=" & Skill_HasEffect($Lit_Torch) & _
+							" WeaponItemType=" & Number(Agent_GetAgentInfo(-2, "WeaponItemType")) & _
+							" BundleItemID=" & Number(Item_GetInventoryInfo("BundleItemID")) & ") — trying pickup")
+					PickupTorch()
+				EndIf
+				If HoldingBundle() Then
+					$lTorchDropX = X(-2)
+					$lTorchDropY = Y(-2)
+					Out("Dropped torch for martial fight (BundleItemID=" & Number(Item_GetInventoryInfo("BundleItemID")) & _
+							" WeaponItemType=" & Number(Agent_GetAgentInfo(-2, "WeaponItemType")) & ")")
+					Item_DropBundle()
+					Sleep(250)
+					$lDroppedTorch = True
+				Else
+					Out("Torch drop: still no bundle after pickup — fighting armed")
+				EndIf
+			EndIf
+			Fight($x, $y, $aFightRange)
+			If $lWantTorch And $lDroppedTorch And Not Wipe() And Not Agent_GetAgentInfo(-2, "IsDead") Then
+				Out("Picking up torch after fight")
+				Agent_MoveToXY($lTorchDropX, $lTorchDropY)
+				PickupTorch()
+				If Not HoldingBundle() Then PickupLootEx(5000, True)
+				$lDroppedTorch = False
+			EndIf
+		EndIf
 		If Bot_HaltIfStopped() Then ExitLoop
 		If GUI_IsChestChecked() Then CheckForChest()
-		PickupLootEx(3000)
+		; Honor torch need so a dropped torch can be recovered during brazier / Fight with Torch / rekindle.
+		PickupLootEx(3000, $lWantTorch)
 
 		If CanMove($aFightRange) Or TimerDiff($TimerAggro) > 60000 Then
 			Map_Move($x, $y, $random)
 			SpeedBoost()
+			; Lit torch: renew HR via shouts (SpeedBoost already skips casting HR while Lit).
+			If Skill_HasEffect($Lit_Torch) Then
+				If ShouldUse($SkillbarSlot[$Theyre_on_Fire]) Then Skill_TryUseSkill($SkillbarSlot[$Theyre_on_Fire])
+				If ShouldUse($SkillbarSlot[$Burning_Refrain]) Then Skill_TryUseSkill($SkillbarSlot[$Burning_Refrain])
+			EndIf
 			Sleep(50)
 			If X(-2) = $aOldX And Y(-2) = $aOldY Then
 				$lBlocked += 1
@@ -1282,6 +1543,10 @@ Func AggroMoveToEX($x, $y, $aFightRange = 1350)
 		EndIf
 	Until Agent_GetDistanceToXY($x, $y) < 250 Or $lBlocked > 30 Or TimerDiff($TimerAggro) > 300000 Or CantExplore() Or Agent_GetAgentInfo(-2, "IsDead")
 	If Agent_GetAgentInfo(-2, "IsDead") Then $g_b_DiedOnWaypoint = True
+	If ($PickupTorch Or $unlit) And $lDroppedTorch And Not Agent_GetAgentInfo(-2, "IsDead") And Not Wipe() Then
+		Agent_MoveToXY($lTorchDropX, $lTorchDropY)
+		PickupTorch()
+	EndIf
 EndFunc   ;==>AggroMoveToEX
 
 Func AggroMoveToPvP($x, $y, $aFightRange = 1350)
@@ -1336,26 +1601,64 @@ Func CantExplore()
 	Return False
 EndFunc
 
-;~Flag heroes within pulling range plus a safety increment near, and go within pulling range to do the pull
+;~ Flag heroes at aRange+margin (near-side sector), walk self to aRange while they path,
+;~ ApplyHR + precast, then AggroMoveToEX(WP) with flags still set (CancelHero before pull reballs heroes).
+; Uses Agent_GetClosestXYinRange — refresh each tick so stand tracks the foe (stale XY left us far past casting range).
+; $spellcasting_range (1341) > $danger_range (1065) — stand at casting range does not aggro.
 Func CarefulAggro($x, $y, $aRange = $spellcasting_range, $hero_increment = 500)
-	$nearestenemy = Agent_GetNearestAgent(-2, 0xDB, 3)
 	If CantExplore() Then Return
-	; Dead is bool — never compare it to a distance (True==1 would always pass).
-	If $nearestenemy <> 0 And Not Agent_GetAgentInfo($nearestenemy, "IsDead") And Agent_GetDistance($nearestenemy) < $aRange + $hero_increment * 2 Then
-		$heroXY = Agent_GetClosestXYtoWaypointInRange($x, $y, $aRange + $hero_increment, $nearestenemy)
-		If $heroXY <> 0 Then AggroMoveToEX($heroXY[0], $heroXY[1], $aRange)
-		Out("Flagging heroes " & $aRange + $hero_increment & " from target")
-		FlagHeptagon(300, $heroXY[0], $heroXY[1])
-		Out("Moving within aggro range (" & $aRange & ")")
-		Agent_MoveToClosestXYtoWaypoint($x, $y, $aRange, $nearestenemy)
-		If Agent_IsEnemyNear($aRange) Then Fight($x, $y, $aRange, True)
+	; avoir setting hero flags too far from ennemies if moving
+	Do
+		Sleep(100)
+		$nearestenemy = Agent_GetNearestAgent(-2, 0xDB, 3)
+	Until Agent_GetAgentInfo($nearestenemy, "IsMoving") = False or Agent_GetDistance($nearestenemy) <= $aRange
+	Local $nearestenemy = Agent_GetNearestAgent(-2, 0xDB, 3)
+	If $nearestenemy <> 0 And Not Agent_GetAgentInfo($nearestenemy, "IsDead") Then
+		; Soft-death / mid-fight resume: already in aggro — do not FlagHeptagon (heroes stop fighting).
+		If Agent_GetDistance($nearestenemy) <= $danger_range Then
+			Out("CarefulAggro: already in contact (dist=" & Floor(Agent_GetDistance($nearestenemy)) & ") — CancelAll + engage")
+			CancelAll()
+		Else
+			; Flag first so heroes move in parallel and stay in shout/HR range while we walk.
+			Local $heroXY = Agent_GetClosestXYinRange($aRange + $hero_increment, $nearestenemy)
+			Out("Flagging heroes " & ($aRange + $hero_increment) & " from target (near-side sector)")
+			FlagHeptagon(300, $heroXY[0], $heroXY[1])
+
+			Out("Moving within casting range (" & $aRange & "), undetected until < " & $danger_range)
+			Do
+				If Bot_HaltIfStopped() Or CantExplore() Then Return
+				$nearestenemy = Agent_GetNearestAgent(-2, 0xDB, 3)
+				If $nearestenemy = 0 Or Agent_GetAgentInfo($nearestenemy, "IsDead") Then ExitLoop
+				If Agent_GetDistance($nearestenemy) <= $danger_range Then
+					Out("CarefulAggro: pack closed in during approach — CancelAll + engage")
+					CancelAll()
+					ExitLoop
+				EndIf
+				Local $pullXY = Agent_GetClosestXYinRange($aRange, $nearestenemy)
+				SpeedBoost()
+				Map_Move($pullXY[0], $pullXY[1], 50)
+				Sleep(50)
+			Until Agent_GetDistance($nearestenemy) <= $aRange + 50 Or Agent_GetAgentInfo(-2, "IsDead")
+			If $nearestenemy <> 0 And Not Agent_GetAgentInfo($nearestenemy, "IsDead") And Agent_GetDistance($nearestenemy) > $danger_range Then
+				Out("CarefulAggro stand: foe dist=" & Floor(Agent_GetDistance($nearestenemy)) & " (want ~" & $aRange & ")")
+				ApplyHR()
+				PrecastWardsAndSpirits($spirit_range, $danger_range)
+				Local $lSpiritWait = TimerInit()
+				Do
+					If Bot_HaltIfStopped() Or CantExplore() Then Return
+					SpeedBoost()
+					Sleep(250)
+				Until TimerDiff($lSpiritWait) > 3000 Or Agent_IsEnemyNear($danger_range)
+				If ShouldUse($SkillbarSlot[$Theyre_on_Fire]) Then Skill_TryUseSkill($SkillbarSlot[$Theyre_on_Fire])
+				If ShouldUse($SkillbarSlot[$Burning_Refrain]) Then Skill_TryUseSkill($SkillbarSlot[$Burning_Refrain])
+			EndIf
+		EndIf
 	EndIf
 
-	For $i = 1 to GetPartySize() - 1
-		CancelHero($i)
-		Other_PingSleep(200)
-	Next
+	Out("CarefulAggro: engaging WP")
+	; Keep heptagon through a fresh pull — CancelAll above if we were already in contact.
 	AggroMoveToEX($x, $y, $aRange)
+	Core_PerformAction($GC_I_CONTROL_ACTION_CLEAR_PARTY_COMMANDS, $GC_I_CONTROL_TYPE_ACTIVATE)
 EndFunc   ;==>CarefulAggro
 
 Func FlagHeroesAroundXY($x, $y, $aPlayerID = 0, $aRange = 600)
@@ -1372,12 +1675,22 @@ Func FlagHeroesAroundXY($x, $y, $aPlayerID = 0, $aRange = 600)
 	CommandHero(6, $x - $aRange, $y - $aRange)
 EndFunc   ;==>FlagHeroesAroundXY
 
+; Lag/heal wait clocks — reset when party is together / healthy so timeouts don't stick.
+Global $g_tCanMoveLagWait = 0
+Global $g_tCanMoveHealWait = 0
+Global $g_tCanMoveCritWait = 0
+Global $g_tCanMoveEnemyOut = 0
+
 ; Returns whether the party can move based on death and health status; uses the $PartyPtrArray global variable if different than zero to test for party health
 Func CanMove($aRange = $longbow_Range)
 	Local $heroXY[2]
 	If Wipe() Then Return
 	If Agent_IsEnemyNear($aRange) Then
-		Out("Enemies are still around")
+		; Throttle — AggroMoveToEX polls every ~50ms.
+		If $g_tCanMoveEnemyOut = 0 Or TimerDiff($g_tCanMoveEnemyOut) > 2000 Then
+			Out("Enemies are still around (n=" & Agent_GetNumberOfEnemies($aRange) & ", nearest=" & Floor(Agent_GetNearestDistance()) & ")")
+			$g_tCanMoveEnemyOut = TimerInit()
+		EndIf
 		Return False
 	EndIf
 	If Agent_GetAgentInfo(-2, "IsCasting") THen Return False
@@ -1392,30 +1705,62 @@ Func CanMove($aRange = $longbow_Range)
 	Local $iPartySize = Party_GetPartyContextInfo("TotalPartySize")
 
 	If $DeadAlliesCount = 0 Then
+		; Critically low living ally (poison degen, etc.) — do not advance until they recover.
+		Local $lCritHP = 1.0, $lCritAlly = 0
+		For $i = 1 To $iPartySize
+			Local $iMemberID = Party_GetMemberAgentID($i)
+			If $iMemberID = 0 Or Agent_GetAgentInfo($iMemberID, "IsDead") Then ContinueLoop
+			Local $fMemberHP = Agent_GetAgentInfo($iMemberID, "HP")
+			If $fMemberHP < $lCritHP Then
+				$lCritHP = $fMemberHP
+				$lCritAlly = $iMemberID
+			EndIf
+		Next
+		If $lCritAlly <> 0 And $lCritHP < 0.20 Then
+			If $g_tCanMoveCritWait = 0 Then $g_tCanMoveCritWait = TimerInit()
+			If TimerDiff($g_tCanMoveCritWait) < 20000 Then
+				Out("Waiting for ally HP (" & Round($lCritHP * 100) & "%)")
+				CancelAction()
+				Return False
+			EndIf
+		Else
+			$g_tCanMoveCritWait = 0
+		EndIf
+
 		If Agent_GetNumberOfPartyInRange(1700) < $iPartySize Then
 			If Agent_GetNumberOfPartyInRange(5000) = $iPartySize And Agent_GetAgentInfo(Agent_GetFarthestAlly(), "IsMoving") Then
-				If Random(0, 1) > 0.8 Then
+				If $g_tCanMoveLagWait = 0 Then $g_tCanMoveLagWait = TimerInit()
+				If TimerDiff($g_tCanMoveLagWait) < 20000 Then
 					Out("We left a party member behind — waiting for full party")
 					CancelAction()
 					Return False
 				EndIf
+			Else
+				$g_tCanMoveLagWait = 0
 			EndIf
-		ElseIf $OldPartyHP < 0.80 Then
-			Other_PingSleep(100)
-			Local $nPartyHP = Party_GetPartyHealth()
-			If $nPartyHP >= 0.99 * $OldPartyHP Then
-				If Random(0, 1) > 0.8 Then
-					Out("Waiting for party to heal (" & $nPartyHP & ")")
-					CancelAction()
-					Return False
+		Else
+			$g_tCanMoveLagWait = 0
+			If $OldPartyHP < 0.80 Then
+				Other_PingSleep(100)
+				Local $nPartyHP = Party_GetPartyHealth()
+				If $nPartyHP >= 0.99 * $OldPartyHP Then
+					If $g_tCanMoveHealWait = 0 Then $g_tCanMoveHealWait = TimerInit()
+					If TimerDiff($g_tCanMoveHealWait) < 20000 Then
+						Out("Waiting for party to heal (" & $nPartyHP & ")")
+						CancelAction()
+						Return False
+					EndIf
+				ElseIf $nPartyHP < 0.99 * $OldPartyHP Then
+					$g_tCanMoveHealWait = 0
+					Out("Moving out of AoE area")
+					Local $lTheta = Random(0, 360)
+					Local $lHighestAlly = Agent_GetHighestAlly()
+					If $lHighestAlly = 0 Then $lHighestAlly = -2
+					Map_Move(50 * Cos($lTheta * 0.01745) + X($lHighestAlly), 50 * Sin($lTheta * 0.01745) + Y($lHighestAlly), 0)
+					Sleep(300)
 				EndIf
-			ElseIf $nPartyHP < 0.99 * $OldPartyHP Then
-				Out("Moving out of AoE area")
-				Local $lTheta = Random(0, 360)
-				Local $lHighestAlly = Agent_GetHighestAlly()
-				If $lHighestAlly = 0 Then $lHighestAlly = -2
-				Map_Move(50 * Cos($lTheta * 0.01745) + X($lHighestAlly), 50 * Sin($lTheta * 0.01745) + Y($lHighestAlly), 0)
-				Sleep(300)
+			Else
+				$g_tCanMoveHealWait = 0
 			EndIf
 		EndIf
 	ElseIf $DeadAlliesCount > 0 And GetAvailableRezz() > 0 Then
@@ -1442,7 +1787,7 @@ Func CanMove($aRange = $longbow_Range)
 					$BestTarget = $NearestDeadAllyPtr
 					For $aSkillSlot In $Skillbar
 						If $SkillBarCache[$aSkillSlot][$rezz] = "" Then ContinueLoop
-						If CanUse($aSkillSlot, $spellcasting_range) Then Skill_TryUseSkill($aSkillSlot, $NearestDeadAllyPtr, False, 0)
+						If ShouldUse($aSkillSlot, $spellcasting_range) Then Skill_TryUseSkill($aSkillSlot, $NearestDeadAllyPtr, False, 0)
 					Next
 				EndIf
 				Out("Party health: " & Party_GetPartyHealth() & ", Dead Ally: " & Agent_ID($NearestDeadAllyPtr) & " dist=" & Floor(Agent_GetDistance($NearestDeadAllyPtr)))
@@ -1655,8 +2000,8 @@ Func Move55HP($lDestX, $lDestY, $lRandom = 100, $safe_distance = $bowpull_range)
 	Local $lAngle
 	Local $stuckTimer = TimerInit()
 	$lDeadlock = TimerInit()
-	If CanUse($SkillbarSlot[$Protective_Spirit]) Then Skill_UseSkill($SkillbarSlot[$Protective_Spirit], -2)
-	If CanUse($SkillbarSlot[$Shielding_Hands]) Then Skill_UseSkill($SkillbarSlot[$Shielding_Hands], -2)
+	If ShouldUse($SkillbarSlot[$Protective_Spirit]) Then Skill_UseSkill($SkillbarSlot[$Protective_Spirit], -2)
+	If ShouldUse($SkillbarSlot[$Shielding_Hands]) Then Skill_UseSkill($SkillbarSlot[$Shielding_Hands], -2)
 	Map_Move($lDestX, $lDestY, $lRandom)
 	Do
 		RndSleep(100)
@@ -1698,27 +2043,94 @@ Func Move55HP($lDestX, $lDestY, $lRandom = 100, $safe_distance = $bowpull_range)
 	Return True
 EndFunc   ;==>Move55HP
 
-Func PullGroup($x, $y, $sCoords, $aRange = $room_range)                                ; modified version to pass pull coords as an array
-	AggroMoveToEX($x, $y)
-	FlagHeptagon(300, $x, $y)
-	PrecastWardsAndSpirits()
-	ChangeWeaponSet(4)
-	$PullCoords = StringSplit($sCoords, ",", 2)
-	Move_ToCoord($PullCoords[0], $PullCoords[1], 0)
-
-	$nearestenemy = Agent_GetNearestAgent(-2, 0xDB, 3)
-	If CanAttack($aRange) Then Agent_Attack($nearestenemy, False)
-	Local $TimerToPull = TimerInit()
+; Staging WP (x,y) = fight pad; $sCoords kept for waypoint format (poke unused — pull is enemy-relative).
+; Careful-style: stand at longbow of foe, heroes at longbow+500, bow-hit, wait until they move in,
+; switch to set 2, then AggroMoveToEX(pad) once within spellcasting.
+Func PullGroup($x, $y, $sCoords, $aRange = $room_range, $hero_increment = 500)
+	#forceref $sCoords, $aRange
+	If CantExplore() Then Return
+	Out("PullGroup: staging at pad (" & Floor($x) & ", " & Floor($y) & ")")
 	Do
+		If Bot_HaltIfStopped() Or CantExplore() Then Return
+		SpeedBoost()
+		Map_Move($x, $y, 50)
+		Sleep(50)
+	Until Agent_GetDistanceToXY($x, $y) < 250 Or Agent_GetAgentInfo(-2, "IsDead")
+
+	Local $nearestenemy = Agent_GetNearestAgent(-2, 0xDB, 3)
+	If $nearestenemy = 0 Or Agent_GetAgentInfo($nearestenemy, "IsDead") Then
+		Out("PullGroup: no foe near pad — AggroMoveToEX")
+		AggroMoveToEX($x, $y, $spellcasting_range)
+		Return
+	EndIf
+
+	; Soft-death / mid-fight resume: already in aggro — do not reflag (heroes stop fighting).
+	If Agent_GetDistance($nearestenemy) <= $danger_range Then
+		Out("PullGroup: already in contact (dist=" & Floor(Agent_GetDistance($nearestenemy)) & ") — CancelAll + engage pad")
+		CancelAll()
+		AggroMoveToEX($x, $y, 1250)
+		Core_PerformAction($GC_I_CONTROL_ACTION_CLEAR_PARTY_COMMANDS, $GC_I_CONTROL_TYPE_ACTIVATE)
+		Return
+	EndIf
+
+	; Heroes further from foe than our longbow stand (same geometry as CarefulAggro).
+	Local $heroXY = Agent_GetClosestXYinRange($longbow_range + $hero_increment, $nearestenemy)
+	Out("PullGroup: flagging heroes " & ($longbow_range + $hero_increment) & " from target")
+	FlagHeptagon(300, $heroXY[0], $heroXY[1])
+
+	Out("PullGroup: moving within longbow (" & $longbow_range & ")")
+	Do
+		If Bot_HaltIfStopped() Or CantExplore() Then Return
 		$nearestenemy = Agent_GetNearestAgent(-2, 0xDB, 3)
-		If CanAttack($aRange) Then Agent_Attack($nearestenemy, False)
-		Rndsleep(100)
-	Until Agent_GetNearestDistance() < 1000 Or TimerDiff($TimerToPull) > 10000 Or Agent_GetAgentInfo($nearestenemy, "HP") < 1.0 Or CantExplore()
-	Move_ToCoord($x, $y)
+		If $nearestenemy = 0 Or Agent_GetAgentInfo($nearestenemy, "IsDead") Then ExitLoop
+		Local $standXY = Agent_GetClosestXYinRange($longbow_range, $nearestenemy)
+		SpeedBoost()
+		Map_Move($standXY[0], $standXY[1], 50)
+		Sleep(50)
+	Until Agent_GetDistance($nearestenemy) <= $longbow_range + 50 Or Agent_GetAgentInfo(-2, "IsDead")
+	Out("PullGroup stand: foe dist=" & Floor(Agent_GetDistance($nearestenemy)) & " (want ~" & $longbow_range & ")")
+
+	ApplyHR()
+	PrecastWardsAndSpirits($spirit_range, $danger_range)
+	Local $lSpiritWait = TimerInit()
+	Do
+		If Bot_HaltIfStopped() Or CantExplore() Then Return
+		SpeedBoost()
+		Sleep(250)
+	Until TimerDiff($lSpiritWait) > 3000 Or Agent_IsEnemyNear($danger_range)
+	If ShouldUse($SkillbarSlot[$Theyre_on_Fire]) Then Skill_TryUseSkill($SkillbarSlot[$Theyre_on_Fire])
+	If ShouldUse($SkillbarSlot[$Burning_Refrain]) Then Skill_TryUseSkill($SkillbarSlot[$Burning_Refrain])
+
+	Local $lBowSet = FindWeaponSetByItemType($TYPE_BOW)
+	If $lBowSet = 0 Then $lBowSet = 4
+	Out("PullGroup: bow on weapon set " & $lBowSet)
+	ChangeWeaponSet($lBowSet)
+	Sleep(250)
+	$nearestenemy = Agent_GetNearestAgent(-2, 0xDB, 3)
+	If CanAttack($longbow_range) Then Agent_Attack($BestTarget, False)
+
+	; Hold at longbow until pack is moving in — do not body into <1000.
+	Local $TimerToPull = TimerInit()
+	Local $bPackMoving = False
+	Do
+		If Bot_HaltIfStopped() Or CantExplore() Then Return
+		$nearestenemy = Agent_GetNearestAgent(-2, 0xDB, 3)
+		If $nearestenemy = 0 Or Agent_GetAgentInfo($nearestenemy, "IsDead") Then ExitLoop
+		If CanAttack($longbow_range) Then Agent_Attack($BestTarget, False)
+		If Agent_GetAgentInfo($nearestenemy, "IsMoving") Then $bPackMoving = True
+		; Ease back toward the fight pad while they close.
+		If $bPackMoving Then
+			SpeedBoost()
+			Map_Move($x, $y, 50)
+		EndIf
+		RndSleep(100)
+	Until ($bPackMoving And Agent_GetNearestDistance() <= $spellcasting_range) Or TimerDiff($TimerToPull) > 10000 Or CantExplore()
+	Out("PullGroup: packMoving=" & $bPackMoving & " nearest=" & Floor(Agent_GetNearestDistance()) & " — engage pad")
+
 	ChangeWeaponSet(2)
 	Sleep(100)
-	Fight($x, $y, 1250, False, 1400)	; exits fight if enemy is further than 1400 away from pull position
-	ClearPartyCommands()
+	AggroMoveToEX($x, $y, 1250)
+	Core_PerformAction($GC_I_CONTROL_ACTION_CLEAR_PARTY_COMMANDS, $GC_I_CONTROL_TYPE_ACTIVATE)
 EndFunc   ;==>PullGroup
 
 ;Flag Heroes as heptagon, Hero 1 will be always flag northbound and clockwise.
@@ -1844,22 +2256,30 @@ Func PullEnemies($x, $y, $aRange = $bowpull_range, $hero_increment = 500, $targe
 	Out("Pulling ennemies")
 	Move_ToCoord($x, $x, 50)
 	If Agent_IsEnemyNear($aRange) Then
-		$heroXY = Agent_GetClosestXYtoWaypointInRange($x, $x, $aRange + $hero_increment, $target)
+		$heroXY = Agent_GetClosestXYtoWaypointInRange($x, $x, $aRange + $hero_increment * 2, $target)
 		AggroMoveToEX($heroXY[0], $heroXY[1])
-		Out("Flagging heroes")
+		Out("Flagging heroes " & ($aRange + $hero_increment * 2) & " from target")
 		FlagHeptagon(300, $heroXY[0], $heroXY[1])
-		PrecastWardsAndSpirits()
+		Local $iBowDist = ($target <> 0) ? Floor(Agent_GetDistance($target)) : -1
+		Out("PullEnemies precast: foe dist=" & $iBowDist & " (bowpull=" & $aRange & _
+				", spirit=" & $spirit_range & ", room=" & $room_range & ")")
+		ApplyHR()
+		PrecastWardsAndSpirits($spirit_range, $danger_range)
 		For $aSkillSlot In $Skillbar
 			If $SkillBarCache[$aSkillSlot][$precast] = "" Then ContinueLoop
-			If CanUse($aSkillSlot, $aRange) Then Skill_UseSkill($aSkillSlot, $besttarget)
+			If ShouldUse($aSkillSlot, $aRange) Then Skill_UseSkill($aSkillSlot, $besttarget)
 		Next
-		ChangeWeaponSet(4)
+		Local $lBowSet = FindWeaponSetByItemType($TYPE_BOW)
+		If $lBowSet = 0 Then $lBowSet = 4
+		Out("PullEnemies: bow on weapon set " & $lBowSet)
+		ChangeWeaponSet($lBowSet)
+		Sleep(250)
 
 		Out("Moving within " & $aRange & "distance of enemies")
 		Agent_MoveToClosestXYtoWaypoint($x, $x, $aRange, $target)
 
-		If CanUse($SkillbarSlot[$Ebon_Battle_Standard_Of_Honor]) Then Skill_UseSkill($SkillbarSlot[$Ebon_Battle_Standard_Of_Honor])
-		If CanUse($SkillbarSlot[$Summon_Spirits_Luxon]) Then Skill_UseSkill($SkillbarSlot[$Summon_Spirits_Luxon])
+		If ShouldUse($SkillbarSlot[$Ebon_Battle_Standard_Of_Honor]) Then Skill_UseSkill($SkillbarSlot[$Ebon_Battle_Standard_Of_Honor])
+		If $Summon_Spirits > 0 And ShouldUse($Summon_Spirits) Then Skill_UseSkill($Summon_Spirits)
 		If CanAttack($spirit_range) Then    ; sets $besttarget global variable to best target
 			Agent_ChangeTarget($BestTarget)
 			RndSleep(150)
@@ -1916,6 +2336,7 @@ Func LoadBestSkillTemplate()
 	EndSwitch
 	CacheSkillBar()
 	$herobuild = 0 ? LoadStandardHeroSetup($herobuild, $PartySize) : LoadStandardHeroSetup($PISurgeRezz, $PartySize)
+	; LoadStandardHeroSetup refreshes hero caches after templates land.
 EndFunc   ;==>LoadBestSkillTemplate
 
 Func LoadStandardHeroSetup($Build = 1, $PartySize = 8)
@@ -2061,6 +2482,12 @@ Func LoadStandardHeroSetup($Build = 1, $PartySize = 8)
 		EndSwitch
 	EndIf
 
+	; UI "Load skills" / LoadBestSkillTemplate end here — bars must be re-cached after templates.
+	Other_PingSleep(500)
+	CacheHeroHeals()
+	CacheHeroPrecast()
+	CacheHeroProts()
+	CacheBiP()
 EndFunc   ;==>LoadStandardHeroSetup
 
 #Region Quest
@@ -2108,11 +2535,20 @@ Func PickupTorch()
 EndFunc   ;==>PickupTorch
 
 ; Light nearest brazier at XY; optional torch pickup / drop afterward.
+; Matches Logic: success = Lit remaining > 28s (already-lit counts); $unlit only if no Lit effect after try.
 Func LightBrazier($x, $y, $aPickupTorch = False, $aDropTorch = False)
 	Sleep(50)
 	If Wipe() = 1 Then Return
 	If $aPickupTorch Then PickupTorch()
-	If Wipe() = 0 Then Agent_MoveToXY($x, $y)
+	; Logic: no ApplyHR here — that stalled 45s on empty pads. SpeedBoost on the walk only.
+	If Wipe() = 0 Then
+		Do
+			If Bot_HaltIfStopped() Or Wipe() = 1 Or Agent_GetAgentInfo(-2, "IsDead") Then Return
+			SpeedBoost()
+			Map_Move($x, $y, 50)
+			Sleep(50)
+		Until Agent_GetDistanceToXY($x, $y) < 250 Or Wipe() = 1 Or Agent_GetAgentInfo(-2, "IsDead")
+	EndIf
 
 	Local $lDeadlock = TimerInit()
 	Local $lBrazier = 0
@@ -2132,9 +2568,18 @@ Func LightBrazier($x, $y, $aPickupTorch = False, $aDropTorch = False)
 		Agent_GoSignpost($lBrazier)
 	Until GetEffectTimeRemaining($Lit_Torch) > 28000 Or TimerDiff($lTimer) > 5000 Or Agent_GetAgentInfo(-2, "IsDead")
 
-	If Not Skill_HasEffect($Lit_Torch) And Not Agent_GetAgentInfo(-2, "IsDead") Then $unlit = True
+	; Logic: set $unlit if Lit missing, but still DropBundle when requested (before any Return).
+	If Not Skill_HasEffect($Lit_Torch) And Not Agent_GetAgentInfo(-2, "IsDead") Then
+		Out("No Lit effect after brazier — will backtrack")
+		$unlit = True
+	Else
+		$unlit = False
+	EndIf
 	Sleep(50)
-	If $aDropTorch Then Item_DropBundle()
+	If $aDropTorch And Not Agent_GetAgentInfo(-2, "IsDead") Then
+		Item_DropBundle()
+		Out("Dropped torch after brazier")
+	EndIf
 EndFunc   ;==>LightBrazier
 
 ; SoO braziers use low gadget agent IDs (< 12) near the waypoint.
@@ -2208,7 +2653,8 @@ Func CanPickUpEx($aItem, $PickupTorch = False)
 
 	Switch $lType
 		Case $TYPE_BUNDLE
-			If $lModelID = 22342 And $PickupTorch Then
+			; Param OR global $unlit — RekindleTorch / desynced $PickupTorch still grab the torch.
+			If $lModelID = 22342 And ($PickupTorch Or $unlit) Then
 				Out("Grab unlit torch")
 				Return True
 			EndIf
@@ -2289,7 +2735,7 @@ EndFunc
 Func UnmountJunundu($x, $y)
 	Out("Unmounting Junundu")
 	AggroMoveToEx($x, $y)
-	If CanUse($SkillbarSlot[$Leave_Junundu]) Then Skill_UseSkill($SkillbarSlot[$Leave_Junundu])
+	If ShouldUse($SkillbarSlot[$Leave_Junundu]) Then Skill_UseSkill($SkillbarSlot[$Leave_Junundu])
 	Do
 		Sleep(1000)
 	Until GetSkillbarSkillID(8) <> $Leave_Junundu
@@ -2635,45 +3081,50 @@ EndFunc   ;==>ClearInventory
 
 ;~ Description: Cleaned up Salvage & Sell routine with automated kit purchasing.
 Func Item_SalvageSellItems()
-    Item_DepositGold(800000)
-    Merchant()
+	Item_DepositGold(800000)
+	Merchant()
 
-    If Item_GetGoldCharacter() < 2500 Then
-        Out("Withdrawing gold")
-        Item_WithdrawGold(3000 - Item_GetGoldCharacter())
-    EndIf
-    Other_PingSleep(500)
+	If Item_GetGoldCharacter() < 2500 Then
+		Out("Withdrawing gold")
+		Item_WithdrawGold(3000 - Item_GetGoldCharacter())
+	EndIf
+	Other_PingSleep(500)
 
-    ; Initial kit checks
-    Merchant_RefillKits (60)
-    Item_IdentifyAll()
+	; Initial kit checks
+	Merchant_RefillKits(60)
+	Item_IdentifyAll()
 
-    For $bag = 1 To $UseBags
-        $lBagPtr = Item_GetBagPtr($bag)
-        If $lBagPtr = 0 Then ContinueLoop
+	For $bag = 1 To $UseBags
+		$lBagPtr = Item_GetBagPtr($bag)
+		If $lBagPtr = 0 Then ContinueLoop
 
-        For $slot = 1 To Item_GetBagInfo($bag, "Slots")
-            $lItemPtr = Item_GetItemBySlot($bag, $slot)
-            If $lItemPtr = 0 Then ContinueLoop
-            If Not Item_CanSell($lItemPtr) Then ContinueLoop
+		For $slot = 1 To Item_GetBagInfo($bag, "Slots")
+			$lItemPtr = Item_GetItemBySlot($bag, $slot)
+			If $lItemPtr = 0 Then ContinueLoop
+			If Not Item_CanSell($lItemPtr) Then ContinueLoop
 
-            If Item_HasUsefulMod($lItemPtr) Then
-                Merchant_RefillKits(60)
-                ; Item_SalvageMod is gone. Expert kit salvages the prefix/insignia slot.
-                Item_SalvageItem($lItemPtr, "Expert", "Prefix")
-                Other_PingSleep(50)
-            Else
-                Merchant_SellItem($lItemPtr)
-            EndIf
-        Next
-    Next
+			If Item_HasUsefulMod($lItemPtr) Then
+				Merchant_RefillKits(60)
+				; Item_SalvageMod is gone. Expert kit salvages the prefix/insignia slot.
+				Item_SalvageItem($lItemPtr, "Expert", "Prefix")
+				Other_PingSleep(50)
+			Else
+				Merchant_SellItem($lItemPtr)
+			EndIf
+		Next
+	Next
 
-EndFunc   ;==>SItem_alvageSellItems
+EndFunc   ;==>Item_SalvageSellItems
 
 Func Item_HasUsefulMod($aItem)
 	Local $Mods[184][4]
 	If FileExists($MOD_INI_PATH) Then
-		$array_weaponmods_ini = _iniToArray("Mod_Settings.ini", "array_weaponmods")
+		Local $lIniMods = _iniToArray($MOD_INI_PATH, "array_weaponmods")
+		If IsArray($lIniMods) Then
+			$array_weaponmods_ini = $lIniMods
+		Else
+			$array_weaponmods_ini = $array_weaponmods
+		EndIf
 	Else
 		$array_weaponmods_ini = $array_weaponmods
 	EndIf
@@ -2776,7 +3227,7 @@ Func BuyScrolls()
 	Do
 		Item_WithdrawGold(100000)
 		Other_PingSleep(200)
-		TraderRequest(21233) ; Lightbringer scroll
+		Merchant_BuyItem(21233, 1, True) ; Lightbringer scroll
 		Out("Buying scroll")
 		Other_PingSleep(250)
 		TraderBuy()
@@ -3152,6 +3603,9 @@ EndFunc   ;==>BestRunTime
 
 Func onStart()
 	$BotRunning = True
+	$PickupTorch = False
+	$droptorch = False
+	$unlit = False
 	Out("Start pressed")
 	Global $iAsuraTitle = GetTitleProgress("Asura")
 	Global $iDeldrimorTitle = GetTitleProgress("Deldrimor")
@@ -3164,11 +3618,16 @@ Func onStart()
 	AdlibRegister("UpdateStats", 1000)
 	CacheSkillBar()
 	CacheHeroHeals()
+	CacheHeroPrecast()
+	CacheHeroProts()
 	CacheBiP()
 EndFunc   ;==>onStart
 
 Func BasicOnStart()
 	$BotRunning = True
+	$PickupTorch = False
+	$droptorch = False
+	$unlit = False
 	Out("Start pressed")
 	Global $iAsuraTitle = GetTitleProgress("Asura")
 	Global $iDeldrimorTitle = GetTitleProgress("Deldrimor")
@@ -3204,46 +3663,6 @@ Func UpdateStats()
 	GUI_SetAsura(GetTitleProgress("Asura") - $iAsuraTitle)
 	GUI_SetDeldrimor(GetTitleProgress("Deldrimor") - $iDeldrimorTitle)
 EndFunc   ;==>UpdateStats
-
-Func CharacterSelector()
-	Opt('GUIOnEventMode', False)
-	Local $lWinList = WinList("[CLASS:ArenaNet_Dx_Window_Class; REGEXPTITLE:^\D+$]")
-	Switch $lWinList[0][0]
-		Case 0
-			Exit MsgBox(0, "Error", "No Guild Wars Clients were found.")
-		Case 1
-			Opt('GUIOnEventMode', True)
-			Return WinGetProcess($lWinList[1][1])
-		Case Else
-			Local $lCharStr = "", $lFirstChar
-			For $winCount = 1 To $lWinList[0][0]
-				MemoryOpen(WinGetProcess($lWinList[$winCount][1]))
-				$lCharStr &= ScanForCharname()
-				If $winCount = 1 Then $lFirstChar = GetCharname()
-				If $winCount <> $lWinList[0][0] Then $lCharStr &= "|"
-				MemoryClose()
-			Next
-			Local $GUICharSelector = GUICreate("Character Selector", 171, 64, 192, 124)
-			Local $ComboCharSelector = GUICtrlCreateCombo("", 8, 8, 153, 25)
-			Local $ButtonCharSelector = GUICtrlCreateButton("Use This Character", 8, 32, 153, 25)
-			GUICtrlSetData($ComboCharSelector, $lCharStr, $lFirstChar)
-			GUISetState(@SW_SHOW, $GUICharSelector)
-
-			While 1
-				Switch GUIGetMsg()
-					Case $ButtonCharSelector
-						Local $tmp = GUICtrlRead($ComboCharSelector)
-						GUIDelete($GUICharSelector)
-						Opt('GUIOnEventMode', True)
-						Return $tmp
-					Case -3
-						Exit
-				EndSwitch
-				Sleep(25)
-			WEnd
-	EndSwitch
-	Opt('GUIOnEventMode', True)
-EndFunc   ;==>CharacterSelector
 
 #EndRegion GUI Functions
 

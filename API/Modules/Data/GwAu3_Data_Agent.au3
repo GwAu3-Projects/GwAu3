@@ -220,10 +220,29 @@ Func Agent_GetAgentInfo($a_i_AgentID = -2, $a_s_Info = "")
             Return Memory_Read(Memory_Read($l_p_AgentPtr + 0x108, "ptr"), "short")
         Case "h010C"
             Return Memory_Read($l_p_AgentPtr + 0x10C, "short")
-        Case "Primary"
-            Return Memory_Read($l_p_AgentPtr + 0x10E, "byte")
+		Case "Primary"
+            Local $l_i_Pri = Memory_Read($l_p_AgentPtr + 0x10E, "byte")
+            If $l_i_Pri = 0 And Memory_Read($l_p_AgentPtr + 0x184, "dword") = 0 Then
+                Local $l_i_PlayerNumber = Memory_Read($l_p_AgentPtr + 0xF4, "short")
+                Local $l_p_NPCArray = World_GetWorldInfo("NPCArray")
+                Local $l_i_NPCSize = World_GetWorldInfo("NPCArraySize")
+                If $l_p_NPCArray <> 0 And $l_i_PlayerNumber > 0 And $l_i_PlayerNumber < $l_i_NPCSize Then
+                    $l_i_Pri = Memory_Read($l_p_NPCArray + ($l_i_PlayerNumber * 0x30) + 0x14, "byte")
+                EndIf
+            EndIf
+            Return $l_i_Pri
+
         Case "Secondary"
-            Return Memory_Read($l_p_AgentPtr + 0x10F, "byte")
+            Local $l_i_Sec = Memory_Read($l_p_AgentPtr + 0x10F, "byte")
+            If $l_i_Sec = 0 And Memory_Read($l_p_AgentPtr + 0x184, "dword") = 0 Then
+                Local $l_i_PlayerNumber = Memory_Read($l_p_AgentPtr + 0xF4, "short")
+                Local $l_p_NPCArray = World_GetWorldInfo("NPCArray")
+                Local $l_i_NPCSize = World_GetWorldInfo("NPCArraySize")
+                If $l_p_NPCArray <> 0 And $l_i_PlayerNumber > 0 And $l_i_PlayerNumber < $l_i_NPCSize Then
+                    $l_i_Sec = Memory_Read($l_p_NPCArray + ($l_i_PlayerNumber * 0x30) + 0x15, "byte")
+                EndIf
+            EndIf
+            Return $l_i_Sec
         Case "Level"
             Return Memory_Read($l_p_AgentPtr + 0x110, "byte")
         Case "Team"
@@ -1647,7 +1666,7 @@ Func Agent_IsNearXY($aAgent, $lX = Default, $lY = Default, $aRange = 1320)
 
 	$lPtr = GetAgentPtr($aAgent)
 	Local $lCount = 0
-	Local $aAgentPtrArray = Agent_GetAgentPtrArray(4, 0xDB, $allegiance_ally, $aRange, $aAgent)
+	Local $aAgentPtrArray = Agent_GetFilteredAgentArray(4, 0xDB, $allegiance_ally, $aRange, $aAgent)
 
 	For $i = 1 To $aAgentPtrArray[0]
 		If GetIsDead($lPtr) Then ContinueLoop

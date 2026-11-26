@@ -382,7 +382,7 @@ Global Const $PID_Suffering				= 4231
 Global Const $PID_Captain_Jerazh		= 5002
 ; Quest / dungeon NPCs (PlayerNumber) — used by farm scripts as $questNPC
 Global Const $PID_Tekk					= 6795		; Bogroot / Tekk's War (Sparkfly) — live agent PlayerNumber (was incorrectly 6744)
-Global Const $PID_Shandra				= 7020		; Shards of Orr / Lost Souls
+Global Const $PID_Shandra				= 7071		; Crewmember Shandra, Arbor Bay / Lost Souls (was 7020)
 #EndRegion Constant
 
 #Region Bosses

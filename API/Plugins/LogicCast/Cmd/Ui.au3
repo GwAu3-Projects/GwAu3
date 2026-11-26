@@ -1,10 +1,12 @@
 #include-once
 ; UI/NPC interaction helpers (farm orchestration around Modules Ui_/Agent_ Cmd).
 
+; Match Logic Dialog: HEADER_DIALOG_SEND via Game_Dialog (SendPacket), not Ui_Dialog (CtoS enqueue).
+; Accept/Reward already use Quest_* → same SendPacket header; follow-up $dialog=1 must match.
 Func Dialog($a_i_DialogID, $a_i_NextMapID = 0, $a_i_Deadlock = 1000)
 	If $a_i_DialogID = 0 Or $a_i_DialogID = "" Then Return False
 	Other_PingSleep(250)
-	Ui_Dialog($a_i_DialogID)
+	Game_Dialog($a_i_DialogID)
 	Other_PingSleep(250)
 	If $a_i_NextMapID <> 0 Then WaitMapLoading($a_i_NextMapID, 10000)
 	Return True
@@ -15,7 +17,7 @@ Func Dialog2($a_i_DialogID, $a_i_NextMapID = 0, $a_i_Deadlock = 1000)
 	Local $l_h_Deadlock = TimerInit()
 	Local $l_b_Load = False
 	Other_PingSleep(250)
-	Ui_Dialog($a_i_DialogID)
+	Game_Dialog($a_i_DialogID)
 	Other_PingSleep(250)
 	Do
 		Other_PingSleep(20)
@@ -74,10 +76,13 @@ Func Debug_OutCurrentTargetPlayerNumber($a_s_Label = "CurrentTarget")
 	Return $l_i_PlayerNumber
 EndFunc   ;==>Debug_OutCurrentTargetPlayerNumber
 
+; Shared dungeon/NPC quest take for all farms (BDS, Froggy, Dryad, Frostmaw, Sorrow's, …).
+; Logic shape: move → exact PlayerNumber NPC → GetReward if completed → AcceptQuest → Dialog($dialog).
+; Dialog() = Game_Dialog (HEADER_DIALOG_SEND). Do not call Ui_Dialog / AcceptQuest ad-hoc from bots.
 Func TakeQuest($a_f_X, $a_f_Y, $a_i_QuestID, $a_i_PlayerID = 0)
 	Out("Taking Quest " & $a_i_QuestID & " (NPC=" & $a_i_PlayerID & ", dialog=" & $dialog & ") map=" & Map_GetMapID())
 	AggroMoveToEX($a_f_X, $a_f_Y, 1350)
-	; Wait for the real quest NPC — never fall back to nearest living (that caused AcceptQuest on "Chant Of Triumph").
+	; Exact PlayerNumber only — nearest-NPC fallback once accepted on the wrong agent.
 	Local $l_h_Npc = 0, $lWait = TimerInit()
 	If $a_i_PlayerID <> 0 Then
 		Do
@@ -87,10 +92,10 @@ Func TakeQuest($a_f_X, $a_f_Y, $a_i_QuestID, $a_i_PlayerID = 0)
 		Until TimerDiff($lWait) > 15000
 	EndIf
 	If $l_h_Npc = 0 Then
-		Out("TakeQuest: PlayerNumber " & $a_i_PlayerID & " not found after wait — abort (no random NPC fallback)")
+		Out("TakeQuest: PlayerNumber " & $a_i_PlayerID & " not found after wait — abort")
 		Return False
 	EndIf
-	Out("TakeQuest: using Tekk/NPC ptr=" & $l_h_Npc & " PN=" & Agent_GetAgentInfo($l_h_Npc, "PlayerNumber") & " Name=" & Agent_GetAgentInfo($l_h_Npc, "Name"))
+	Out("TakeQuest: using NPC ptr=" & $l_h_Npc & " PN=" & Agent_GetAgentInfo($l_h_Npc, "PlayerNumber") & " Name=" & Agent_GetAgentInfo($l_h_Npc, "Name"))
 	Agent_ChangeTarget($l_h_Npc)
 	Other_PingSleep(100)
 	Agent_GoToNPC($l_h_Npc)

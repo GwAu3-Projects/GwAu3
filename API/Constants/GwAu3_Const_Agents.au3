@@ -23,5 +23,5 @@ Global Const $GC_I_ALLEGIANCE_NPC = 0x6 ; NPC/Minipet
 ; Core list is sparse; LogicCast/constants.au3 holds the farm NPC PlayerNumbers (Tekk, Shandra, spirits…).
 Global Const $GC_I_NPC_THE_PURVEYOR = 8057
 Global Const $GC_I_NPC_TEKK = 6795
-Global Const $GC_I_NPC_SHANDRA = 7020
+Global Const $GC_I_NPC_SHANDRA = 7071
 #EndRegion NPC PlayerNumber

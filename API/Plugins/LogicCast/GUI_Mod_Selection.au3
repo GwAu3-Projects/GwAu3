@@ -353,7 +353,10 @@ Func ModSelection()
    $Height_GUI = 312
    $iSpacing= 8
 
-   If FileExists($MOD_INI_PATH) Then $array_weaponmods_ini = _iniToArray("Mod_Settings.ini", "array_weaponmods")
+   If FileExists($MOD_INI_PATH) Then
+	  Local $lIniMods = _iniToArray($MOD_INI_PATH, "array_weaponmods")
+	  If IsArray($lIniMods) Then $array_weaponmods_ini = $lIniMods
+   EndIf
 ;  _ArrayDisplay ($Array_weaponmods_ini, "2D Display")
 
 
@@ -434,7 +437,7 @@ Func SpecialEvents()
 			   Next
 			Next
 
-			_arrayToIni("Mod_Settings.ini", "Mod_Settings.ini", $array_weaponmods)
+			_arrayToIni($MOD_INI_PATH, "Mod_Settings.ini", $array_weaponmods)
 
 ;			_ArrayDisplay($array_weaponmods_ini, "2D display")
 
@@ -466,13 +469,19 @@ Func SpecialEvents()
 
  Func _iniToArray($hFile, $sArrays = 0)
    If $sArrays == 0 Then Return
+   If Not FileExists($hFile) Then Return
    $sArrays = StringSplit($sArrays, ",", 2)
    Local $aSection = IniReadSectionNames($hFile)
+   ; IniReadSectionNames returns 0 (not an array) when the file is missing/empty/unreadable.
+   If Not IsArray($aSection) Or $aSection[0] < 1 Then Return
    _ArrayDelete($aSection, 0)
+   If Not IsArray($aSection) Or UBound($aSection) < 0 Then Return
 
-   Local $aProperties[UBound($aSection)][4]
+   Local $aProperties[UBound($aSection) + 1][4]
    Local $aData = StringSplit($aSection[0], "#")										; returns an array of properties
+   If Not IsArray($aData) Or $aData[0] < 2 Then Return
    Local $sTemp = IniReadSection($hFile, $aSection[0]), $aTemp[1]
+   If Not IsArray($sTemp) Or $sTemp[0][0] < 1 Then Return
 ;   _ArrayDisplay ($sTemp, "2D Display")
 
    For $jj = 1 To $sTemp[0][0]
@@ -481,12 +490,14 @@ Func SpecialEvents()
    _ArrayDelete($aTemp, 0)
 ;   _ArrayDisplay ($aTemp, "2D Display")
 
-   Local $Array_ini[(UBound($aTemp))/$aData[2]][$aData[2]]
+   Local $iCols = Number($aData[2])
+   If $iCols < 1 Then Return
+   Local $Array_ini[(UBound($aTemp) + 1) / $iCols][$iCols]
 
-   For $i = 0 To (UBound($aTemp)+1)/$aData[2] - 1
-	  For $j = 0 to $aData[2] - 1
-		 $Array_ini[$i][$j] = $aTemp[ $i * $aData[2] + $j ]
-		 If $i = (UBound($aTemp)+1)/$aData[2] - 1 then _ArrayDisplay ($Array_ini, "2D Display")
+   For $i = 0 To (UBound($aTemp) + 1) / $iCols - 1
+	  For $j = 0 To $iCols - 1
+		 $Array_ini[$i][$j] = $aTemp[$i * $iCols + $j]
+;		 If $i = (UBound($aTemp)+1)/$iCols - 1 then _ArrayDisplay ($Array_ini, "2D Display")
 	  Next
    Next
 

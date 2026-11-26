@@ -144,10 +144,14 @@ Func Map_WaitMapLoading($a_i_MapID = -1, $a_i_InstanceType = -1, $a_i_Timeout = 
             Sleep(1000)
         EndIf
         $l_b_TimedOut = (TimerDiff($l_h_Timeout) >= $a_i_Timeout)
+		; SkillbarArray ptr alone can be non-zero while slots are still empty (L2 portal race).
+		Local $l_b_SkillsReady = (Number(Skill_GetSkillbarInfo(1, "SkillID")) <> 0 _
+				Or Number(Skill_GetSkillbarInfo(8, "SkillID")) <> 0)
     Until ( _
         Agent_GetAgentPtr(-2) <> 0 _
         And Agent_GetMaxAgents() <> 0 _
         And World_GetWorldInfo("SkillbarArray") <> 0 _
+		And $l_b_SkillsReady _
         And Party_GetPartyContextPtr() <> 0 _
         And ($a_i_InstanceType = -1 Or Map_GetInstanceInfo("Type") = $a_i_InstanceType) _
         And ($a_i_MapID = -1 Or Map_GetCharacterInfo("MapID") = $a_i_MapID) _

@@ -5,17 +5,11 @@
 
 ; Agent_GetBestTarget lives in Modules/Data/GwAu3_Data_Agent.au3 - do not redefine here.
 
+; Logic GetNearestDistance — nearest living foe via GetNearestAgent (mode 3: dead/spirit/minion dropped).
 Func Agent_GetNearestDistance($a_i_Allegiance = 3)
-	Local $aAgents = Agent_GetAgentArray(0xDB)
-	Local $iMin = 999999
-	For $i = 1 To $aAgents[0]
-		Local $iID = Agent_GetAgentInfo($aAgents[$i], "ID")
-		If Agent_GetAgentInfo($iID, "Allegiance") = $a_i_Allegiance Then
-			Local $iD = Agent_GetDistance($iID)
-			If $iD > 0 And $iD < $iMin Then $iMin = $iD
-		EndIf
-	Next
-	Return $iMin
+	Local $p = Agent_GetNearestAgent(-2, 0xDB, $a_i_Allegiance)
+	If $p <> 0 Then Return Agent_GetDistance($p)
+	Return 999999
 EndFunc
 
 ;~Description: Returns the party member with the lowest HP
@@ -102,18 +96,19 @@ Func Agent_GetBestHexTarget($a_i_SkillID, $a_i_Range = 1320)
 	Return Agent_GetBestTargetByRole($a_i_Range, $sKind, True, $bAoe)
 EndFunc   ;==>Agent_GetBestHexTarget
 
-; healer = Monk/Ritualist, not martial.
+; healer = Monk/Ritualist support caster (non-martial).
+; guilt_mistrust = non-Monk/non-Ritualist, non-martial.
 ; caster = not martial (spell shutdown).
 ; martial = melee slow or attack-speed shutdown.
 ; both = hits casters and martials (no weapon filter).
-; general = any unhexed foe. Data Effect1 fills gaps the name lists miss.
 Func Agent_GetHexShutdownType($a_i_SkillID)
 	Switch Number($a_i_SkillID)
 		Case $Shame, $Mark_of_Subversion
 			Return "healer"
+		Case $Guilt, $Mistrust, $Mistrust_PvP
+			Return "guilt_mistrust"
 		Case $Diversion, $Visions_of_Regret, $Visions_of_Regret_PvP, $Backfire, $Soul_Leech, _
-				$Guilt, $Mistrust, $Mistrust_PvP, $Spiteful_Spirit, _
-				$Migraine, $Migraine_PvP, $Mind_Freeze, $Mind_Freeze_PvP, _
+				$Spiteful_Spirit, $Migraine, $Migraine_PvP, $Mind_Freeze, $Mind_Freeze_PvP, _
 				$Arcane_Conundrum, $Enchanters_Conundrum, $Enchanters_Conundrum_PvP, $Arcane_Languor
 			Return "caster"
 		; Next skill of any kind is slowed or disabled, so casters and martials both qualify.
@@ -170,17 +165,20 @@ Func Agent_GetBestTargetByRole($a_i_Range = 1320, $a_s_Kind = "general", $a_b_No
 		If $lPtr = 0 Or Agent_IsWormAgent($lPtr) Then ContinueLoop
 		If $a_b_NoHex And Agent_GetAgentInfo($lPtr, "IsHexed") Then ContinueLoop
 
+		Local $bIsMartial = Agent_IsMartial($lPtr) Or Agent_IsMartialPrimary($lPtr)
+		Local $iPrimary = Number(Agent_GetAgentInfo($lPtr, "Primary"))
+
 		Switch $a_s_Kind
 			Case "healer"
-				If Agent_IsMartial($lPtr) Or Not Agent_IsSupportCasterProfession($lPtr) Then ContinueLoop
+				If $bIsMartial Or Not Agent_IsSupportCasterProfession($lPtr) Then ContinueLoop
+			Case "guilt_mistrust"
+				If $bIsMartial Or $iPrimary = 0 Or Agent_IsSupportCasterProfession($lPtr) Then ContinueLoop
 			Case "caster"
-				; Guilt / Mistrust / Backfire / … only punish spells. Skip bow/melee weapons
-				; and martial primaries (Ranger etc. often report WeaponType 0 while idle).
-				If Agent_IsMartial($lPtr) Or Agent_IsMartialPrimary($lPtr) Then ContinueLoop
+				If $bIsMartial Or $iPrimary = 0 Then ContinueLoop
 			Case "martial"
-				If Not Agent_IsMartial($lPtr) And Not Agent_IsMartialPrimary($lPtr) Then ContinueLoop
+				If Not $bIsMartial Then ContinueLoop
 			Case "attacking"
-				If (Not Agent_IsMartial($lPtr) And Not Agent_IsMartialPrimary($lPtr)) Or Not Agent_GetAgentInfo($lPtr, "IsAttacking") Then ContinueLoop
+				If Not $bIsMartial Or Not Agent_GetAgentInfo($lPtr, "IsAttacking") Then ContinueLoop
 			Case "adrenal"
 				If Not Agent_IsAdrenalProfession($lPtr) Then ContinueLoop
 			Case "hexed"
@@ -303,14 +301,19 @@ EndFunc   ;==>Agent_GetMostBalledHexedAlly
 
 Func Agent_NeedEchoAlly($a_i_SkillID)
 	Local $lHeroID
+	Local $iSkill = Number($a_i_SkillID)
 
-	If GetAttributeByID($Leadership, True) < 20 and $a_i_SkillID == $Heroic_Refrain Then Return Agent_GetAgentPtr(-2)
-	For $heronumber = 1 to Party_GetPartyContextInfo("TotalPartySize") - 1
+	Local $iLead = Number(Attribute_GetPartyAttributeInfo($Leadership, 0, "Level"))
+	If $iSkill = Number($Heroic_Refrain) And $iLead < 20 Then Return Agent_GetAgentPtr(-2)
+
+	Local $lHeroCount = Party_GetMyPartyInfo("ArrayHeroPartyMemberSize")
+	For $heronumber = 1 To $lHeroCount
 		$lHeroID = GetHeroID($heronumber)
-		If Agent_GetAgentInfo($lHeroID, "IsDead") Then ContinueLoop
-		If Not Skill_HasEffect($a_i_SkillID, $lHeroID) Then Return Agent_GetAgentPtr($lHeroID)
+		If $lHeroID = 0 Or Agent_GetAgentInfo($lHeroID, "IsDead") Then ContinueLoop
+		If Not Skill_HasEffect($iSkill, $lHeroID) Then Return Agent_GetAgentPtr($lHeroID)
 	Next
-EndFunc   ;==>NeedEchoAlly
+	Return 0
+EndFunc   ;==>Agent_NeedEchoAlly
 
 ;~Description: Returns the ally with the most Conditions on them
 
@@ -388,19 +391,7 @@ EndFunc   ;==>Agent_GetMostEnchantedEnemy
 #EndRegion Agent Controls
 
 
-; Living foe that should keep Fight/aggro going — excludes spirits, minions, and TypeMap-spawned.
-; Matches old Logic GetNumberOfEnemies (skip $typemap_spawned_enemy) + Agent_GetFilteredAgentArray mode 3.
-Func Agent_IsCombatEnemy($a_h_Agent)
-	If $a_h_Agent = 0 Then Return False
-	If Agent_GetAgentInfo($a_h_Agent, "Allegiance") <> 3 Then Return False
-	If Agent_GetAgentInfo($a_h_Agent, "IsDead") Then Return False
-	If Agent_GetAgentInfo($a_h_Agent, "IsSpirit") Or Agent_GetAgentInfo($a_h_Agent, "IsMinion") Then Return False
-	If Agent_IsSpiritAgent($a_h_Agent) Then Return False
-	If BitAND(Agent_GetAgentInfo($a_h_Agent, "TypeMap"), $typemap_spawned_enemy) Then Return False
-	If Agent_IsWormAgent($a_h_Agent) Then Return False
-	Return True
-EndFunc   ;==>Agent_IsCombatEnemy
-
+; Logic IsEnemyNear — living foes only (FilteredAgentArray mode 3 drops dead/spirit/minion).
 Func Agent_IsEnemyNear($a_i_Range = 1320)
 	Return Agent_GetNumberOfEnemies($a_i_Range) > 0
 EndFunc
@@ -409,28 +400,25 @@ Func Agent_NoEnemiesAround($a_i_Range = 1320)
 	Return Agent_GetNumberOfEnemies($a_i_Range) = 0
 EndFunc
 
+; Logic GetNumberOfEnemies — same mode-3 living-enemy array, not a raw AgentArray scan.
 Func Agent_GetNumberOfEnemies($a_i_Range = 3000)
-	Local $aAgents = Agent_GetAgentArray(0xDB)
-	Local $iCount = 0
-	For $i = 1 To $aAgents[0]
-		Local $iID = Agent_GetAgentInfo($aAgents[$i], "ID")
-		If Not Agent_IsCombatEnemy($iID) Then ContinueLoop
-		If Agent_GetDistance($iID) <= $a_i_Range Then $iCount += 1
-	Next
-	Return $iCount
+	Local $a = Agent_GetFilteredAgentArray(3, 0xDB, 3, $a_i_Range)
+	If Not IsArray($a) Then Return 0
+	Return $a[0]
 EndFunc
 
 Func Agent_GetNumberOfEnemiesNearAgent($a_i_Range = 3000, $a_h_Agent = -2)
-	Local $aAgents = Agent_GetAgentArray(0xDB)
-	Local $iCount = 0
-	Local $iRefID = Agent_GetAgentInfo($a_h_Agent, "ID")
-	For $i = 1 To $aAgents[0]
-		Local $iID = Agent_GetAgentInfo($aAgents[$i], "ID")
-		If Not Agent_IsCombatEnemy($iID) Then ContinueLoop
-		If Agent_GetDistance($iID, $iRefID) <= $a_i_Range Then $iCount += 1
-	Next
-	Return $iCount
+	Local $a = Agent_GetFilteredAgentArray(3, 0xDB, 3, $a_i_Range, $a_h_Agent)
+	If Not IsArray($a) Then Return 0
+	Return $a[0]
 EndFunc
+
+; Living enemies within $a_i_Range of a waypoint (Logic GetNumberOfEnemiesNearXY).
+Func Agent_GetNumberOfEnemiesNearXY($a_f_X, $a_f_Y, $a_i_Range = 3000)
+	Local $a = Agent_GetFilteredAgentArray(3, 0xDB, 3, $a_i_Range, Agent_GetAgentPtr(-2), 0, $a_f_X, $a_f_Y)
+	If Not IsArray($a) Then Return 0
+	Return $a[0]
+EndFunc   ;==>Agent_GetNumberOfEnemiesNearXY
 
 Func Agent_GetNumberOfAllies($a_i_Range = 5000)
 	Local $aAgents = Agent_GetAgentArray(0xDB)
@@ -590,8 +578,9 @@ Func Party_GetPartyHealth()
 	Return Round($fSum / $iCounted, 3)
 EndFunc
 
+; Logic GetPartyDefeated = party state 0x20 — NOT "party HP == 0" (that false-resigns on a single death).
 Func Party_IsDefeated()
-	Return Party_GetPartyHealth() = 0
+	Return Party_GetPartyContextInfo("IsDefeated")
 EndFunc
 
 ; Living party agents (allegiance ally + party TypeMap bit), same idea as old Logic GetParty().
@@ -665,8 +654,67 @@ Func Agent_GetMinionPtrArray($a_i_Allegiance = $allegiance_spirit, $a_i_Range = 
 	Return $lAgentArray
 EndFunc
 
+; NPC model index for spirits/minions — TransmogNpcId bit 0x20000000 overrides PlayerNumber (UAI same).
+Func Agent_GetSpiritModelId($a_h_Agent)
+	Local $iPN = Number(Agent_GetAgentInfo($a_h_Agent, "PlayerNumber"))
+	Local $iTrans = Number(Agent_GetAgentInfo($a_h_Agent, "TransmogNpcId"))
+	If BitAND($iTrans, 0x20000000) <> 0 Then Return BitXOR($iTrans, 0x20000000)
+	Return $iPN
+EndFunc
+
+; True for ritualist spirits (NPC IsSpirit flag and/or known spirit model IDs). Excludes pets.
+Func Agent_IsRitualistSpiritAgent($a_h_Agent)
+	If $a_h_Agent = 0 Then Return False
+	If Number(Agent_GetAgentInfo($a_h_Agent, "Allegiance")) <> $allegiance_spirit Then Return False
+	If Number(Agent_GetAgentInfo($a_h_Agent, "LoginNumber")) <> 0 Then Return False
+	If Agent_GetAgentInfo($a_h_Agent, "IsDead") Then Return False
+	If Agent_IsSpiritAgent($a_h_Agent) Then Return True
+	Switch Agent_GetSpiritModelId($a_h_Agent)
+		Case $PID_Empowerment, $PID_Rejuvenation, $PID_Displacement, $PID_Life, $PID_Preservation _
+				, $PID_Recuperation, $PID_Shelter, $PID_Union, $PID_Restoration _
+				, $PID_Agony, $PID_Anger, $PID_Anguish, $PID_Bloodsong, $PID_Destruction _
+				, $PID_Earthbind, $PID_Hate, $PID_Pain, $PID_Suffering, $PID_Vampirism _
+				, $PID_Dissonance, $PID_Disenchantment, $PID_Shadowsong, $PID_Wanderlust
+			Return True
+	EndSwitch
+	Return False
+EndFunc
+
+; True if agent is in *our* party Others list (spirits/minions/pets we own — not other players).
+Func Agent_IsMineControlled($a_h_Agent)
+	Local $lOthersPtr = Party_GetMyPartyInfo("ArrayOthersPartyMember")
+	Local $lOthersSize = Party_GetMyPartyInfo("ArrayOthersPartyMemberSize")
+	If $lOthersPtr = 0 Or $lOthersSize <= 0 Then Return False
+	Local $lID = Number(Agent_GetAgentInfo($a_h_Agent, "ID"))
+	If $lID = 0 Then Return False
+	For $i = 0 To $lOthersSize - 1
+		If Number(Memory_Read($lOthersPtr + ($i * 0x4), "dword")) = $lID Then Return True
+	Next
+	Return False
+EndFunc
+
+; Living spirits we control in range — agent scan (UAI-style).
+Func Agent_GetSpiritPtrArray($a_i_Range = 5000)
+	Local $lOut[1] = [0]
+	Local $lMax = Agent_GetMaxAgents()
+	Local $lHaveOthers = (Party_GetMyPartyInfo("ArrayOthersPartyMemberSize") > 0)
+	For $i = 1 To $lMax
+		Local $lPtr = Agent_GetAgentPtr($i)
+		If $lPtr = 0 Then ContinueLoop
+		If Number(Agent_GetAgentInfo($lPtr, "Type")) <> 0xDB Then ContinueLoop
+		If Not Agent_IsRitualistSpiritAgent($lPtr) Then ContinueLoop
+		If Agent_GetDistance($lPtr) > $a_i_Range Then ContinueLoop
+		; Keep only spirits we own; if Others is empty fall back to allegiance-4 spirits in range.
+		If $lHaveOthers And Not Agent_IsMineControlled($lPtr) Then ContinueLoop
+		$lOut[0] += 1
+		ReDim $lOut[$lOut[0] + 1]
+		$lOut[$lOut[0]] = $lPtr
+	Next
+	Return $lOut
+EndFunc
+
 Func Agent_GetMySpiritCount($a_i_Range = 5000)
-	Local $lArr = Agent_GetMinionPtrArray($allegiance_spirit, $a_i_Range)
+	Local $lArr = Agent_GetSpiritPtrArray($a_i_Range)
 	Return $lArr[0]
 EndFunc
 
@@ -678,10 +726,10 @@ EndFunc
 ; Offensive and/or defensive ritualist spirits I control (Logic GetNumberOfSpirits).
 Func Agent_GetNumberOfSpirits($a_i_Range = 5000, $a_b_Offensive = True, $a_b_Defensive = True)
 	Local $lCount = 0
-	Local $lMinionPtrArray = Agent_GetMinionPtrArray($allegiance_spirit, $a_i_Range)
+	Local $lMinionPtrArray = Agent_GetSpiritPtrArray($a_i_Range)
 
 	For $i = 1 To $lMinionPtrArray[0]
-		Switch Agent_GetAgentInfo($lMinionPtrArray[$i], "PlayerNumber")
+		Switch Agent_GetSpiritModelId($lMinionPtrArray[$i])
 			Case $PID_Empowerment, $PID_Rejuvenation, $PID_Displacement, $PID_Life, $PID_Preservation _
 					, $PID_Recuperation, $PID_Shelter, $PID_Union, $PID_Restoration
 				If $a_b_Defensive Then $lCount += 1
@@ -706,7 +754,7 @@ EndFunc
 Func Agent_GetLowestSpirit()
 	Local $lHP, $lLowestHP = 1000
 	Local $LowestSpiritPtr = 0
-	Local $lSpiritPtrArray = Agent_GetMinionPtrArray($allegiance_spirit)
+	Local $lSpiritPtrArray = Agent_GetSpiritPtrArray()
 	If $lSpiritPtrArray[0] = 0 Then Return 0
 	For $i = 1 To $lSpiritPtrArray[0]
 		$lHP = Agent_GetAgentInfo($lSpiritPtrArray[$i], "HP")
@@ -719,7 +767,16 @@ Func Agent_GetLowestSpirit()
 EndFunc
 
 Func Agent_GetNearestSpirit($a_h_Agent = -2)
-	Return Agent_GetNearestAgent($a_h_Agent, 0xDB, $allegiance_spirit)
+	Local $lBest = 0, $lBestDist = 999999
+	Local $lArr = Agent_GetSpiritPtrArray(5000)
+	For $i = 1 To $lArr[0]
+		Local $lD = Agent_GetDistance($lArr[$i], $a_h_Agent)
+		If $lD < $lBestDist Then
+			$lBestDist = $lD
+			$lBest = $lArr[$i]
+		EndIf
+	Next
+	Return $lBest
 EndFunc
 
 Func Agent_GetNearestMinionAlly($a_h_Agent = -2)
@@ -796,9 +853,9 @@ Func Agent_IsWormAgent($a_h_Agent = -2)
 	Return Agent_GetAgentInfo($a_h_Agent, "HP") <= 0
 EndFunc
 
-; Spirit/minion via Npc model flags (PlayerNumber indexes NpcStruct).
+; Spirit/minion via Npc model flags (PlayerNumber / Transmog indexes NpcStruct).
 Func Agent_IsSpiritAgent($a_h_Agent = -2)
-	Return Agent_GetNpcInfo(Agent_GetAgentInfo($a_h_Agent, "PlayerNumber"), "IsSpirit")
+	Return Agent_GetNpcInfo(Agent_GetSpiritModelId($a_h_Agent), "IsSpirit")
 EndFunc
 
 

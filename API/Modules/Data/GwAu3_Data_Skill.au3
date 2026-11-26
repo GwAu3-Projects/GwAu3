@@ -250,7 +250,9 @@ Func Skill_GetSkillbarInfo($a_i_SkillSlot = 1, $a_s_Info = "", $a_i_HeroNumber =
         Case "IsRecharged"
             Local $l_i_Timestamp = Memory_Read($l_p_SkillbarPtr + 0xC + (($a_i_SkillSlot - 1) * 0x14), "dword")
             If $l_i_Timestamp = 0 Then Return True
-            Return ($l_i_Timestamp - Skill_GetSkillTimer()) = 0
+            ; Signed compare — same basis as RechargeTime (timer wrap-safe).
+            Local $l_i_TimeRemaining = Utils_MakeInt32($l_i_Timestamp) - Utils_MakeInt32(Skill_GetSkillTimer())
+            Return $l_i_TimeRemaining <= 0
 
         Case "RechargeTime"
 			Local $l_i_RechargeTimestamp = Memory_Read($l_p_SkillbarPtr + 0xC + (($a_i_SkillSlot - 1) * 0x14), "dword")

@@ -53,9 +53,12 @@ Global $GUI_idMenuFile_idExit					= 0			;Exit
 Global $GUI_idButtonStart						= 0
 Global $GUI_idButtonStop						= 0
 Global $GUI_idButtonResume						= 0
+Global $GUI_idCheckOnTop						= 0
 Global $GUI_idButtonStart_Function				= ""	;Sub Function to call onStartPressed
 Global $GUI_idButtonStop_Function				= ""	;Sub Function to call onStopPressed
 Global $GUI_idButtonResume_Function				= ""	;Sub Function to call onResumePressed
+Global $GUI_idCharCombo							= 0		;Optional char dropdown ($doLoadLoggedChars)
+Global $GUI_idCharRefresh						= 0
 
 ;Group 1: Settings
 Global $GUI_idConsole 							= 0
@@ -157,9 +160,11 @@ Func GUI_Create()
 	local $tempCtrlTop = 0
 	Global $Title = $BOTNAME & " - v" & $VERSION & " - By " & $AUTHORS[0]
 
-	;Main — TOPMOST so the bot stays above the game; show without activating to avoid minimizing GW
-	$GUI = GUICreate($Title, $GUI_WIDTH, $GUI_HEIGHT, -1, -1, -1, BitOR($WS_EX_TOPMOST, $WS_EX_WINDOWEDGE))
+	; No WS_EX_TOPMOST at create — covers GW char select. Pin via WinSetOnTop (hwnd) like Rupt.
+	$GUI = GUICreate($Title, $GUI_WIDTH, $GUI_HEIGHT, 0, 0, -1, $WS_EX_WINDOWEDGE)
 	GUISetOnEvent($GUI_EVENT_CLOSE, "GUI_onExit")
+	GUISetOnEvent($GUI_EVENT_MINIMIZE, "GUI_OnMinimize")
+	GUISetOnEvent($GUI_EVENT_RESTORE, "GUI_OnRestore")
 	GUISetFont($GUI_FONTSIZE)
 	GUISetBkColor(0xAAAAAA)
 
@@ -176,77 +181,139 @@ Func GUI_Create()
 
 	#Region Gui Grid Row 1
 
-	;Buttons
-	$GUI_idButtonStart 	= GUICtrlCreateButton("Start" , $GUI_BORDERSIZE, $GUI_BORDERSIZE, $GUI_BUTTON_WIDTH, $GUI_BUTTON_HEIGHT, -1, $WS_EX_LAYOUTRTL)
-	$GUI_idButtonStop 	= GUICtrlCreateButton("Stop"  , $GUI_BORDERSIZE, $GUI_BORDERSIZE, $GUI_BUTTON_WIDTH, $GUI_BUTTON_HEIGHT, -1, $WS_EX_LAYOUTRTL)
-	$GUI_idButtonResume 	= GUICtrlCreateButton("Resume", $GUI_BORDERSIZE, $GUI_BORDERSIZE, $GUI_BUTTON_WIDTH, $GUI_BUTTON_HEIGHT, -1, $WS_EX_LAYOUTRTL)
+	; One row, equal height: [Char combo | Settings width] [Refresh | console column] [Start]
+	Local $l_i_RowY = $GUI_BORDERSIZE
+	Local $l_i_RowH = $GUI_BUTTON_HEIGHT
+	Local $l_b_CharCombo = IsDeclared("doLoadLoggedChars") And $doLoadLoggedChars
+	Local $l_i_SettingsW = $GUI_LABEL_WIDTH + $GUI_BORDERSIZE * 2
+	Local $l_i_StartX = $GUI_BORDERSIZE
+	Local $l_i_RefreshX = 0, $l_i_RefreshW = 0
+
+	If $l_b_CharCombo Then
+		$l_i_StartX = $GUI_WIDTH - $GUI_BORDERSIZE - $GUI_BUTTON_WIDTH
+		; Combo ends on Settings right edge; Refresh starts where the console will.
+		$l_i_RefreshX = $GUI_BORDERSIZE + $l_i_SettingsW + $GUI_CONTROL_SPACE
+		$l_i_RefreshW = $l_i_StartX - $GUI_CONTROL_SPACE - $l_i_RefreshX
+
+		$GUI_idCharCombo = GUICtrlCreateCombo("", $GUI_BORDERSIZE, $l_i_RowY, $l_i_SettingsW, $l_i_RowH, BitOR($CBS_DROPDOWN, $CBS_AUTOHSCROLL))
+		$GUI_idCharRefresh = GUICtrlCreateButton("Refresh", $l_i_RefreshX, $l_i_RowY, $l_i_RefreshW, $l_i_RowH)
+		GUICtrlSetOnEvent($GUI_idCharRefresh, "GUI_FillCharCombo")
+
+		$GUI_idButtonStart = GUICtrlCreateButton("Start", $l_i_StartX, $l_i_RowY, $GUI_BUTTON_WIDTH, $l_i_RowH, -1, $WS_EX_LAYOUTRTL)
+		$GUI_idButtonStop = GUICtrlCreateButton("Stop", $l_i_StartX, $l_i_RowY, $GUI_BUTTON_WIDTH, $l_i_RowH, -1, $WS_EX_LAYOUTRTL)
+		$GUI_idButtonResume = GUICtrlCreateButton("Resume", $l_i_StartX, $l_i_RowY, $GUI_BUTTON_WIDTH, $l_i_RowH, -1, $WS_EX_LAYOUTRTL)
+
+		; ComboBox closed height is theme-fixed — match Refresh/Start to that Y/H.
+		Local $aComboPos = ControlGetPos($GUI, "", $GUI_idCharCombo)
+		If IsArray($aComboPos) Then
+			$l_i_RowY = $aComboPos[1]
+			$l_i_RowH = $aComboPos[3]
+			GUICtrlSetPos($GUI_idCharCombo, $GUI_BORDERSIZE, $l_i_RowY, $l_i_SettingsW, $l_i_RowH)
+			GUICtrlSetPos($GUI_idCharRefresh, $l_i_RefreshX, $l_i_RowY, $l_i_RefreshW, $l_i_RowH)
+			GUICtrlSetPos($GUI_idButtonStart, $l_i_StartX, $l_i_RowY, $GUI_BUTTON_WIDTH, $l_i_RowH)
+			GUICtrlSetPos($GUI_idButtonStop, $l_i_StartX, $l_i_RowY, $GUI_BUTTON_WIDTH, $l_i_RowH)
+			GUICtrlSetPos($GUI_idButtonResume, $l_i_StartX, $l_i_RowY, $GUI_BUTTON_WIDTH, $l_i_RowH)
+		EndIf
+	Else
+		$GUI_idButtonStart = GUICtrlCreateButton("Start", $l_i_StartX, $l_i_RowY, $GUI_BUTTON_WIDTH, $l_i_RowH, -1, $WS_EX_LAYOUTRTL)
+		$GUI_idButtonStop = GUICtrlCreateButton("Stop", $l_i_StartX, $l_i_RowY, $GUI_BUTTON_WIDTH, $l_i_RowH, -1, $WS_EX_LAYOUTRTL)
+		$GUI_idButtonResume = GUICtrlCreateButton("Resume", $l_i_StartX, $l_i_RowY, $GUI_BUTTON_WIDTH, $l_i_RowH, -1, $WS_EX_LAYOUTRTL)
+	EndIf
+
 	GUICtrlSetOnEvent($GUI_idButtonStart, "GUI_ButtonCallback")
 	GUICtrlSetOnEvent($GUI_idButtonStop, "GUI_ButtonCallback")
 	GUICtrlSetOnEvent($GUI_idButtonResume, "GUI_ButtonCallback")
-	GUI_HideButton($GUI_idButtonStop  , True)
+	GUI_HideButton($GUI_idButtonStop, True)
 	GUI_HideButton($GUI_idButtonResume, True)
 
-
+	; Left-column anchor for Settings (Start may sit on the right).
+	$temp1 = GUI_GetCtrlInfo($GUI_idButtonStart)
+	$temp1[0] = $GUI_BORDERSIZE
+	$temp1[1] = $l_i_RowY
+	$temp1[2] = $l_b_CharCombo ? $l_i_SettingsW : $GUI_BUTTON_WIDTH
+	$temp1[3] = $l_i_RowH
 	#EndRegion Gui Grid Row 1
 
 	#Region Gui Grid Row 2
-	;Group 1: Fast Settings
+	;Group 1: Fast Settings (same layout as Logic-main + On Top)
 	$tempCtrlTop = $GUI_CHECKBOX_HEIGHT + $GUI_CONTROL_SPACE
+	; Use create Y for Settings top border (group title text overhangs above this line).
+	Local $l_i_SettingsY = $temp1[1] + $temp1[3] + $GUI_CONTROL_SPACE
+	Local $l_i_SettingsH = 20 + $tempCtrlTop * 10
 
-	$temp1 = GUI_GetCtrlInfo($GUI_idButtonStart)
-	$GUI_GroupSettings = GUICtrlCreateGroup("Settings", $GUI_BORDERSIZE		, $temp1[1] + $temp1[3] + $GUI_CONTROL_SPACE, $GUI_LABEL_WIDTH + $GUI_BORDERSIZE * 2,  20 + $tempCtrlTop * 9, -1, $WS_EX_TRANSPARENT)
-	$GUI_GroupSettings_CheckRender  	= GUICtrlCreateCheckbox("Stop Rendering"	, $GUI_BORDERSIZE * 2, $temp1[1] + $temp1[3] + 20 + $tempCtrlTop * 0, $GUI_CHECKBOX_WIDTH, $GUI_CHECKBOX_HEIGHT)
-	$GUI_GroupSettings_CheckSkills   	= GUICtrlCreateCheckbox("Load Skills"		, $GUI_BORDERSIZE * 2, $temp1[1] + $temp1[3] + 20 + $tempCtrlTop * 1, $GUI_CHECKBOX_WIDTH, $GUI_CHECKBOX_HEIGHT)
-	$GUI_GroupSettings_CheckHM			= GUICtrlCreateCheckbox("Hard Mode"			, $GUI_BORDERSIZE * 2, $temp1[1] + $temp1[3] + 20 + $tempCtrlTop * 2, $GUI_CHECKBOX_WIDTH, $GUI_CHECKBOX_HEIGHT)
-	$GUI_GroupSettings_CheckConsets		= GUICtrlCreateCheckbox("Consets"			, $GUI_BORDERSIZE * 2, $temp1[1] + $temp1[3] + 20 + $tempCtrlTop * 3, $GUI_CHECKBOX_WIDTH, $GUI_CHECKBOX_HEIGHT)
-	$GUI_GroupSettings_CheckScrolls 	= GUICtrlCreateCheckbox("Scrolls"			, $GUI_BORDERSIZE * 2, $temp1[1] + $temp1[3] + 20 + $tempCtrlTop * 4, $GUI_CHECKBOX_WIDTH, $GUI_CHECKBOX_HEIGHT)
-	$GUI_GroupSettings_CheckStones  	= GUICtrlCreateCheckbox("Stones"		 	, $GUI_BORDERSIZE * 2, $temp1[1] + $temp1[3] + 20 + $tempCtrlTop * 5, $GUI_CHECKBOX_WIDTH, $GUI_CHECKBOX_HEIGHT)
-	$GUI_GroupSettings_CheckChests  	= GUICtrlCreateCheckbox("Open Chests"		, $GUI_BORDERSIZE * 2, $temp1[1] + $temp1[3] + 20 + $tempCtrlTop * 6, $GUI_CHECKBOX_WIDTH, $GUI_CHECKBOX_HEIGHT)
-	$GUI_GroupSettings_CheckRareSkins	= GUICtrlCreateCheckbox("Store Rare Skins"	, $GUI_BORDERSIZE * 2, $temp1[1] + $temp1[3] + 20 + $tempCtrlTop * 7, $GUI_CHECKBOX_WIDTH, $GUI_CHECKBOX_HEIGHT)
-	$GUI_GroupSettings_CheckSell    	= GUICtrlCreateCheckbox("Auto-Sell"	  		, $GUI_BORDERSIZE * 2, $temp1[1] + $temp1[3] + 20 + $tempCtrlTop * 8, $GUI_CHECKBOX_WIDTH, $GUI_CHECKBOX_HEIGHT)
+	$GUI_GroupSettings = GUICtrlCreateGroup("Settings", $GUI_BORDERSIZE, $l_i_SettingsY, $l_i_SettingsW, $l_i_SettingsH, -1, $WS_EX_TRANSPARENT)
+	$GUI_idCheckOnTop = GUICtrlCreateCheckbox("On Top"			, $GUI_BORDERSIZE * 2, $l_i_SettingsY + 20 + $tempCtrlTop * 0, $GUI_CHECKBOX_WIDTH, $GUI_CHECKBOX_HEIGHT)
+	$GUI_GroupSettings_CheckRender  	= GUICtrlCreateCheckbox("Stop Rendering"	, $GUI_BORDERSIZE * 2, $l_i_SettingsY + 20 + $tempCtrlTop * 1, $GUI_CHECKBOX_WIDTH, $GUI_CHECKBOX_HEIGHT)
+	$GUI_GroupSettings_CheckSkills   	= GUICtrlCreateCheckbox("Load Skills"		, $GUI_BORDERSIZE * 2, $l_i_SettingsY + 20 + $tempCtrlTop * 2, $GUI_CHECKBOX_WIDTH, $GUI_CHECKBOX_HEIGHT)
+	$GUI_GroupSettings_CheckHM			= GUICtrlCreateCheckbox("Hard Mode"			, $GUI_BORDERSIZE * 2, $l_i_SettingsY + 20 + $tempCtrlTop * 3, $GUI_CHECKBOX_WIDTH, $GUI_CHECKBOX_HEIGHT)
+	$GUI_GroupSettings_CheckConsets		= GUICtrlCreateCheckbox("Consets"			, $GUI_BORDERSIZE * 2, $l_i_SettingsY + 20 + $tempCtrlTop * 4, $GUI_CHECKBOX_WIDTH, $GUI_CHECKBOX_HEIGHT)
+	$GUI_GroupSettings_CheckScrolls 	= GUICtrlCreateCheckbox("Scrolls"			, $GUI_BORDERSIZE * 2, $l_i_SettingsY + 20 + $tempCtrlTop * 5, $GUI_CHECKBOX_WIDTH, $GUI_CHECKBOX_HEIGHT)
+	$GUI_GroupSettings_CheckStones  	= GUICtrlCreateCheckbox("Stones"		 	, $GUI_BORDERSIZE * 2, $l_i_SettingsY + 20 + $tempCtrlTop * 6, $GUI_CHECKBOX_WIDTH, $GUI_CHECKBOX_HEIGHT)
+	$GUI_GroupSettings_CheckChests  	= GUICtrlCreateCheckbox("Open Chests"		, $GUI_BORDERSIZE * 2, $l_i_SettingsY + 20 + $tempCtrlTop * 7, $GUI_CHECKBOX_WIDTH, $GUI_CHECKBOX_HEIGHT)
+	$GUI_GroupSettings_CheckRareSkins	= GUICtrlCreateCheckbox("Store Rare Skins"	, $GUI_BORDERSIZE * 2, $l_i_SettingsY + 20 + $tempCtrlTop * 8, $GUI_CHECKBOX_WIDTH, $GUI_CHECKBOX_HEIGHT)
+	$GUI_GroupSettings_CheckSell    	= GUICtrlCreateCheckbox("Auto-Sell"	  		, $GUI_BORDERSIZE * 2, $l_i_SettingsY + 20 + $tempCtrlTop * 9, $GUI_CHECKBOX_WIDTH, $GUI_CHECKBOX_HEIGHT)
 	GUICtrlCreateGroup("", -99, -99, 1, 1)	;Closes a Group
 
+	GUICtrlSetState($GUI_idCheckOnTop, $GUI_CHECKED)
+	GUICtrlSetOnEvent($GUI_idCheckOnTop, "GUI_OnTopCallback")
 	GUICtrlSetOnEvent($GUI_GroupSettings_CheckRender, "Ui_ToggleRendering")
 	GUICtrlSetOnEvent($GUI_GroupSettings_CheckSkills, "LoadBestSkillTemplate")
 	GUICtrlSetOnEvent($GUI_GroupSettings_CheckSell, "IdentifyBags")
 
 
 	$temp2 = GUI_GetCtrlInfo($GUI_GroupSettings)
+	; With char combo: console beside Settings, tops on the Settings border line; Refresh shares console left edge.
+	; Without: console spans Start + Settings like Logic-main.
+	Local $l_i_ConsoleX, $l_i_ConsoleY, $l_i_ConsoleH, $l_i_ConsoleW
+	If $l_b_CharCombo Then
+		$l_i_ConsoleX = $GUI_BORDERSIZE + $l_i_SettingsW + $GUI_CONTROL_SPACE
+		$l_i_ConsoleY = $l_i_SettingsY
+		$l_i_ConsoleH = $l_i_SettingsH
+		$l_i_ConsoleW = $GUI_WIDTH - $GUI_BORDERSIZE - $l_i_ConsoleX
+		GUICtrlSetPos($GUI_idCharCombo, $GUI_BORDERSIZE, $l_i_RowY, $l_i_SettingsW, $l_i_RowH)
+		$l_i_RefreshW = $l_i_StartX - $GUI_CONTROL_SPACE - $l_i_ConsoleX
+		GUICtrlSetPos($GUI_idCharRefresh, $l_i_ConsoleX, $l_i_RowY, $l_i_RefreshW, $l_i_RowH)
+	Else
+		$l_i_ConsoleX = $GUI_BORDERSIZE + $GUI_CONTROL_SPACE + ($temp1[2] > $temp2[2] ? $temp1[2] : $temp2[2])
+		$l_i_ConsoleY = $temp1[1] + $AUTOIT_GUI_EDITBOX_Y_FIX
+		$l_i_ConsoleH = $temp1[3] + $temp2[3] + $AUTOIT_GUI_EDITBOX_Y_FIX
+		$l_i_ConsoleW = $GUI_WIDTH - $GUI_BORDERSIZE - $l_i_ConsoleX
+	EndIf
 
-	$GUI_idConsole = GUICtrlCreateEdit("", _
-		$GUI_BORDERSIZE + $GUI_CONTROL_SPACE + ($temp1[2] > $temp2[2] ? $temp1[2] : $temp2[2]), _
-		$temp1[1] + $AUTOIT_GUI_EDITBOX_Y_FIX, _
-		$GUI_WIDTH - $GUI_BORDERSIZE * 2 - $GUI_CONTROL_SPACE - ($temp1[2] > $temp2[2] ? $temp1[2] : $temp2[2]), _
-		$temp1[3] + $temp2[3] + $AUTOIT_GUI_EDITBOX_Y_FIX, BitOR($ES_MULTILINE, $ES_READONLY, $ES_AUTOVSCROLL, $WS_VSCROLL))
+	$GUI_idConsole = GUICtrlCreateEdit("", $l_i_ConsoleX, $l_i_ConsoleY, $l_i_ConsoleW, $l_i_ConsoleH, BitOR($ES_MULTILINE, $ES_READONLY, $ES_AUTOVSCROLL, $WS_VSCROLL))
 	GUICtrlSetBkColor($GUI_idConsole, 0x000000)
 	GUICtrlSetColor($GUI_idConsole, 0xFFFFFF)
 	#EndRegion Gui GridRow 2
 
 	#Region Gui Grid Row 3
 	$tempCtrlTop = $GUI_LABEL_HEIGHT
+	; Same width each so Drop's right edge lands on the console's right edge.
+	Local $l_i_StatsY = $l_i_SettingsY + $l_i_SettingsH + $GUI_CONTROL_SPACE
+	Local $l_i_StatsW = Int(($GUI_WIDTH - $GUI_BORDERSIZE * 2 - $GUI_CONTROL_SPACE) / 2)
+	Local $l_i_StatsH = 20 + $tempCtrlTop * 6 + $GUI_CONTROL_SPACE
+	Local $l_i_DropX = $GUI_BORDERSIZE + $l_i_StatsW + $GUI_CONTROL_SPACE
 
-	;Group 2: General Statistics
-	$GUI_GroupGeneralStats = GUICtrlCreateGroup("General Statistics", $GUI_BORDERSIZE, $temp2[1] + $temp2[3] + $GUI_CONTROL_SPACE, $GUI_LABEL_WIDTH * 1.45 + $GUI_BORDERSIZE * 2, 20 + $tempCtrlTop * 6 + $GUI_CONTROL_SPACE)
+	;Group 2: General Statistics — left edge unchanged; only width shrinks.
+	$GUI_GroupGeneralStats = GUICtrlCreateGroup("General Statistics", $GUI_BORDERSIZE, $l_i_StatsY, $l_i_StatsW, $l_i_StatsH)
     GUICtrlSetFont($GUI_GroupGeneralStats, 9, 800, 0, "Arial")
 
-	$GUI_GroupGeneralStats_lblDeldrimor 	= GUICtrlCreateLabel("Deldrimor:"		, $GUI_BORDERSIZE * 2, $temp2[1] + $temp2[3] + $GUI_CONTROL_SPACE + 20 + $tempCtrlTop * 0, $GUI_LABEL_WIDTH, $GUI_LABEL_HEIGHT)
-	$GUI_GroupGeneralStats_lblAsura			= GUICtrlCreateLabel("Asura Points:"	, $GUI_BORDERSIZE * 2, $temp2[1] + $temp2[3] + $GUI_CONTROL_SPACE + 20 + $tempCtrlTop * 1, $GUI_LABEL_WIDTH * 0.75, $GUI_LABEL_HEIGHT)
-	$GUI_GroupGeneralStats_lblLockpicks		= GUICtrlCreateLabel("Lockpicks:"		, $GUI_BORDERSIZE * 2, $temp2[1] + $temp2[3] + $GUI_CONTROL_SPACE + 20 + $tempCtrlTop * 2, $GUI_LABEL_WIDTH * 0.75, $GUI_LABEL_HEIGHT)
-	$GUI_GroupGeneralStats_lblWipes	 		= GUICtrlCreateLabel("Wipes:"			, $GUI_BORDERSIZE * 2, $temp2[1] + $temp2[3] + $GUI_CONTROL_SPACE + 20 + $tempCtrlTop * 3, $GUI_LABEL_WIDTH * 0.75, $GUI_LABEL_HEIGHT)
-	$GUI_GroupGeneralStats_lblBestRunTime	= GUICtrlCreateLabel("Best Run Time:"	, $GUI_BORDERSIZE * 2, $temp2[1] + $temp2[3] + $GUI_CONTROL_SPACE + 20 + $tempCtrlTop * 4, $GUI_LABEL_WIDTH * 0.75, $GUI_LABEL_HEIGHT)
-	$GUI_GroupGeneralStats_lblAvgRunTime	= GUICtrlCreateLabel("Avg Run Time:"	, $GUI_BORDERSIZE * 2, $temp2[1] + $temp2[3] + $GUI_CONTROL_SPACE + 20 + $tempCtrlTop * 5, $GUI_LABEL_WIDTH * 0.75, $GUI_LABEL_HEIGHT)
+	$GUI_GroupGeneralStats_lblDeldrimor 	= GUICtrlCreateLabel("Deldrimor:"		, $GUI_BORDERSIZE * 2, $l_i_StatsY + 20 + $tempCtrlTop * 0, $GUI_LABEL_WIDTH, $GUI_LABEL_HEIGHT)
+	$GUI_GroupGeneralStats_lblAsura			= GUICtrlCreateLabel("Asura Points:"	, $GUI_BORDERSIZE * 2, $l_i_StatsY + 20 + $tempCtrlTop * 1, $GUI_LABEL_WIDTH * 0.75, $GUI_LABEL_HEIGHT)
+	$GUI_GroupGeneralStats_lblLockpicks		= GUICtrlCreateLabel("Lockpicks:"		, $GUI_BORDERSIZE * 2, $l_i_StatsY + 20 + $tempCtrlTop * 2, $GUI_LABEL_WIDTH * 0.75, $GUI_LABEL_HEIGHT)
+	$GUI_GroupGeneralStats_lblWipes	 		= GUICtrlCreateLabel("Wipes:"			, $GUI_BORDERSIZE * 2, $l_i_StatsY + 20 + $tempCtrlTop * 3, $GUI_LABEL_WIDTH * 0.75, $GUI_LABEL_HEIGHT)
+	$GUI_GroupGeneralStats_lblBestRunTime	= GUICtrlCreateLabel("Best Run Time:"	, $GUI_BORDERSIZE * 2, $l_i_StatsY + 20 + $tempCtrlTop * 4, $GUI_LABEL_WIDTH * 0.75, $GUI_LABEL_HEIGHT)
+	$GUI_GroupGeneralStats_lblAvgRunTime	= GUICtrlCreateLabel("Avg Run Time:"	, $GUI_BORDERSIZE * 2, $l_i_StatsY + 20 + $tempCtrlTop * 5, $GUI_LABEL_WIDTH * 0.75, $GUI_LABEL_HEIGHT)
 
-	$GUI_GroupGeneralStats_lblDeldrimorVal 	= GUICtrlCreateLabel("0", 			$GUI_BORDERSIZE * 2 + $GUI_LABEL_WIDTH * 0.75, $temp2[1] + $temp2[3] + $GUI_CONTROL_SPACE + 20 + $tempCtrlTop * 0, $GUI_LABEL_WIDTH * 0.5, $GUI_LABEL_HEIGHT, $SS_RIGHT)
-	$GUI_GroupGeneralStats_lblAsuraVal 		= GUICtrlCreateLabel("0", 			$GUI_BORDERSIZE * 2 + $GUI_LABEL_WIDTH * 0.75, $temp2[1] + $temp2[3] + $GUI_CONTROL_SPACE + 20 + $tempCtrlTop * 1, $GUI_LABEL_WIDTH * 0.5, $GUI_LABEL_HEIGHT, $SS_RIGHT)
-	$GUI_GroupGeneralStats_lblLockpicksVal 	= GUICtrlCreateLabel("0", 			$GUI_BORDERSIZE * 2 + $GUI_LABEL_WIDTH * 0.75, $temp2[1] + $temp2[3] + $GUI_CONTROL_SPACE + 20 + $tempCtrlTop * 2, $GUI_LABEL_WIDTH * 0.5, $GUI_LABEL_HEIGHT, $SS_RIGHT)
-	$GUI_GroupGeneralStats_lblWipesVal 		= GUICtrlCreateLabel("0", 			$GUI_BORDERSIZE * 2 + $GUI_LABEL_WIDTH * 0.75, $temp2[1] + $temp2[3] + $GUI_CONTROL_SPACE + 20 + $tempCtrlTop * 3, $GUI_LABEL_WIDTH * 0.5, $GUI_LABEL_HEIGHT, $SS_RIGHT)
-	$GUI_GroupGeneralStats_lblBestRunTimeVal= GUICtrlCreateLabel("00:00:00", 	$GUI_BORDERSIZE * 2 + $GUI_LABEL_WIDTH * 0.75, $temp2[1] + $temp2[3] + $GUI_CONTROL_SPACE + 20 + $tempCtrlTop * 4, $GUI_LABEL_WIDTH * 0.5, $GUI_LABEL_HEIGHT, $SS_RIGHT)
-	$GUI_GroupGeneralStats_lblAvgRunTimeVal = GUICtrlCreateLabel("00:00:00", 	$GUI_BORDERSIZE * 2 + $GUI_LABEL_WIDTH * 0.75, $temp2[1] + $temp2[3] + $GUI_CONTROL_SPACE + 20 + $tempCtrlTop * 5, $GUI_LABEL_WIDTH * 0.5, $GUI_LABEL_HEIGHT, $SS_RIGHT)
+	$GUI_GroupGeneralStats_lblDeldrimorVal 	= GUICtrlCreateLabel("0", 			$GUI_BORDERSIZE * 2 + $GUI_LABEL_WIDTH * 0.75, $l_i_StatsY + 20 + $tempCtrlTop * 0, $GUI_LABEL_WIDTH * 0.5, $GUI_LABEL_HEIGHT, $SS_RIGHT)
+	$GUI_GroupGeneralStats_lblAsuraVal 		= GUICtrlCreateLabel("0", 			$GUI_BORDERSIZE * 2 + $GUI_LABEL_WIDTH * 0.75, $l_i_StatsY + 20 + $tempCtrlTop * 1, $GUI_LABEL_WIDTH * 0.5, $GUI_LABEL_HEIGHT, $SS_RIGHT)
+	$GUI_GroupGeneralStats_lblLockpicksVal 	= GUICtrlCreateLabel("0", 			$GUI_BORDERSIZE * 2 + $GUI_LABEL_WIDTH * 0.75, $l_i_StatsY + 20 + $tempCtrlTop * 2, $GUI_LABEL_WIDTH * 0.5, $GUI_LABEL_HEIGHT, $SS_RIGHT)
+	$GUI_GroupGeneralStats_lblWipesVal 		= GUICtrlCreateLabel("0", 			$GUI_BORDERSIZE * 2 + $GUI_LABEL_WIDTH * 0.75, $l_i_StatsY + 20 + $tempCtrlTop * 3, $GUI_LABEL_WIDTH * 0.5, $GUI_LABEL_HEIGHT, $SS_RIGHT)
+	$GUI_GroupGeneralStats_lblBestRunTimeVal= GUICtrlCreateLabel("00:00:00", 	$GUI_BORDERSIZE * 2 + $GUI_LABEL_WIDTH * 0.75, $l_i_StatsY + 20 + $tempCtrlTop * 4, $GUI_LABEL_WIDTH * 0.5, $GUI_LABEL_HEIGHT, $SS_RIGHT)
+	$GUI_GroupGeneralStats_lblAvgRunTimeVal = GUICtrlCreateLabel("00:00:00", 	$GUI_BORDERSIZE * 2 + $GUI_LABEL_WIDTH * 0.75, $l_i_StatsY + 20 + $tempCtrlTop * 5, $GUI_LABEL_WIDTH * 0.5, $GUI_LABEL_HEIGHT, $SS_RIGHT)
 	GUICtrlCreateGroup("", -99, -99, 1, 1)
 
-	;Group 3: Drop Statistics
-	$temp1 = GUI_GetCtrlInfo($GUI_GroupGeneralStats)
-	$GUI_GroupDropStatistics = GUICtrlCreateGroup("Drop Statistics", $temp1[0] + $temp1[2] + $GUI_CONTROL_SPACE, $temp2[1] + $temp2[3] + $GUI_CONTROL_SPACE, $GUI_LABEL_WIDTH * 1.45 + $GUI_BORDERSIZE * 2, 20 + $tempCtrlTop * 6 + $GUI_CONTROL_SPACE)
+	;Group 3: Drop Statistics — shifts left with General's new right edge; same width shrink.
+	$GUI_GroupDropStatistics = GUICtrlCreateGroup("Drop Statistics", $l_i_DropX, $l_i_StatsY, $l_i_StatsW, $l_i_StatsH)
 	GUICtrlSetFont($GUI_GroupDropStatistics, 9, 800, 0, "Arial")
 	$temp1 = GUI_GetCtrlInfo($GUI_GroupDropStatistics)
 	$GUI_GroupDropStatistics_lblRareSkins 		= GUICtrlCreateLabel("Rare Skins:"		, $temp1[0] + $GUI_CONTROL_SPACE, $temp1[1] + 20 + $tempCtrlTop * 0, $GUI_LABEL_WIDTH , $GUI_LABEL_HEIGHT)
@@ -294,15 +361,57 @@ Func GUI_Create()
 	GUICtrlSetState($GUI_GroupSettings_CheckSell, (IniRead($INI_PATH, "Settings", "AutoSell", "True") = "True") ? $GUI_CHECKED : $GUI_UNCHECKED)
 	#EndRegion INI
 
-	; Show without stealing focus from Guild Wars, then pin on top
+	; Fill after console exists so Out() works.
+	If $GUI_idCharCombo <> 0 Then GUI_FillCharCombo()
+
+	; No owner link — owned windows minimize together (Rupt pattern).
+	GUI_ClearWindowOwner($GUI)
 	GUISetState(@SW_SHOWNOACTIVATE, $GUI)
-	WinSetOnTop($GUI, "", 1)
+	GUI_ApplyOnTop()
 	If IsDeclared("g_h_GWWindow") And $g_h_GWWindow <> 0 Then
 		WinSetState($g_h_GWWindow, "", @SW_RESTORE)
 		WinActivate($g_h_GWWindow)
 	EndIf
 EndFunc
 #EndRegion Creation
+
+; Pin by hwnd so title changes don't drop TOPMOST.
+Func GUI_ApplyOnTop()
+	If $GUI = 0 Then Return
+	WinSetOnTop($GUI, "", GUI_IsChecked($GUI_idCheckOnTop) ? 1 : 0)
+EndFunc   ;==>GUI_ApplyOnTop
+
+; GWL_HWNDPARENT (-8) = 0 → bot and GW don't minimize as a pair.
+Func GUI_ClearWindowOwner($aHwnd)
+	If $aHwnd = 0 Then Return
+	DllCall("user32.dll", "long", "SetWindowLongW", "hwnd", $aHwnd, "int", -8, "ptr", 0)
+EndFunc   ;==>GUI_ClearWindowOwner
+
+Func GUI_DetachFromGw()
+	GUI_ClearWindowOwner($GUI)
+	Local $hGw = 0
+	If IsDeclared("g_h_GWWindow") Then $hGw = $g_h_GWWindow
+	If $hGw = 0 Then $hGw = Scanner_GetWindowHandle()
+	If $hGw <> 0 Then GUI_ClearWindowOwner($hGw)
+EndFunc   ;==>GUI_DetachFromGw
+
+; Topmost + minimize can yank GW down — drop topmost, detach, restore GW if needed.
+Func GUI_OnMinimize()
+	WinSetOnTop($GUI, "", 0)
+	GUI_DetachFromGw()
+	Local $hGw = 0
+	If IsDeclared("g_h_GWWindow") Then $hGw = $g_h_GWWindow
+	If $hGw = 0 Then $hGw = Scanner_GetWindowHandle()
+	If $hGw <> 0 And BitAND(WinGetState($hGw), 16) Then WinSetState($hGw, "", @SW_RESTORE)
+EndFunc   ;==>GUI_OnMinimize
+
+Func GUI_OnRestore()
+	GUI_ApplyOnTop()
+EndFunc   ;==>GUI_OnRestore
+
+Func GUI_OnTopCallback()
+	GUI_ApplyOnTop()
+EndFunc   ;==>GUI_OnTopCallback
 
 #Region Events
 Func GUI_IniSave()
@@ -334,15 +443,119 @@ Func GUI_onExit()
 	Exit
 EndFunc
 
+Func GUI_FillCharCombo()
+	If $GUI_idCharCombo = 0 Then Return
+	Local $aChars = Scanner_ScanGW()
+	GUICtrlSetData($GUI_idCharCombo, "")
+	If $aChars[0] < 1 Then
+		Out("Found 0 logged character names.")
+		Return
+	EndIf
+	Local $sLogged = $aChars[1]
+	For $i = 2 To $aChars[0]
+		$sLogged &= "|" & $aChars[$i]
+	Next
+	GUICtrlSetData($GUI_idCharCombo, "|" & $sLogged, $aChars[1])
+	Out("Chars: " & $sLogged)
+EndFunc   ;==>GUI_FillCharCombo
+
+; Attach from the in-UI char dropdown. Never compare char names with = 0 (AutoIt: "Name" = 0 is True).
+Func GUI_EnsureCoreInitialized()
+	If IsDeclared("Bot_Core_Initialized") And $Bot_Core_Initialized Then Return True
+
+	Local $sName = ""
+	If $GUI_idCharCombo <> 0 Then $sName = StringStripWS(GUICtrlRead($GUI_idCharCombo), 3)
+	If IsDeclared("g_s_MainCharName") And $g_s_MainCharName <> "" And $sName = "" Then $sName = $g_s_MainCharName
+	If IsDeclared("g_s_MainCharName") Then $g_s_MainCharName = $sName
+
+	If IsDeclared("ProcessID") And $ProcessID Then
+		If Core_Initialize(Number($ProcessID, 2), True) = 0 Then
+			MsgBox(0, "Error", "Could not find ProcessID '" & $ProcessID & "'")
+			Return False
+		EndIf
+	ElseIf $sName <> "" Then
+		If Core_Initialize($sName, True) = 0 Then
+			MsgBox(0, "Error", "Could not find character '" & $sName & "'")
+			Return False
+		EndIf
+	Else
+		Local $lProcs = ProcessList("gw.exe")
+		Switch $lProcs[0][0]
+			Case 0
+				MsgBox(0, "Error", "Guild Wars is not running.")
+				Return False
+			Case 1
+				If Core_Initialize(Number($lProcs[1][1]), True) = 0 Then
+					MsgBox(0, "Error", "Guild Wars is not running.")
+					Return False
+				EndIf
+			Case Else
+				MsgBox(0, "Error", "Select a character from the dropdown (or press Refresh).")
+				Return False
+		EndSwitch
+	EndIf
+
+	If IsDeclared("Bot_Core_Initialized") Then $Bot_Core_Initialized = True
+	Return True
+EndFunc   ;==>GUI_EnsureCoreInitialized
+
+; Popup picker — prefer GUI_idCharCombo. Returns char name, or "" if none/cancelled.
+Func CharacterSelector()
+	Opt('GUIOnEventMode', False)
+	Local $lChars = Scanner_ScanGW()
+	Switch $lChars[0]
+		Case 0
+			Opt('GUIOnEventMode', True)
+			Return ""
+		Case 1
+			Opt('GUIOnEventMode', True)
+			Return $lChars[1]
+		Case Else
+			Local $lCharStr = $lChars[1]
+			For $i = 2 To $lChars[0]
+				$lCharStr &= "|" & $lChars[$i]
+			Next
+			Local $GUICharSelector = GUICreate("Character Selector", 171, 64, 192, 124)
+			Local $ComboCharSelector = GUICtrlCreateCombo("", 8, 8, 153, 25)
+			Local $ButtonCharSelector = GUICtrlCreateButton("Use This Character", 8, 32, 153, 25)
+			GUICtrlSetData($ComboCharSelector, $lCharStr, $lChars[1])
+			GUISetState(@SW_SHOW, $GUICharSelector)
+
+			While 1
+				Switch GUIGetMsg()
+					Case $ButtonCharSelector
+						Local $tmp = GUICtrlRead($ComboCharSelector)
+						GUIDelete($GUICharSelector)
+						Opt('GUIOnEventMode', True)
+						Return $tmp
+					Case -3
+						GUIDelete($GUICharSelector)
+						Opt('GUIOnEventMode', True)
+						Return ""
+				EndSwitch
+				Sleep(25)
+			WEnd
+	EndSwitch
+	Opt('GUIOnEventMode', True)
+	Return ""
+EndFunc   ;==>CharacterSelector
+
 Func GUI_ButtonCallback()
 	If Not @GUI_CtrlHandle = $GUI Then Return ;If u run multiple GUIs, sort out the GUI u dont need, to reduce unnecessary cpu usage.
 	Local $idButton = @GUI_CtrlId
 	Switch($idButton)
 		Case $GUI_idButtonStart
+			; Attach before flipping buttons so a failed pick leaves Start usable.
+			If Not GUI_EnsureCoreInitialized() Then Return
 			GUI_HideButton($GUI_idButtonStart, True)
 			GUI_HideButton($GUI_idButtonStop, False)
 			GUI_HideButton($GUI_idButtonResume, True)
+			If $GUI_idCharCombo <> 0 Then GUICtrlSetState($GUI_idCharCombo, $GUI_DISABLE)
+			If $GUI_idCharRefresh <> 0 Then GUICtrlSetState($GUI_idCharRefresh, $GUI_DISABLE)
 			Call($GUI_idButtonStart_Function)
+			; Title changes elsewhere can drop TOPMOST if keyed by title — re-pin by hwnd.
+			GUI_ApplyOnTop()
+			GUI_DetachFromGw()
 		Case $GUI_idButtonStop
 			GUI_HideButton($GUI_idButtonStop, True)
 			GUI_HideButton($GUI_idButtonResume, False)
@@ -666,7 +879,7 @@ EndFunc
 #EndRegion Ini File
 
 Func SELECTCHARNAME($acharname)
-    Local $array = SCANGW()
+    Local $array = Scanner_ScanGW()
     For $j = 0x1 To 10
         For $i = 0x1 To $array[0x0]
             If $acharname == $array[$i] Then Return True
@@ -688,7 +901,7 @@ Func AutoConnecte()
 	Next
 	If $GoodName <> "" Then
 		Out("Auto Connecte")
-		Initialize($GoodName, True, True, True)
+		Core_Initialize($GoodName, True)
 		Return True
 	Else
 		Out("Fail Auto Connecte")

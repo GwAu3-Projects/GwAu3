@@ -2,6 +2,7 @@
 ; Quest flow helpers (policy/logging). Module Quest_* / Ui_* for thin Cmd calls.
 
 Func AcceptQuest($a_i_QuestID)
+	; Logic: If GetQuestPtr <> 0 Then Return — already in log.
 	If Quest_GetQuestInfo($a_i_QuestID, "HasQuest") Then
 		Out("AcceptQuest: already in log (LogState=" & Quest_GetQuestInfo($a_i_QuestID, "LogState") & ")")
 		Return
@@ -18,6 +19,7 @@ Func CheckQuestStatus($a_i_QuestID)
 	Return Quest_GetQuestInfo($a_i_QuestID, "IsCompleted") Or $l_i_State = 3 Or $l_i_State = 34 Or $l_i_State = 35 Or $l_i_State = 79
 EndFunc
 
+; Logic CheckForQuest — activate mid-quest / optional abandon when completed.
 Func CheckForQuest($a_i_Quest, $a_b_AbandonCompleted = False)
 	Quest_RequestInfos($a_i_Quest)
 	Sleep(200)
@@ -29,7 +31,11 @@ Func CheckForQuest($a_i_Quest, $a_b_AbandonCompleted = False)
 	If Quest_GetQuestInfo($a_i_Quest, "IsCompleted") Or $l_i_State = 3 Or $l_i_State = 34 Or $l_i_State = 35 Or $l_i_State = 79 Then
 		Out("Quest already completed, abandoning to secure access to the dungeon")
 		Out("LogState = " & $l_i_State)
-		If $a_b_AbandonCompleted Then Quest_AbandonQuest($a_i_Quest)
+		If $a_b_AbandonCompleted Then
+			Out("Abandoning quest: " & $a_i_Quest)
+			Quest_AbandonQuest($a_i_Quest)
+			Other_PingSleep(500)
+		EndIf
 		Return False
 	EndIf
 	Out("Quest already in our log, activating (LogState=" & $l_i_State & ")")
